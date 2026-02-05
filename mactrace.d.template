@@ -1,0 +1,988 @@
+/*
+ * mactrace DTrace script
+ * Comprehensive syscall tracing for macOS
+ * Uses progenyof() for child process tracking (no proc::: probes)
+ * $target_pid is replaced with $target when using dtrace -c
+ */
+
+#pragma D option quiet
+#pragma D option switchrate=10hz
+#pragma D option bufsize=16m
+#pragma D option dynvarsize=32m
+#pragma D option strsize=1024
+
+/*
+ * TRACED predicate - matches target and all descendants
+ * self->is_child flag tracks processes we've seen
+ */
+#define TRACED (pid == $target_pid || progenyof($target_pid) || self->is_child)
+
+dtrace:::BEGIN
+{
+    printf("MACTRACE_START %d %d\n", $target_pid, walltimestamp/1000);
+}
+
+dtrace:::END
+{
+    printf("MACTRACE_END %d\n", walltimestamp/1000);
+}
+
+/* Mark child processes on first syscall */
+syscall:::entry
+/progenyof($target_pid) && self->is_child == 0/
+{
+    self->is_child = 1;
+    printf("MACTRACE_CHILD %d %d %d\n", pid, ppid, walltimestamp/1000);
+}
+
+/* ============================================ */
+/* PROCESS LIFECYCLE                            */
+/* ============================================ */
+
+syscall::fork:return,
+syscall::vfork:return
+/TRACED/
+{
+    printf("MACTRACE_SYSCALL %d %d %s %d %d %d\n",
+        pid, tid, probefunc, (int)arg1, errno, walltimestamp/1000);
+}
+
+syscall::fork:return,
+syscall::vfork:return
+/arg1 == 0 && (progenyof($target_pid) || ppid == $target_pid)/
+{
+    self->is_child = 1;
+    printf("MACTRACE_FORK_CHILD %d %d %d %d\n", ppid, pid, tid, walltimestamp/1000);
+}
+
+syscall::execve:entry
+/TRACED/
+{
+    self->exec_path = copyinstr(arg0);
+    self->exec_ts = walltimestamp/1000;
+}
+
+syscall::execve:return
+/TRACED && self->exec_path != NULL/
+{
+    printf("MACTRACE_SYSCALL %d %d execve %d %d %d \"%s\"\n",
+        pid, tid, (int)arg1, errno, self->exec_ts, self->exec_path);
+    self->exec_path = NULL;
+}
+
+syscall::posix_spawn:entry
+/TRACED/
+{
+    self->spawn_path = copyinstr(arg1);
+    self->spawn_ts = walltimestamp/1000;
+}
+
+syscall::posix_spawn:return
+/TRACED && self->spawn_path != NULL/
+{
+    printf("MACTRACE_SYSCALL %d %d posix_spawn %d %d %d \"%s\"\n",
+        pid, tid, (int)arg1, errno, self->spawn_ts, self->spawn_path);
+    self->spawn_path = NULL;
+}
+
+syscall::exit:entry
+/TRACED/
+{
+    printf("MACTRACE_EXIT %d %d %d %d\n", pid, ppid, (int)arg0, walltimestamp/1000);
+    self->is_child = 0;
+}
+
+syscall::wait4:entry,
+syscall::wait4_nocancel:entry
+/TRACED/
+{
+    self->wait_pid = arg0;
+    self->wait_opts = arg2;
+    self->wait_ts = walltimestamp/1000;
+}
+
+syscall::wait4:return,
+syscall::wait4_nocancel:return
+/TRACED && self->wait_ts/
+{
+    printf("MACTRACE_SYSCALL %d %d wait4 %d %d %d %d 0x%x\n",
+        pid, tid, (int)arg1, errno, self->wait_ts, self->wait_pid, self->wait_opts);
+    self->wait_ts = 0;
+}
+
+/* ============================================ */
+/* FILE OPERATIONS                              */
+/* ============================================ */
+
+syscall::open:entry,
+syscall::open_nocancel:entry
+/TRACED/
+{
+    self->open_path = copyinstr(arg0);
+    self->open_flags = arg1;
+    self->open_mode = arg2;
+    self->open_ts = walltimestamp/1000;
+}
+
+syscall::open:return,
+syscall::open_nocancel:return
+/TRACED && self->open_path != NULL/
+{
+    printf("MACTRACE_SYSCALL %d %d open %d %d %d \"%s\" 0x%x 0%o\n",
+        pid, tid, (int)arg1, errno, self->open_ts, 
+        self->open_path, self->open_flags, self->open_mode);
+    self->open_path = NULL;
+}
+
+syscall::openat:entry,
+syscall::openat_nocancel:entry
+/TRACED/
+{
+    self->openat_fd = arg0;
+    self->openat_path = copyinstr(arg1);
+    self->openat_flags = arg2;
+    self->openat_mode = arg3;
+    self->openat_ts = walltimestamp/1000;
+}
+
+syscall::openat:return,
+syscall::openat_nocancel:return
+/TRACED && self->openat_path != NULL/
+{
+    printf("MACTRACE_SYSCALL %d %d openat %d %d %d %d \"%s\" 0x%x 0%o\n",
+        pid, tid, (int)arg1, errno, self->openat_ts,
+        self->openat_fd, self->openat_path, self->openat_flags, self->openat_mode);
+    self->openat_path = NULL;
+}
+
+syscall::close:entry,
+syscall::close_nocancel:entry
+/TRACED/
+{
+    self->close_fd = arg0;
+    self->close_ts = walltimestamp/1000;
+}
+
+syscall::close:return,
+syscall::close_nocancel:return
+/TRACED && self->close_ts/
+{
+    printf("MACTRACE_SYSCALL %d %d close %d %d %d %d\n",
+        pid, tid, (int)arg1, errno, self->close_ts, self->close_fd);
+    self->close_ts = 0;
+}
+
+syscall::read:entry,
+syscall::read_nocancel:entry
+/TRACED/
+{
+    self->read_fd = arg0;
+    self->read_size = arg2;
+    self->read_ts = walltimestamp/1000;
+}
+
+syscall::read:return,
+syscall::read_nocancel:return
+/TRACED && self->read_ts/
+{
+    printf("MACTRACE_SYSCALL %d %d read %d %d %d %d %d\n",
+        pid, tid, (int)arg1, errno, self->read_ts, self->read_fd, self->read_size);
+    self->read_ts = 0;
+}
+
+syscall::pread:entry,
+syscall::pread_nocancel:entry
+/TRACED/
+{
+    self->pread_fd = arg0;
+    self->pread_size = arg2;
+    self->pread_off = arg3;
+    self->pread_ts = walltimestamp/1000;
+}
+
+syscall::pread:return,
+syscall::pread_nocancel:return
+/TRACED && self->pread_ts/
+{
+    printf("MACTRACE_SYSCALL %d %d pread %d %d %d %d %d %d\n",
+        pid, tid, (int)arg1, errno, self->pread_ts, 
+        self->pread_fd, self->pread_size, self->pread_off);
+    self->pread_ts = 0;
+}
+
+syscall::write:entry,
+syscall::write_nocancel:entry
+/TRACED/
+{
+    self->write_fd = arg0;
+    self->write_size = arg2;
+    self->write_ts = walltimestamp/1000;
+}
+
+syscall::write:return,
+syscall::write_nocancel:return
+/TRACED && self->write_ts/
+{
+    printf("MACTRACE_SYSCALL %d %d write %d %d %d %d %d\n",
+        pid, tid, (int)arg1, errno, self->write_ts, self->write_fd, self->write_size);
+    self->write_ts = 0;
+}
+
+syscall::pwrite:entry,
+syscall::pwrite_nocancel:entry
+/TRACED/
+{
+    self->pwrite_fd = arg0;
+    self->pwrite_size = arg2;
+    self->pwrite_off = arg3;
+    self->pwrite_ts = walltimestamp/1000;
+}
+
+syscall::pwrite:return,
+syscall::pwrite_nocancel:return
+/TRACED && self->pwrite_ts/
+{
+    printf("MACTRACE_SYSCALL %d %d pwrite %d %d %d %d %d %d\n",
+        pid, tid, (int)arg1, errno, self->pwrite_ts,
+        self->pwrite_fd, self->pwrite_size, self->pwrite_off);
+    self->pwrite_ts = 0;
+}
+
+syscall::stat64:entry,
+syscall::lstat64:entry
+/TRACED/
+{
+    self->stat_path = copyinstr(arg0);
+    self->stat_func = probefunc;
+    self->stat_ts = walltimestamp/1000;
+}
+
+syscall::stat64:return,
+syscall::lstat64:return
+/TRACED && self->stat_path != NULL/
+{
+    printf("MACTRACE_SYSCALL %d %d %s %d %d %d \"%s\"\n",
+        pid, tid, self->stat_func, (int)arg1, errno, self->stat_ts, self->stat_path);
+    self->stat_path = NULL;
+}
+
+syscall::fstat64:entry
+/TRACED/
+{
+    self->fstat_fd = arg0;
+    self->fstat_ts = walltimestamp/1000;
+}
+
+syscall::fstat64:return
+/TRACED && self->fstat_ts/
+{
+    printf("MACTRACE_SYSCALL %d %d fstat64 %d %d %d %d\n",
+        pid, tid, (int)arg1, errno, self->fstat_ts, self->fstat_fd);
+    self->fstat_ts = 0;
+}
+
+syscall::access:entry
+/TRACED/
+{
+    self->access_path = copyinstr(arg0);
+    self->access_mode = arg1;
+    self->access_ts = walltimestamp/1000;
+}
+
+syscall::access:return
+/TRACED && self->access_path != NULL/
+{
+    printf("MACTRACE_SYSCALL %d %d access %d %d %d \"%s\" %d\n",
+        pid, tid, (int)arg1, errno, self->access_ts, self->access_path, self->access_mode);
+    self->access_path = NULL;
+}
+
+syscall::faccessat:entry
+/TRACED/
+{
+    self->faccessat_fd = arg0;
+    self->faccessat_path = copyinstr(arg1);
+    self->faccessat_mode = arg2;
+    self->faccessat_ts = walltimestamp/1000;
+}
+
+syscall::faccessat:return
+/TRACED && self->faccessat_path != NULL/
+{
+    printf("MACTRACE_SYSCALL %d %d faccessat %d %d %d %d \"%s\" %d\n",
+        pid, tid, (int)arg1, errno, self->faccessat_ts,
+        self->faccessat_fd, self->faccessat_path, self->faccessat_mode);
+    self->faccessat_path = NULL;
+}
+
+syscall::unlink:entry
+/TRACED/
+{
+    self->unlink_path = copyinstr(arg0);
+    self->unlink_ts = walltimestamp/1000;
+}
+
+syscall::unlink:return
+/TRACED && self->unlink_path != NULL/
+{
+    printf("MACTRACE_SYSCALL %d %d unlink %d %d %d \"%s\"\n",
+        pid, tid, (int)arg1, errno, self->unlink_ts, self->unlink_path);
+    self->unlink_path = NULL;
+}
+
+syscall::rename:entry
+/TRACED/
+{
+    self->rename_old = copyinstr(arg0);
+    self->rename_new = copyinstr(arg1);
+    self->rename_ts = walltimestamp/1000;
+}
+
+syscall::rename:return
+/TRACED && self->rename_old != NULL/
+{
+    printf("MACTRACE_SYSCALL %d %d rename %d %d %d \"%s\" \"%s\"\n",
+        pid, tid, (int)arg1, errno, self->rename_ts, self->rename_old, self->rename_new);
+    self->rename_old = NULL;
+    self->rename_new = NULL;
+}
+
+syscall::mkdir:entry
+/TRACED/
+{
+    self->mkdir_path = copyinstr(arg0);
+    self->mkdir_mode = arg1;
+    self->mkdir_ts = walltimestamp/1000;
+}
+
+syscall::mkdir:return
+/TRACED && self->mkdir_path != NULL/
+{
+    printf("MACTRACE_SYSCALL %d %d mkdir %d %d %d \"%s\" 0%o\n",
+        pid, tid, (int)arg1, errno, self->mkdir_ts, self->mkdir_path, self->mkdir_mode);
+    self->mkdir_path = NULL;
+}
+
+syscall::rmdir:entry
+/TRACED/
+{
+    self->rmdir_path = copyinstr(arg0);
+    self->rmdir_ts = walltimestamp/1000;
+}
+
+syscall::rmdir:return
+/TRACED && self->rmdir_path != NULL/
+{
+    printf("MACTRACE_SYSCALL %d %d rmdir %d %d %d \"%s\"\n",
+        pid, tid, (int)arg1, errno, self->rmdir_ts, self->rmdir_path);
+    self->rmdir_path = NULL;
+}
+
+syscall::chdir:entry
+/TRACED/
+{
+    self->chdir_path = copyinstr(arg0);
+    self->chdir_ts = walltimestamp/1000;
+}
+
+syscall::chdir:return
+/TRACED && self->chdir_path != NULL/
+{
+    printf("MACTRACE_SYSCALL %d %d chdir %d %d %d \"%s\"\n",
+        pid, tid, (int)arg1, errno, self->chdir_ts, self->chdir_path);
+    self->chdir_path = NULL;
+}
+
+syscall::fchdir:entry
+/TRACED/
+{
+    self->fchdir_fd = arg0;
+    self->fchdir_ts = walltimestamp/1000;
+}
+
+syscall::fchdir:return
+/TRACED && self->fchdir_ts/
+{
+    printf("MACTRACE_SYSCALL %d %d fchdir %d %d %d %d\n",
+        pid, tid, (int)arg1, errno, self->fchdir_ts, self->fchdir_fd);
+    self->fchdir_ts = 0;
+}
+
+syscall::chmod:entry
+/TRACED/
+{
+    self->chmod_path = copyinstr(arg0);
+    self->chmod_mode = arg1;
+    self->chmod_ts = walltimestamp/1000;
+}
+
+syscall::chmod:return
+/TRACED && self->chmod_path != NULL/
+{
+    printf("MACTRACE_SYSCALL %d %d chmod %d %d %d \"%s\" 0%o\n",
+        pid, tid, (int)arg1, errno, self->chmod_ts, self->chmod_path, self->chmod_mode);
+    self->chmod_path = NULL;
+}
+
+syscall::fchmod:entry
+/TRACED/
+{
+    self->fchmod_fd = arg0;
+    self->fchmod_mode = arg1;
+    self->fchmod_ts = walltimestamp/1000;
+}
+
+syscall::fchmod:return
+/TRACED && self->fchmod_ts/
+{
+    printf("MACTRACE_SYSCALL %d %d fchmod %d %d %d %d 0%o\n",
+        pid, tid, (int)arg1, errno, self->fchmod_ts, self->fchmod_fd, self->fchmod_mode);
+    self->fchmod_ts = 0;
+}
+
+syscall::truncate:entry
+/TRACED/
+{
+    self->trunc_path = copyinstr(arg0);
+    self->trunc_len = arg1;
+    self->trunc_ts = walltimestamp/1000;
+}
+
+syscall::truncate:return
+/TRACED && self->trunc_path != NULL/
+{
+    printf("MACTRACE_SYSCALL %d %d truncate %d %d %d \"%s\" %d\n",
+        pid, tid, (int)arg1, errno, self->trunc_ts, self->trunc_path, self->trunc_len);
+    self->trunc_path = NULL;
+}
+
+syscall::ftruncate:entry
+/TRACED/
+{
+    self->ftrunc_fd = arg0;
+    self->ftrunc_len = arg1;
+    self->ftrunc_ts = walltimestamp/1000;
+}
+
+syscall::ftruncate:return
+/TRACED && self->ftrunc_ts/
+{
+    printf("MACTRACE_SYSCALL %d %d ftruncate %d %d %d %d %d\n",
+        pid, tid, (int)arg1, errno, self->ftrunc_ts, self->ftrunc_fd, self->ftrunc_len);
+    self->ftrunc_ts = 0;
+}
+
+syscall::link:entry
+/TRACED/
+{
+    self->link_old = copyinstr(arg0);
+    self->link_new = copyinstr(arg1);
+    self->link_ts = walltimestamp/1000;
+}
+
+syscall::link:return
+/TRACED && self->link_old != NULL/
+{
+    printf("MACTRACE_SYSCALL %d %d link %d %d %d \"%s\" \"%s\"\n",
+        pid, tid, (int)arg1, errno, self->link_ts, self->link_old, self->link_new);
+    self->link_old = NULL;
+}
+
+syscall::symlink:entry
+/TRACED/
+{
+    self->sym_old = copyinstr(arg0);
+    self->sym_new = copyinstr(arg1);
+    self->sym_ts = walltimestamp/1000;
+}
+
+syscall::symlink:return
+/TRACED && self->sym_old != NULL/
+{
+    printf("MACTRACE_SYSCALL %d %d symlink %d %d %d \"%s\" \"%s\"\n",
+        pid, tid, (int)arg1, errno, self->sym_ts, self->sym_old, self->sym_new);
+    self->sym_old = NULL;
+}
+
+syscall::readlink:entry
+/TRACED/
+{
+    self->readlink_path = copyinstr(arg0);
+    self->readlink_ts = walltimestamp/1000;
+}
+
+syscall::readlink:return
+/TRACED && self->readlink_path != NULL/
+{
+    printf("MACTRACE_SYSCALL %d %d readlink %d %d %d \"%s\"\n",
+        pid, tid, (int)arg1, errno, self->readlink_ts, self->readlink_path);
+    self->readlink_path = NULL;
+}
+
+syscall::dup:entry
+/TRACED/
+{
+    self->dup_fd = arg0;
+    self->dup_ts = walltimestamp/1000;
+}
+
+syscall::dup:return
+/TRACED && self->dup_ts/
+{
+    printf("MACTRACE_SYSCALL %d %d dup %d %d %d %d\n",
+        pid, tid, (int)arg1, errno, self->dup_ts, self->dup_fd);
+    self->dup_ts = 0;
+}
+
+syscall::dup2:entry
+/TRACED/
+{
+    self->dup2_old = arg0;
+    self->dup2_new = arg1;
+    self->dup2_ts = walltimestamp/1000;
+}
+
+syscall::dup2:return
+/TRACED && self->dup2_ts/
+{
+    printf("MACTRACE_SYSCALL %d %d dup2 %d %d %d %d %d\n",
+        pid, tid, (int)arg1, errno, self->dup2_ts, self->dup2_old, self->dup2_new);
+    self->dup2_ts = 0;
+}
+
+syscall::fcntl:entry,
+syscall::fcntl_nocancel:entry
+/TRACED/
+{
+    self->fcntl_fd = arg0;
+    self->fcntl_cmd = arg1;
+    self->fcntl_arg = arg2;
+    self->fcntl_ts = walltimestamp/1000;
+}
+
+syscall::fcntl:return,
+syscall::fcntl_nocancel:return
+/TRACED && self->fcntl_ts/
+{
+    printf("MACTRACE_SYSCALL %d %d fcntl %d %d %d %d %d %d\n",
+        pid, tid, (int)arg1, errno, self->fcntl_ts, 
+        self->fcntl_fd, self->fcntl_cmd, self->fcntl_arg);
+    self->fcntl_ts = 0;
+}
+
+syscall::ioctl:entry
+/TRACED/
+{
+    self->ioctl_fd = arg0;
+    self->ioctl_req = arg1;
+    self->ioctl_ts = walltimestamp/1000;
+}
+
+syscall::ioctl:return
+/TRACED && self->ioctl_ts/
+{
+    printf("MACTRACE_SYSCALL %d %d ioctl %d %d %d %d 0x%lx\n",
+        pid, tid, (int)arg1, errno, self->ioctl_ts, self->ioctl_fd, self->ioctl_req);
+    self->ioctl_ts = 0;
+}
+
+syscall::fsync:entry,
+syscall::fsync_nocancel:entry
+/TRACED/
+{
+    self->fsync_fd = arg0;
+    self->fsync_ts = walltimestamp/1000;
+}
+
+syscall::fsync:return,
+syscall::fsync_nocancel:return
+/TRACED && self->fsync_ts/
+{
+    printf("MACTRACE_SYSCALL %d %d fsync %d %d %d %d\n",
+        pid, tid, (int)arg1, errno, self->fsync_ts, self->fsync_fd);
+    self->fsync_ts = 0;
+}
+
+syscall::getdirentries64:entry
+/TRACED/
+{
+    self->getdents_fd = arg0;
+    self->getdents_ts = walltimestamp/1000;
+}
+
+syscall::getdirentries64:return
+/TRACED && self->getdents_ts/
+{
+    printf("MACTRACE_SYSCALL %d %d getdirentries64 %d %d %d %d\n",
+        pid, tid, (int)arg1, errno, self->getdents_ts, self->getdents_fd);
+    self->getdents_ts = 0;
+}
+
+/* ============================================ */
+/* NETWORK OPERATIONS                           */
+/* ============================================ */
+
+syscall::socket:entry
+/TRACED/
+{
+    self->sock_domain = arg0;
+    self->sock_type = arg1;
+    self->sock_proto = arg2;
+    self->sock_ts = walltimestamp/1000;
+}
+
+syscall::socket:return
+/TRACED && self->sock_ts/
+{
+    printf("MACTRACE_SYSCALL %d %d socket %d %d %d %d %d %d\n",
+        pid, tid, (int)arg1, errno, self->sock_ts,
+        self->sock_domain, self->sock_type, self->sock_proto);
+    self->sock_ts = 0;
+}
+
+syscall::connect:entry,
+syscall::connect_nocancel:entry
+/TRACED/
+{
+    self->conn_fd = arg0;
+    self->conn_ts = walltimestamp/1000;
+}
+
+syscall::connect:return,
+syscall::connect_nocancel:return
+/TRACED && self->conn_ts/
+{
+    printf("MACTRACE_SYSCALL %d %d connect %d %d %d %d\n",
+        pid, tid, (int)arg1, errno, self->conn_ts, self->conn_fd);
+    self->conn_ts = 0;
+}
+
+syscall::bind:entry
+/TRACED/
+{
+    self->bind_fd = arg0;
+    self->bind_ts = walltimestamp/1000;
+}
+
+syscall::bind:return
+/TRACED && self->bind_ts/
+{
+    printf("MACTRACE_SYSCALL %d %d bind %d %d %d %d\n",
+        pid, tid, (int)arg1, errno, self->bind_ts, self->bind_fd);
+    self->bind_ts = 0;
+}
+
+syscall::listen:entry
+/TRACED/
+{
+    self->listen_fd = arg0;
+    self->listen_backlog = arg1;
+    self->listen_ts = walltimestamp/1000;
+}
+
+syscall::listen:return
+/TRACED && self->listen_ts/
+{
+    printf("MACTRACE_SYSCALL %d %d listen %d %d %d %d %d\n",
+        pid, tid, (int)arg1, errno, self->listen_ts, self->listen_fd, self->listen_backlog);
+    self->listen_ts = 0;
+}
+
+syscall::accept:entry,
+syscall::accept_nocancel:entry
+/TRACED/
+{
+    self->accept_fd = arg0;
+    self->accept_ts = walltimestamp/1000;
+}
+
+syscall::accept:return,
+syscall::accept_nocancel:return
+/TRACED && self->accept_ts/
+{
+    printf("MACTRACE_SYSCALL %d %d accept %d %d %d %d\n",
+        pid, tid, (int)arg1, errno, self->accept_ts, self->accept_fd);
+    self->accept_ts = 0;
+}
+
+syscall::sendto:entry,
+syscall::sendto_nocancel:entry
+/TRACED/
+{
+    self->sendto_fd = arg0;
+    self->sendto_len = arg2;
+    self->sendto_flags = arg3;
+    self->sendto_ts = walltimestamp/1000;
+}
+
+syscall::sendto:return,
+syscall::sendto_nocancel:return
+/TRACED && self->sendto_ts/
+{
+    printf("MACTRACE_SYSCALL %d %d sendto %d %d %d %d %d 0x%x\n",
+        pid, tid, (int)arg1, errno, self->sendto_ts,
+        self->sendto_fd, self->sendto_len, self->sendto_flags);
+    self->sendto_ts = 0;
+}
+
+syscall::recvfrom:entry,
+syscall::recvfrom_nocancel:entry
+/TRACED/
+{
+    self->recvfrom_fd = arg0;
+    self->recvfrom_len = arg2;
+    self->recvfrom_flags = arg3;
+    self->recvfrom_ts = walltimestamp/1000;
+}
+
+syscall::recvfrom:return,
+syscall::recvfrom_nocancel:return
+/TRACED && self->recvfrom_ts/
+{
+    printf("MACTRACE_SYSCALL %d %d recvfrom %d %d %d %d %d 0x%x\n",
+        pid, tid, (int)arg1, errno, self->recvfrom_ts,
+        self->recvfrom_fd, self->recvfrom_len, self->recvfrom_flags);
+    self->recvfrom_ts = 0;
+}
+
+syscall::shutdown:entry
+/TRACED/
+{
+    self->shut_fd = arg0;
+    self->shut_how = arg1;
+    self->shut_ts = walltimestamp/1000;
+}
+
+syscall::shutdown:return
+/TRACED && self->shut_ts/
+{
+    printf("MACTRACE_SYSCALL %d %d shutdown %d %d %d %d %d\n",
+        pid, tid, (int)arg1, errno, self->shut_ts, self->shut_fd, self->shut_how);
+    self->shut_ts = 0;
+}
+
+syscall::setsockopt:entry
+/TRACED/
+{
+    self->sso_fd = arg0;
+    self->sso_level = arg1;
+    self->sso_opt = arg2;
+    self->sso_ts = walltimestamp/1000;
+}
+
+syscall::setsockopt:return
+/TRACED && self->sso_ts/
+{
+    printf("MACTRACE_SYSCALL %d %d setsockopt %d %d %d %d %d %d\n",
+        pid, tid, (int)arg1, errno, self->sso_ts,
+        self->sso_fd, self->sso_level, self->sso_opt);
+    self->sso_ts = 0;
+}
+
+syscall::getsockopt:entry
+/TRACED/
+{
+    self->gso_fd = arg0;
+    self->gso_level = arg1;
+    self->gso_opt = arg2;
+    self->gso_ts = walltimestamp/1000;
+}
+
+syscall::getsockopt:return
+/TRACED && self->gso_ts/
+{
+    printf("MACTRACE_SYSCALL %d %d getsockopt %d %d %d %d %d %d\n",
+        pid, tid, (int)arg1, errno, self->gso_ts,
+        self->gso_fd, self->gso_level, self->gso_opt);
+    self->gso_ts = 0;
+}
+
+/* ============================================ */
+/* MEMORY OPERATIONS                            */
+/* ============================================ */
+
+syscall::mmap:entry
+/TRACED/
+{
+    self->mmap_len = arg1;
+    self->mmap_prot = arg2;
+    self->mmap_flags = arg3;
+    self->mmap_fd = arg4;
+    self->mmap_off = arg5;
+    self->mmap_ts = walltimestamp/1000;
+}
+
+syscall::mmap:return
+/TRACED && self->mmap_ts/
+{
+    printf("MACTRACE_SYSCALL %d %d mmap %p %d %d 0x%x %d 0x%x %d %d\n",
+        pid, tid, arg1, errno, self->mmap_ts,
+        self->mmap_len, self->mmap_prot, self->mmap_flags, self->mmap_fd, self->mmap_off);
+    self->mmap_ts = 0;
+}
+
+syscall::munmap:entry
+/TRACED/
+{
+    self->munmap_addr = arg0;
+    self->munmap_len = arg1;
+    self->munmap_ts = walltimestamp/1000;
+}
+
+syscall::munmap:return
+/TRACED && self->munmap_ts/
+{
+    printf("MACTRACE_SYSCALL %d %d munmap %d %d %d 0x%lx %d\n",
+        pid, tid, (int)arg1, errno, self->munmap_ts, self->munmap_addr, self->munmap_len);
+    self->munmap_ts = 0;
+}
+
+syscall::mprotect:entry
+/TRACED/
+{
+    self->mprot_addr = arg0;
+    self->mprot_len = arg1;
+    self->mprot_prot = arg2;
+    self->mprot_ts = walltimestamp/1000;
+}
+
+syscall::mprotect:return
+/TRACED && self->mprot_ts/
+{
+    printf("MACTRACE_SYSCALL %d %d mprotect %d %d %d 0x%lx %d %d\n",
+        pid, tid, (int)arg1, errno, self->mprot_ts,
+        self->mprot_addr, self->mprot_len, self->mprot_prot);
+    self->mprot_ts = 0;
+}
+
+/* ============================================ */
+/* IPC / MISC                                   */
+/* ============================================ */
+
+syscall::pipe:return
+/TRACED/
+{
+    printf("MACTRACE_SYSCALL %d %d pipe %d %d %d\n",
+        pid, tid, (int)arg1, errno, walltimestamp/1000);
+}
+
+syscall::kill:entry
+/TRACED/
+{
+    self->kill_pid = arg0;
+    self->kill_sig = arg1;
+    self->kill_ts = walltimestamp/1000;
+}
+
+syscall::kill:return
+/TRACED && self->kill_ts/
+{
+    printf("MACTRACE_SYSCALL %d %d kill %d %d %d %d %d\n",
+        pid, tid, (int)arg1, errno, self->kill_ts, self->kill_pid, self->kill_sig);
+    self->kill_ts = 0;
+}
+
+syscall::getpid:return
+/TRACED/
+{
+    printf("MACTRACE_SYSCALL %d %d getpid %d %d %d\n",
+        pid, tid, (int)arg1, errno, walltimestamp/1000);
+}
+
+syscall::getppid:return
+/TRACED/
+{
+    printf("MACTRACE_SYSCALL %d %d getppid %d %d %d\n",
+        pid, tid, (int)arg1, errno, walltimestamp/1000);
+}
+
+syscall::getuid:return
+/TRACED/
+{
+    printf("MACTRACE_SYSCALL %d %d getuid %d %d %d\n",
+        pid, tid, (int)arg1, errno, walltimestamp/1000);
+}
+
+syscall::geteuid:return
+/TRACED/
+{
+    printf("MACTRACE_SYSCALL %d %d geteuid %d %d %d\n",
+        pid, tid, (int)arg1, errno, walltimestamp/1000);
+}
+
+syscall::getgid:return
+/TRACED/
+{
+    printf("MACTRACE_SYSCALL %d %d getgid %d %d %d\n",
+        pid, tid, (int)arg1, errno, walltimestamp/1000);
+}
+
+syscall::getegid:return
+/TRACED/
+{
+    printf("MACTRACE_SYSCALL %d %d getegid %d %d %d\n",
+        pid, tid, (int)arg1, errno, walltimestamp/1000);
+}
+
+/* ============================================ */
+/* POLLING / SELECT                             */
+/* ============================================ */
+
+syscall::select:entry,
+syscall::select_nocancel:entry
+/TRACED/
+{
+    self->sel_nfds = arg0;
+    self->sel_ts = walltimestamp/1000;
+}
+
+syscall::select:return,
+syscall::select_nocancel:return
+/TRACED && self->sel_ts/
+{
+    printf("MACTRACE_SYSCALL %d %d select %d %d %d %d\n",
+        pid, tid, (int)arg1, errno, self->sel_ts, self->sel_nfds);
+    self->sel_ts = 0;
+}
+
+syscall::poll:entry,
+syscall::poll_nocancel:entry
+/TRACED/
+{
+    self->poll_nfds = arg1;
+    self->poll_timeout = arg2;
+    self->poll_ts = walltimestamp/1000;
+}
+
+syscall::poll:return,
+syscall::poll_nocancel:return
+/TRACED && self->poll_ts/
+{
+    printf("MACTRACE_SYSCALL %d %d poll %d %d %d %d %d\n",
+        pid, tid, (int)arg1, errno, self->poll_ts, self->poll_nfds, self->poll_timeout);
+    self->poll_ts = 0;
+}
+
+syscall::kevent:entry,
+syscall::kevent64:entry
+/TRACED/
+{
+    self->kev_fd = arg0;
+    self->kev_ts = walltimestamp/1000;
+}
+
+syscall::kevent:return,
+syscall::kevent64:return
+/TRACED && self->kev_ts/
+{
+    printf("MACTRACE_SYSCALL %d %d kevent %d %d %d %d\n",
+        pid, tid, (int)arg1, errno, self->kev_ts, self->kev_fd);
+    self->kev_ts = 0;
+}
+
+syscall::kqueue:return
+/TRACED/
+{
+    printf("MACTRACE_SYSCALL %d %d kqueue %d %d %d\n",
+        pid, tid, (int)arg1, errno, walltimestamp/1000);
+}
