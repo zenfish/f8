@@ -23,6 +23,9 @@ sudo ./mactrace -t 10 ./long_running_command
 
 # Verbose mode (shows DTrace activity on stderr)
 sudo ./mactrace -v -o trace.json ./my_program
+
+# Show untraced syscalls (detect gaps in coverage)
+sudo ./mactrace -e -o trace.json ./my_program
 ```
 
 ## Output Format
@@ -169,6 +172,20 @@ The `process_events` array contains these event types:
 - `exit` — Process exited
 - `signal_send` — Signal sent
 - `signal_handle` — Signal handled
+
+## Detecting Untraced Syscalls
+
+Use `-e`/`--untraced` to identify syscalls your traced process makes that aren't explicitly captured:
+
+```bash
+sudo ./mactrace -e -o trace.json /bin/ls
+# Output includes:
+# --- Untraced syscalls ---
+#   getattrlistbulk: 2
+#   fstatat64: 1
+```
+
+This helps identify gaps in coverage. Untraced syscalls are still *counted* (via a catch-all DTrace probe), just not decoded with detailed arguments.
 
 ## Limitations
 
