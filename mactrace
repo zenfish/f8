@@ -51,11 +51,14 @@ DTRACE_SCRIPT = r'''
 dtrace:::BEGIN
 {
     printf("MACTRACE_START %d %d\n", $target_pid, walltimestamp/1000);
+    /* Initialize aggregation so it exists for END */
+    @all_syscalls["__init__"] = count();
 }
 
 dtrace:::END
 {
     printf("MACTRACE_END %d\n", walltimestamp/1000);
+    printa("MACTRACE_ALLSYSCALL %s %@d\n", @all_syscalls);
 }
 
 /* Mark child processes on first syscall */
@@ -64,6 +67,13 @@ syscall:::entry
 {
     self->is_child = 1;
     printf("MACTRACE_CHILD %d %d %d\n", pid, ppid, walltimestamp/1000);
+}
+
+/* Count ALL syscalls for summary (to detect untraced syscalls) */
+syscall:::entry
+/TRACED/
+{
+    @all_syscalls[probefunc] = count();
 }
 
 /* ============================================ */
@@ -1177,6 +1187,33 @@ class MacTrace:
         self.target_stdout: List[str] = []
         self.target_stderr: List[str] = []
         self.exit_code: int = 0
+        self.all_syscall_counts: Dict[str, int] = {}  # All syscalls seen (from catch-all probe)
+    
+    # Syscalls we explicitly trace (for detecting untraced ones)
+    TRACED_SYSCALLS = {
+        # Process
+        "fork", "execve", "posix_spawn", "exit", "wait4", "wait4_nocancel",
+        # File ops
+        "open", "open_nocancel", "openat", "openat_nocancel", "close", "close_nocancel",
+        "read", "read_nocancel", "pread", "pread_nocancel",
+        "write", "write_nocancel", "pwrite", "pwrite_nocancel",
+        "stat64", "lstat64", "fstat64", "access", "faccessat",
+        "unlink", "rename", "mkdir", "rmdir", "chdir", "fchdir",
+        "chmod", "fchmod", "truncate", "ftruncate",
+        "link", "symlink", "readlink",
+        "dup", "dup2", "fcntl", "fcntl_nocancel", "ioctl", "fsync", "fsync_nocancel",
+        "getdirentries64",
+        # Network
+        "socket", "connect", "connect_nocancel", "bind", "listen", "accept", "accept_nocancel",
+        "sendto", "sendto_nocancel", "recvfrom", "recvfrom_nocancel",
+        "shutdown", "setsockopt", "getsockopt",
+        # Memory
+        "mmap", "munmap", "mprotect",
+        # Misc
+        "pipe", "select", "select_nocancel", "poll", "poll_nocancel",
+        "kill", "sigaction", "sigprocmask",
+        "getpid", "getppid", "getuid", "geteuid", "getgid", "getegid",
+    }
     
     def _signal_name(self, sig: int) -> str:
         """Convert signal number to name"""
@@ -1227,6 +1264,13 @@ class MacTrace:
             elif event_type == "MACTRACE_END":
                 # MACTRACE_END timestamp_us
                 self.end_timestamp = int(parts[1])
+                
+            elif event_type == "MACTRACE_ALLSYSCALL":
+                # MACTRACE_ALLSYSCALL syscall_name count
+                syscall_name = parts[1]
+                if syscall_name != "__init__":  # Skip our initialization marker
+                    count = int(parts[2])
+                    self.all_syscall_counts[syscall_name] = count
                 
             elif event_type == "MACTRACE_CHILD":
                 # MACTRACE_CHILD pid ppid timestamp_us - first syscall from a child
@@ -1738,12 +1782,14 @@ class MacTrace:
 def main():
     parser = argparse.ArgumentParser(
         description="mactrace - strace-like utility for macOS using DTrace",
-        epilog="Requires sudo for DTrace. Example: sudo ./mactrace ls -la"
+        epilog="Requires root/sudo/EUID=0 for DTrace. E.g.: sudo ./mactrace ls -la"
     )
     parser.add_argument("-o", "--output", help="Output file (default: stdout)")
     parser.add_argument("-t", "--timeout", type=int, help="Timeout in seconds")
     parser.add_argument("-v", "--verbose", action="store_true", help="Verbose output to stderr")
     parser.add_argument("-p", "--pretty", action="store_true", help="Pretty-print JSON output")
+    parser.add_argument("-e", "--untraced", action="store_true", 
+                        help="Show untraced syscalls summary to stderr")
     parser.add_argument("command", nargs=argparse.REMAINDER, help="Command to trace")
     
     args = parser.parse_args()
@@ -1775,6 +1821,22 @@ def main():
     print(f"PID: {result.target_pid}, Exit code: {result.exit_code}", file=sys.stderr)
     print(f"Syscalls: {result.syscall_count}, Processes: {len(result.pids_traced)}", file=sys.stderr)
     print(f"Duration: {result.duration_ms:.1f}ms", file=sys.stderr)
+    
+    # Show untraced syscalls if requested
+    if args.untraced and tracer.all_syscall_counts:
+        untraced = {}
+        for syscall, count in tracer.all_syscall_counts.items():
+            # Check if this syscall (or its _nocancel variant) is explicitly traced
+            base_name = syscall.replace("_nocancel", "")
+            if syscall not in tracer.TRACED_SYSCALLS and base_name not in tracer.TRACED_SYSCALLS:
+                untraced[syscall] = count
+        
+        if untraced:
+            print(f"--- Untraced syscalls ---", file=sys.stderr)
+            for syscall, count in sorted(untraced.items(), key=lambda x: -x[1]):
+                print(f"  {syscall}: {count}", file=sys.stderr)
+        else:
+            print(f"--- All syscalls traced ---", file=sys.stderr)
     
     # Output JSON
     output_data = json.dumps(result.to_dict(), indent=2 if args.pretty else None)
