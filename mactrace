@@ -1455,8 +1455,9 @@ class MacTrace:
             
             self.pids_traced.add(pid)
             
+            # tokens[5] is the timestamp, actual args start at tokens[6]
             # Parse syscall-specific arguments
-            args = self._parse_syscall_args(syscall, tokens[5:])
+            args = self._parse_syscall_args(syscall, tokens[6:])
             
             # Add errno name
             args["errno_name"] = self.ERRNO_NAMES.get(errno_val, f"E{errno_val}")
