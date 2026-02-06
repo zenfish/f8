@@ -320,6 +320,23 @@ syscall::fstat64:return
     self->fstat_ts = 0;
 }
 
+syscall::fstatat64:entry
+/TRACED/
+{
+    self->fstatat_fd = arg0;
+    self->fstatat_path = copyinstr(arg1);
+    self->fstatat_flag = arg3;
+    self->fstatat_ts = walltimestamp/1000;
+}
+
+syscall::fstatat64:return
+/TRACED && self->fstatat_path != NULL/
+{
+    printf("MACTRACE_SYSCALL %d %d fstatat64 %d %d %d %d \"%s\" 0x%x\n",
+        pid, tid, (int)arg1, errno, self->fstatat_ts, self->fstatat_fd, self->fstatat_path, self->fstatat_flag);
+    self->fstatat_path = NULL;
+}
+
 syscall::access:entry
 /TRACED/
 {
@@ -655,6 +672,21 @@ syscall::getdirentries64:return
     printf("MACTRACE_SYSCALL %d %d getdirentries64 %d %d %d %d\n",
         pid, tid, (int)arg1, errno, self->getdents_ts, self->getdents_fd);
     self->getdents_ts = 0;
+}
+
+syscall::getattrlistbulk:entry
+/TRACED/
+{
+    self->gab_fd = arg0;
+    self->gab_ts = walltimestamp/1000;
+}
+
+syscall::getattrlistbulk:return
+/TRACED && self->gab_ts/
+{
+    printf("MACTRACE_SYSCALL %d %d getattrlistbulk %d %d %d %d\n",
+        pid, tid, (int)arg1, errno, self->gab_ts, self->gab_fd);
+    self->gab_ts = 0;
 }
 
 /* ============================================ */
@@ -1197,12 +1229,12 @@ class MacTrace:
         "open", "open_nocancel", "openat", "openat_nocancel", "close", "close_nocancel",
         "read", "read_nocancel", "pread", "pread_nocancel",
         "write", "write_nocancel", "pwrite", "pwrite_nocancel",
-        "stat64", "lstat64", "fstat64", "access", "faccessat",
+        "stat64", "lstat64", "fstat64", "fstatat64", "access", "faccessat",
         "unlink", "rename", "mkdir", "rmdir", "chdir", "fchdir",
         "chmod", "fchmod", "truncate", "ftruncate",
         "link", "symlink", "readlink",
         "dup", "dup2", "fcntl", "fcntl_nocancel", "ioctl", "fsync", "fsync_nocancel",
-        "getdirentries64",
+        "getdirentries64", "getattrlistbulk",
         # Network
         "socket", "connect", "connect_nocancel", "bind", "listen", "accept", "accept_nocancel",
         "sendto", "sendto_nocancel", "recvfrom", "recvfrom_nocancel",
@@ -1501,6 +1533,18 @@ class MacTrace:
                     result["path"] = clean_arg(args[0])
                     
             elif syscall == "fstat64":
+                if len(args) >= 1:
+                    result["fd"] = int(args[0])
+                    
+            elif syscall == "fstatat64":
+                if len(args) >= 1:
+                    result["dirfd"] = int(args[0])
+                if len(args) >= 2:
+                    result["path"] = clean_arg(args[1])
+                if len(args) >= 3:
+                    result["flag"] = args[2]
+                    
+            elif syscall == "getattrlistbulk":
                 if len(args) >= 1:
                     result["fd"] = int(args[0])
                     
