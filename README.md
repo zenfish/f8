@@ -220,6 +220,50 @@ jq '.events[] | select(.syscall | test("socket|connect|send|recv"))' trace.json
 jq --arg pid "12346" '.events[] | select(.pid == ($pid | tonumber))' trace.json
 ```
 
+## Analysis Tools
+
+### mactrace_analyze.py
+
+Analyze trace output to get a human-readable summary:
+
+```bash
+# Basic analysis
+./mactrace_analyze.py trace.json
+
+# Filter by category
+./mactrace_analyze.py trace.json --category file
+./mactrace_analyze.py trace.json --category network
+
+# Show only errors
+./mactrace_analyze.py trace.json --errors-only
+
+# Output JSON for further processing
+./mactrace_analyze.py trace.json --json
+```
+
+Output includes:
+- Syscall category breakdown (file/network/process/memory/signal)
+- Top syscalls by frequency
+- Files accessed with R/W/S flags
+- Network connections
+- Process tree
+- Error summary
+
+### mactrace_timeline.py
+
+Generate an interactive HTML timeline:
+
+```bash
+./mactrace_timeline.py trace.json -o timeline.html
+```
+
+Features:
+- Sortable/searchable DataTables interface
+- Color-coded syscall categories
+- Filter buttons (All/File/Network/Process/Memory/Errors)
+- fd→path tracking for file operations
+- Error highlighting
+
 ## Future Improvements
 
 - [ ] Socket address decoding (IP/port extraction)
