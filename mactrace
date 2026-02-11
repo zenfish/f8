@@ -26,6 +26,56 @@ from pathlib import Path
 from typing import Optional, List, Dict, Any
 
 
+def render_terminal_lines(lines: List[str]) -> List[str]:
+    """
+    Render a list of lines as they would appear on a terminal.
+    
+    Handles CR (carriage return) which should move cursor to line start,
+    not create a new line. This collapses progress bar updates that use
+    \r to overwrite previous content.
+    """
+    if not lines:
+        return []
+    
+    def is_progress_line(s: str) -> bool:
+        """Check if line looks like a wget progress update."""
+        stripped = s.strip()
+        return (
+            stripped.startswith(('0K', '1', '2', '3', '4', '5', '6', '7', '8', '9')) and
+            '.....' in s
+        )
+    
+    # Reconstruct with explicit control of line breaks
+    # Lines from splitlines() that came from \r should overwrite previous
+    result_lines = []
+    current_line = ""
+    current_is_progress = False
+    
+    for line in lines:
+        line_is_progress = is_progress_line(line)
+        
+        # Progress lines only overwrite other progress lines (or empty)
+        if line_is_progress and (current_is_progress or current_line == ""):
+            # This progress line overwrites the current progress line
+            current_line = line
+            current_is_progress = True
+        elif line == "" and current_line:
+            # Empty line after content - could be a \r followed by nothing
+            # Keep current line, don't append empty
+            pass
+        else:
+            # Normal new line - flush current and start new
+            if current_line:
+                result_lines.append(current_line)
+            current_line = line
+            current_is_progress = line_is_progress
+    
+    # Don't forget the last line
+    if current_line:
+        result_lines.append(current_line)
+    
+    return result_lines
+
 
 # DTrace script (loaded from template)
 DTRACE_SCRIPT = r'''
@@ -38,9 +88,10 @@ DTRACE_SCRIPT = r'''
 
 #pragma D option quiet
 #pragma D option switchrate=10hz
-#pragma D option bufsize=16m
-#pragma D option dynvarsize=32m
-#pragma D option strsize=1024
+#pragma D option bufsize=$BUFSIZE$
+#pragma D option dynvarsize=$DYNVARSIZE$
+#pragma D option strsize=$STRSIZE$
+$RAWIO_PRAGMA$
 
 /*
  * TRACED predicate - matches target and all descendants
@@ -690,131 +741,8 @@ syscall::getattrlistbulk:return
 }
 
 /* ============================================ */
-/* NETWORK OPERATIONS                           */
+/* NETWORK UTILITY SYSCALLS                     */
 /* ============================================ */
-
-syscall::socket:entry
-/TRACED/
-{
-    self->sock_domain = arg0;
-    self->sock_type = arg1;
-    self->sock_proto = arg2;
-    self->sock_ts = walltimestamp/1000;
-}
-
-syscall::socket:return
-/TRACED && self->sock_ts/
-{
-    printf("MACTRACE_SYSCALL %d %d socket %d %d %d %d %d %d\n",
-        pid, tid, (int)arg1, errno, self->sock_ts,
-        self->sock_domain, self->sock_type, self->sock_proto);
-    self->sock_ts = 0;
-}
-
-syscall::connect:entry,
-syscall::connect_nocancel:entry
-/TRACED/
-{
-    self->conn_fd = arg0;
-    self->conn_ts = walltimestamp/1000;
-}
-
-syscall::connect:return,
-syscall::connect_nocancel:return
-/TRACED && self->conn_ts/
-{
-    printf("MACTRACE_SYSCALL %d %d connect %d %d %d %d\n",
-        pid, tid, (int)arg1, errno, self->conn_ts, self->conn_fd);
-    self->conn_ts = 0;
-}
-
-syscall::bind:entry
-/TRACED/
-{
-    self->bind_fd = arg0;
-    self->bind_ts = walltimestamp/1000;
-}
-
-syscall::bind:return
-/TRACED && self->bind_ts/
-{
-    printf("MACTRACE_SYSCALL %d %d bind %d %d %d %d\n",
-        pid, tid, (int)arg1, errno, self->bind_ts, self->bind_fd);
-    self->bind_ts = 0;
-}
-
-syscall::listen:entry
-/TRACED/
-{
-    self->listen_fd = arg0;
-    self->listen_backlog = arg1;
-    self->listen_ts = walltimestamp/1000;
-}
-
-syscall::listen:return
-/TRACED && self->listen_ts/
-{
-    printf("MACTRACE_SYSCALL %d %d listen %d %d %d %d %d\n",
-        pid, tid, (int)arg1, errno, self->listen_ts, self->listen_fd, self->listen_backlog);
-    self->listen_ts = 0;
-}
-
-syscall::accept:entry,
-syscall::accept_nocancel:entry
-/TRACED/
-{
-    self->accept_fd = arg0;
-    self->accept_ts = walltimestamp/1000;
-}
-
-syscall::accept:return,
-syscall::accept_nocancel:return
-/TRACED && self->accept_ts/
-{
-    printf("MACTRACE_SYSCALL %d %d accept %d %d %d %d\n",
-        pid, tid, (int)arg1, errno, self->accept_ts, self->accept_fd);
-    self->accept_ts = 0;
-}
-
-syscall::sendto:entry,
-syscall::sendto_nocancel:entry
-/TRACED/
-{
-    self->sendto_fd = arg0;
-    self->sendto_len = arg2;
-    self->sendto_flags = arg3;
-    self->sendto_ts = walltimestamp/1000;
-}
-
-syscall::sendto:return,
-syscall::sendto_nocancel:return
-/TRACED && self->sendto_ts/
-{
-    printf("MACTRACE_SYSCALL %d %d sendto %d %d %d %d %d 0x%x\n",
-        pid, tid, (int)arg1, errno, self->sendto_ts,
-        self->sendto_fd, self->sendto_len, self->sendto_flags);
-    self->sendto_ts = 0;
-}
-
-syscall::recvfrom:entry,
-syscall::recvfrom_nocancel:entry
-/TRACED/
-{
-    self->recvfrom_fd = arg0;
-    self->recvfrom_len = arg2;
-    self->recvfrom_flags = arg3;
-    self->recvfrom_ts = walltimestamp/1000;
-}
-
-syscall::recvfrom:return,
-syscall::recvfrom_nocancel:return
-/TRACED && self->recvfrom_ts/
-{
-    printf("MACTRACE_SYSCALL %d %d recvfrom %d %d %d %d %d 0x%x\n",
-        pid, tid, (int)arg1, errno, self->recvfrom_ts,
-        self->recvfrom_fd, self->recvfrom_len, self->recvfrom_flags);
-    self->recvfrom_ts = 0;
-}
 
 syscall::shutdown:entry
 /TRACED/
@@ -866,6 +794,572 @@ syscall::getsockopt:return
         pid, tid, (int)arg1, errno, self->gso_ts,
         self->gso_fd, self->gso_level, self->gso_opt);
     self->gso_ts = 0;
+}
+
+syscall::socketpair:entry
+/TRACED/
+{
+    self->spair_domain = arg0;
+    self->spair_type = arg1;
+    self->spair_proto = arg2;
+    self->spair_ts = walltimestamp/1000;
+}
+
+syscall::socketpair:return
+/TRACED && self->spair_ts/
+{
+    printf("MACTRACE_SYSCALL %d %d socketpair %d %d %d %d %d %d\n",
+        pid, tid, (int)arg1, errno, self->spair_ts,
+        self->spair_domain, self->spair_type, self->spair_proto);
+    self->spair_ts = 0;
+}
+
+/* ============================================ */
+/* SOCKET/NETWORK OPERATIONS                    */
+/* ============================================ */
+
+/*
+ * socket() - creates a socket
+ * int socket(int domain, int type, int protocol)
+ * domain: AF_INET=2, AF_INET6=30, AF_UNIX=1, AF_SYSTEM=32
+ * type: SOCK_STREAM=1, SOCK_DGRAM=2, SOCK_RAW=3
+ */
+syscall::socket:entry
+/TRACED/
+{
+    self->sock_domain = arg0;
+    self->sock_type = arg1;
+    self->sock_proto = arg2;
+    self->sock_ts = walltimestamp/1000;
+}
+
+syscall::socket:return
+/TRACED && self->sock_ts/
+{
+    printf("MACTRACE_SYSCALL %d %d socket %d %d %d %d %d %d\n",
+        pid, tid, (int)arg1, errno, self->sock_ts,
+        self->sock_domain, self->sock_type, self->sock_proto);
+    self->sock_ts = 0;
+}
+
+/*
+ * connect() - connect to a socket address
+ * int connect(int sockfd, const struct sockaddr *addr, socklen_t addrlen)
+ * Captures sockaddr bytes for parsing (IPv4, IPv6, Unix)
+ */
+syscall::connect:entry,
+syscall::connect_nocancel:entry
+/TRACED/
+{
+    self->conn_fd = arg0;
+    self->conn_addr = arg1;
+    self->conn_len = arg2;
+    self->conn_ts = walltimestamp/1000;
+}
+
+syscall::connect:return,
+syscall::connect_nocancel:return
+/TRACED && self->conn_ts && self->conn_len > 0 && self->conn_len <= 128/
+{
+    /* Output sockaddr as hex bytes for Python parsing */
+    this->sa = (struct sockaddr *)copyin(self->conn_addr, self->conn_len);
+    this->family = this->sa->sa_family;
+    
+    /* For IPv4: extract port and address */
+    printf("MACTRACE_SOCKADDR %d %d connect %d %d %d %d %d ",
+        pid, tid, (int)arg1, errno, self->conn_ts, self->conn_fd, this->family);
+    tracemem(this->sa, 128, self->conn_len);
+    printf("\n");
+    self->conn_ts = 0;
+}
+
+syscall::connect:return,
+syscall::connect_nocancel:return
+/TRACED && self->conn_ts && (self->conn_len == 0 || self->conn_len > 128)/
+{
+    /* Fallback for zero or oversized sockaddr */
+    printf("MACTRACE_SYSCALL %d %d connect %d %d %d %d\n",
+        pid, tid, (int)arg1, errno, self->conn_ts, self->conn_fd);
+    self->conn_ts = 0;
+}
+
+/*
+ * bind() - bind socket to local address
+ * int bind(int sockfd, const struct sockaddr *addr, socklen_t addrlen)
+ */
+syscall::bind:entry
+/TRACED/
+{
+    self->bind_fd = arg0;
+    self->bind_addr = arg1;
+    self->bind_len = arg2;
+    self->bind_ts = walltimestamp/1000;
+}
+
+syscall::bind:return
+/TRACED && self->bind_ts && self->bind_len > 0 && self->bind_len <= 128/
+{
+    this->sa = (struct sockaddr *)copyin(self->bind_addr, self->bind_len);
+    this->family = this->sa->sa_family;
+    
+    printf("MACTRACE_SOCKADDR %d %d bind %d %d %d %d %d ",
+        pid, tid, (int)arg1, errno, self->bind_ts, self->bind_fd, this->family);
+    tracemem(this->sa, 128, self->bind_len);
+    printf("\n");
+    self->bind_ts = 0;
+}
+
+syscall::bind:return
+/TRACED && self->bind_ts && (self->bind_len == 0 || self->bind_len > 128)/
+{
+    printf("MACTRACE_SYSCALL %d %d bind %d %d %d %d\n",
+        pid, tid, (int)arg1, errno, self->bind_ts, self->bind_fd);
+    self->bind_ts = 0;
+}
+
+/*
+ * listen() - mark socket as passive
+ * int listen(int sockfd, int backlog)
+ */
+syscall::listen:entry
+/TRACED/
+{
+    self->listen_fd = arg0;
+    self->listen_backlog = arg1;
+    self->listen_ts = walltimestamp/1000;
+}
+
+syscall::listen:return
+/TRACED && self->listen_ts/
+{
+    printf("MACTRACE_SYSCALL %d %d listen %d %d %d %d %d\n",
+        pid, tid, (int)arg1, errno, self->listen_ts, self->listen_fd, self->listen_backlog);
+    self->listen_ts = 0;
+}
+
+/*
+ * accept() - accept incoming connection
+ * int accept(int sockfd, struct sockaddr *addr, socklen_t *addrlen)
+ */
+syscall::accept:entry,
+syscall::accept_nocancel:entry
+/TRACED/
+{
+    self->accept_fd = arg0;
+    self->accept_addr = arg1;
+    self->accept_lenp = arg2;
+    self->accept_ts = walltimestamp/1000;
+}
+
+syscall::accept:return,
+syscall::accept_nocancel:return
+/TRACED && self->accept_ts && self->accept_addr != 0 && arg1 >= 0/
+{
+    /* On success, read the populated sockaddr */
+    this->addrlen = *(socklen_t *)copyin(self->accept_lenp, sizeof(socklen_t));
+    this->sa = (struct sockaddr *)copyin(self->accept_addr, 
+        this->addrlen > 128 ? 128 : this->addrlen);
+    this->family = this->sa->sa_family;
+    
+    printf("MACTRACE_SOCKADDR %d %d accept %d %d %d %d %d ",
+        pid, tid, (int)arg1, errno, self->accept_ts, self->accept_fd, this->family);
+    tracemem(this->sa, 128, this->addrlen > 128 ? 128 : this->addrlen);
+    printf("\n");
+    self->accept_ts = 0;
+}
+
+syscall::accept:return,
+syscall::accept_nocancel:return
+/TRACED && self->accept_ts && (self->accept_addr == 0 || arg1 < 0)/
+{
+    printf("MACTRACE_SYSCALL %d %d accept %d %d %d %d\n",
+        pid, tid, (int)arg1, errno, self->accept_ts, self->accept_fd);
+    self->accept_ts = 0;
+}
+
+/*
+ * sendto() - send to specific address
+ * ssize_t sendto(int fd, const void *buf, size_t len, int flags,
+ *                const struct sockaddr *dest, socklen_t destlen)
+ */
+syscall::sendto:entry,
+syscall::sendto_nocancel:entry
+/TRACED/
+{
+    self->sendto_fd = arg0;
+    self->sendto_len = arg2;
+    self->sendto_flags = arg3;
+    self->sendto_addr = arg4;
+    self->sendto_addrlen = arg5;
+    self->sendto_ts = walltimestamp/1000;
+}
+
+syscall::sendto:return,
+syscall::sendto_nocancel:return
+/TRACED && self->sendto_ts && self->sendto_addr != 0 && self->sendto_addrlen > 0/
+{
+    this->sa = (struct sockaddr *)copyin(self->sendto_addr, 
+        self->sendto_addrlen > 128 ? 128 : self->sendto_addrlen);
+    this->family = this->sa->sa_family;
+    
+    printf("MACTRACE_SOCKADDR %d %d sendto %d %d %d %d %d %d 0x%x ",
+        pid, tid, (int)arg1, errno, self->sendto_ts,
+        self->sendto_fd, self->sendto_len, this->family, self->sendto_flags);
+    tracemem(this->sa, 128, self->sendto_addrlen > 128 ? 128 : self->sendto_addrlen);
+    printf("\n");
+    self->sendto_ts = 0;
+}
+
+syscall::sendto:return,
+syscall::sendto_nocancel:return
+/TRACED && self->sendto_ts && (self->sendto_addr == 0 || self->sendto_addrlen == 0)/
+{
+    /* No destination address (connected socket) */
+    printf("MACTRACE_SYSCALL %d %d sendto %d %d %d %d %d 0x%x\n",
+        pid, tid, (int)arg1, errno, self->sendto_ts,
+        self->sendto_fd, self->sendto_len, self->sendto_flags);
+    self->sendto_ts = 0;
+}
+
+/*
+ * recvfrom() - receive with source address
+ * ssize_t recvfrom(int fd, void *buf, size_t len, int flags,
+ *                  struct sockaddr *src, socklen_t *srclen)
+ */
+syscall::recvfrom:entry,
+syscall::recvfrom_nocancel:entry
+/TRACED/
+{
+    self->recvfrom_fd = arg0;
+    self->recvfrom_len = arg2;
+    self->recvfrom_flags = arg3;
+    self->recvfrom_addr = arg4;
+    self->recvfrom_lenp = arg5;
+    self->recvfrom_ts = walltimestamp/1000;
+}
+
+syscall::recvfrom:return,
+syscall::recvfrom_nocancel:return
+/TRACED && self->recvfrom_ts && self->recvfrom_addr != 0 && arg1 >= 0/
+{
+    /* On success, read populated source address */
+    this->addrlen = *(socklen_t *)copyin(self->recvfrom_lenp, sizeof(socklen_t));
+    this->sa = (struct sockaddr *)copyin(self->recvfrom_addr,
+        this->addrlen > 128 ? 128 : this->addrlen);
+    this->family = this->sa->sa_family;
+    
+    printf("MACTRACE_SOCKADDR %d %d recvfrom %d %d %d %d %d %d 0x%x ",
+        pid, tid, (int)arg1, errno, self->recvfrom_ts,
+        self->recvfrom_fd, self->recvfrom_len, this->family, self->recvfrom_flags);
+    tracemem(this->sa, 128, this->addrlen > 128 ? 128 : this->addrlen);
+    printf("\n");
+    self->recvfrom_ts = 0;
+}
+
+syscall::recvfrom:return,
+syscall::recvfrom_nocancel:return
+/TRACED && self->recvfrom_ts && (self->recvfrom_addr == 0 || arg1 < 0)/
+{
+    printf("MACTRACE_SYSCALL %d %d recvfrom %d %d %d %d %d 0x%x\n",
+        pid, tid, (int)arg1, errno, self->recvfrom_ts,
+        self->recvfrom_fd, self->recvfrom_len, self->recvfrom_flags);
+    self->recvfrom_ts = 0;
+}
+
+/*
+ * getpeername() - get address of connected peer
+ * int getpeername(int sockfd, struct sockaddr *addr, socklen_t *addrlen)
+ */
+syscall::getpeername:entry
+/TRACED/
+{
+    self->gpn_fd = arg0;
+    self->gpn_addr = arg1;
+    self->gpn_lenp = arg2;
+    self->gpn_ts = walltimestamp/1000;
+}
+
+syscall::getpeername:return
+/TRACED && self->gpn_ts && errno == 0/
+{
+    this->addrlen = *(socklen_t *)copyin(self->gpn_lenp, sizeof(socklen_t));
+    this->sa = (struct sockaddr *)copyin(self->gpn_addr,
+        this->addrlen > 128 ? 128 : this->addrlen);
+    this->family = this->sa->sa_family;
+    
+    printf("MACTRACE_SOCKADDR %d %d getpeername %d %d %d %d %d ",
+        pid, tid, (int)arg1, errno, self->gpn_ts, self->gpn_fd, this->family);
+    tracemem(this->sa, 128, this->addrlen > 128 ? 128 : this->addrlen);
+    printf("\n");
+    self->gpn_ts = 0;
+}
+
+syscall::getpeername:return
+/TRACED && self->gpn_ts && errno != 0/
+{
+    printf("MACTRACE_SYSCALL %d %d getpeername %d %d %d %d\n",
+        pid, tid, (int)arg1, errno, self->gpn_ts, self->gpn_fd);
+    self->gpn_ts = 0;
+}
+
+/*
+ * getsockname() - get local socket address
+ * int getsockname(int sockfd, struct sockaddr *addr, socklen_t *addrlen)
+ */
+syscall::getsockname:entry
+/TRACED/
+{
+    self->gsn_fd = arg0;
+    self->gsn_addr = arg1;
+    self->gsn_lenp = arg2;
+    self->gsn_ts = walltimestamp/1000;
+}
+
+syscall::getsockname:return
+/TRACED && self->gsn_ts && errno == 0/
+{
+    this->addrlen = *(socklen_t *)copyin(self->gsn_lenp, sizeof(socklen_t));
+    this->sa = (struct sockaddr *)copyin(self->gsn_addr,
+        this->addrlen > 128 ? 128 : this->addrlen);
+    this->family = this->sa->sa_family;
+    
+    printf("MACTRACE_SOCKADDR %d %d getsockname %d %d %d %d %d ",
+        pid, tid, (int)arg1, errno, self->gsn_ts, self->gsn_fd, this->family);
+    tracemem(this->sa, 128, this->addrlen > 128 ? 128 : this->addrlen);
+    printf("\n");
+    self->gsn_ts = 0;
+}
+
+syscall::getsockname:return
+/TRACED && self->gsn_ts && errno != 0/
+{
+    printf("MACTRACE_SYSCALL %d %d getsockname %d %d %d %d\n",
+        pid, tid, (int)arg1, errno, self->gsn_ts, self->gsn_fd);
+    self->gsn_ts = 0;
+}
+
+/* ============================================ */
+/* SENDMSG/RECVMSG                              */
+/* ============================================ */
+
+syscall::sendmsg:entry,
+syscall::sendmsg_nocancel:entry
+/TRACED/
+{
+    self->sendmsg_fd = arg0;
+    self->sendmsg_flags = arg2;
+    self->sendmsg_ts = walltimestamp/1000;
+}
+
+syscall::sendmsg:return,
+syscall::sendmsg_nocancel:return
+/TRACED && self->sendmsg_ts/
+{
+    printf("MACTRACE_SYSCALL %d %d sendmsg %d %d %d %d 0x%x\n",
+        pid, tid, (int)arg1, errno, self->sendmsg_ts, self->sendmsg_fd, self->sendmsg_flags);
+    self->sendmsg_ts = 0;
+}
+
+syscall::recvmsg:entry,
+syscall::recvmsg_nocancel:entry
+/TRACED/
+{
+    self->recvmsg_fd = arg0;
+    self->recvmsg_flags = arg2;
+    self->recvmsg_ts = walltimestamp/1000;
+}
+
+syscall::recvmsg:return,
+syscall::recvmsg_nocancel:return
+/TRACED && self->recvmsg_ts/
+{
+    printf("MACTRACE_SYSCALL %d %d recvmsg %d %d %d %d 0x%x\n",
+        pid, tid, (int)arg1, errno, self->recvmsg_ts, self->recvmsg_fd, self->recvmsg_flags);
+    self->recvmsg_ts = 0;
+}
+
+/* ============================================ */
+/* NECP (Network Extension Control Policy)      */
+/* ============================================ */
+
+syscall::necp_open:entry
+/TRACED/
+{
+    self->necp_open_flags = arg0;
+    self->necp_open_ts = walltimestamp/1000;
+}
+
+syscall::necp_open:return
+/TRACED && self->necp_open_ts/
+{
+    printf("MACTRACE_SYSCALL %d %d necp_open %d %d %d 0x%x\n",
+        pid, tid, (int)arg1, errno, self->necp_open_ts, self->necp_open_flags);
+    self->necp_open_ts = 0;
+}
+
+syscall::necp_client_action:entry
+/TRACED/
+{
+    self->necp_ca_fd = arg0;
+    self->necp_ca_action = arg1;
+    self->necp_ca_ts = walltimestamp/1000;
+}
+
+syscall::necp_client_action:return
+/TRACED && self->necp_ca_ts/
+{
+    printf("MACTRACE_SYSCALL %d %d necp_client_action %d %d %d %d %d\n",
+        pid, tid, (int)arg1, errno, self->necp_ca_ts, self->necp_ca_fd, self->necp_ca_action);
+    self->necp_ca_ts = 0;
+}
+
+syscall::necp_session_open:entry
+/TRACED/
+{
+    self->necp_so_flags = arg0;
+    self->necp_so_ts = walltimestamp/1000;
+}
+
+syscall::necp_session_open:return
+/TRACED && self->necp_so_ts/
+{
+    printf("MACTRACE_SYSCALL %d %d necp_session_open %d %d %d 0x%x\n",
+        pid, tid, (int)arg1, errno, self->necp_so_ts, self->necp_so_flags);
+    self->necp_so_ts = 0;
+}
+
+syscall::necp_session_action:entry
+/TRACED/
+{
+    self->necp_sa_fd = arg0;
+    self->necp_sa_action = arg1;
+    self->necp_sa_ts = walltimestamp/1000;
+}
+
+syscall::necp_session_action:return
+/TRACED && self->necp_sa_ts/
+{
+    printf("MACTRACE_SYSCALL %d %d necp_session_action %d %d %d %d %d\n",
+        pid, tid, (int)arg1, errno, self->necp_sa_ts, self->necp_sa_fd, self->necp_sa_action);
+    self->necp_sa_ts = 0;
+}
+
+/* ============================================ */
+/* MAC (Mandatory Access Control)               */
+/* ============================================ */
+
+syscall::__mac_execve:entry
+/TRACED/
+{
+    self->mac_execve_path = copyinstr(arg0);
+    self->mac_execve_ts = walltimestamp/1000;
+}
+
+syscall::__mac_execve:return
+/TRACED && self->mac_execve_path != NULL/
+{
+    printf("MACTRACE_SYSCALL %d %d __mac_execve %d %d %d \"%s\"\n",
+        pid, tid, (int)arg1, errno, self->mac_execve_ts, self->mac_execve_path);
+    self->mac_execve_path = NULL;
+}
+
+syscall::__mac_syscall:entry
+/TRACED/
+{
+    self->mac_syscall_policy = copyinstr(arg0);
+    self->mac_syscall_call = arg1;
+    self->mac_syscall_ts = walltimestamp/1000;
+}
+
+syscall::__mac_syscall:return
+/TRACED && self->mac_syscall_ts/
+{
+    printf("MACTRACE_SYSCALL %d %d __mac_syscall %d %d %d \"%s\" %d\n",
+        pid, tid, (int)arg1, errno, self->mac_syscall_ts, 
+        self->mac_syscall_policy != NULL ? self->mac_syscall_policy : "", self->mac_syscall_call);
+    self->mac_syscall_ts = 0;
+}
+
+syscall::__mac_get_file:entry,
+syscall::__mac_set_file:entry
+/TRACED/
+{
+    self->mac_file_path = copyinstr(arg0);
+    self->mac_file_ts = walltimestamp/1000;
+}
+
+syscall::__mac_get_file:return,
+syscall::__mac_set_file:return
+/TRACED && self->mac_file_path != NULL/
+{
+    printf("MACTRACE_SYSCALL %d %d %s %d %d %d \"%s\"\n",
+        pid, tid, probefunc, (int)arg1, errno, self->mac_file_ts, self->mac_file_path);
+    self->mac_file_path = NULL;
+}
+
+syscall::__mac_get_link:entry,
+syscall::__mac_set_link:entry
+/TRACED/
+{
+    self->mac_link_path = copyinstr(arg0);
+    self->mac_link_ts = walltimestamp/1000;
+}
+
+syscall::__mac_get_link:return,
+syscall::__mac_set_link:return
+/TRACED && self->mac_link_path != NULL/
+{
+    printf("MACTRACE_SYSCALL %d %d %s %d %d %d \"%s\"\n",
+        pid, tid, probefunc, (int)arg1, errno, self->mac_link_ts, self->mac_link_path);
+    self->mac_link_path = NULL;
+}
+
+syscall::__mac_get_proc:entry,
+syscall::__mac_set_proc:entry
+/TRACED/
+{
+    self->mac_proc_ts = walltimestamp/1000;
+}
+
+syscall::__mac_get_proc:return,
+syscall::__mac_set_proc:return
+/TRACED && self->mac_proc_ts/
+{
+    printf("MACTRACE_SYSCALL %d %d %s %d %d %d\n",
+        pid, tid, probefunc, (int)arg1, errno, self->mac_proc_ts);
+    self->mac_proc_ts = 0;
+}
+
+syscall::__mac_get_fd:entry,
+syscall::__mac_set_fd:entry
+/TRACED/
+{
+    self->mac_fd_fd = arg0;
+    self->mac_fd_ts = walltimestamp/1000;
+}
+
+syscall::__mac_get_fd:return,
+syscall::__mac_set_fd:return
+/TRACED && self->mac_fd_ts/
+{
+    printf("MACTRACE_SYSCALL %d %d %s %d %d %d %d\n",
+        pid, tid, probefunc, (int)arg1, errno, self->mac_fd_ts, self->mac_fd_fd);
+    self->mac_fd_ts = 0;
+}
+
+syscall::__mac_get_pid:entry
+/TRACED/
+{
+    self->mac_pid_pid = arg0;
+    self->mac_pid_ts = walltimestamp/1000;
+}
+
+syscall::__mac_get_pid:return
+/TRACED && self->mac_pid_ts/
+{
+    printf("MACTRACE_SYSCALL %d %d __mac_get_pid %d %d %d %d\n",
+        pid, tid, (int)arg1, errno, self->mac_pid_ts, self->mac_pid_pid);
+    self->mac_pid_ts = 0;
 }
 
 /* ============================================ */
@@ -1058,6 +1552,14 @@ syscall::kqueue:return
         pid, tid, (int)arg1, errno, walltimestamp/1000);
 }
 '''
+
+# Import syscall categories from shared module
+import sys
+import os
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from mactrace_categories import get_category as get_syscall_category
+
+
 @dataclass
 class SyscallEvent:
     """A single syscall event"""
@@ -1068,6 +1570,11 @@ class SyscallEvent:
     return_value: int
     errno: int
     args: Dict[str, Any] = field(default_factory=dict)
+    category: str = ""
+    
+    def __post_init__(self):
+        if not self.category:
+            self.category = get_syscall_category(self.syscall)
     
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -1075,6 +1582,7 @@ class SyscallEvent:
             "pid": self.pid,
             "tid": self.tid,
             "syscall": self.syscall,
+            "category": self.category,
             "return_value": self.return_value,
             "errno": self.errno,
             "args": self.args
@@ -1139,6 +1647,30 @@ class TraceResult:
 
 class MacTrace:
     """Main tracer class"""
+    
+    def __init__(self, verbose: bool = False, capture_io: bool = False,
+                 io_size: int = 1*1024*1024, strsize: int = 16384, bufsize: str = "256m", 
+                 dynvarsize: str = "128m"):
+        self.verbose = verbose
+        self.capture_io = capture_io
+        self.io_size = io_size
+        self.strsize = strsize
+        # Warn about dtrace stack limits - large io_size can crash dtrace
+        if io_size > 4*1024*1024:
+            print(f"⚠️  --io-size={io_size} may crash dtrace (stack overflow). Try ≤4M.", file=sys.stderr)
+        self.bufsize = bufsize
+        self.dynvarsize = dynvarsize
+        self.events: List[SyscallEvent] = []
+        self.process_events: List[ProcessEvent] = []
+        self.pids_traced: set = set()
+        self.process_tree: Dict[int, int] = {}  # child_pid -> parent_pid
+        self.start_timestamp: Optional[int] = None
+        self.end_timestamp: Optional[int] = None
+        self.target_stdout: List[str] = []
+        self.target_stderr: List[str] = []
+        self.exit_code: int = 0
+        self.all_syscall_counts: Dict[str, int] = {}  # All syscalls seen (from catch-all probe)
+        self._truncation_warnings: set = set()  # Track warned (pid, syscall, fd) to avoid spam
     
     # Errno mapping (common ones)
     ERRNO_NAMES = {
@@ -1208,19 +1740,6 @@ class MacTrace:
         29: "SIGINFO", 30: "SIGUSR1", 31: "SIGUSR2",
     }
     
-    def __init__(self, verbose: bool = False):
-        self.verbose = verbose
-        self.events: List[SyscallEvent] = []
-        self.process_events: List[ProcessEvent] = []
-        self.pids_traced: set = set()
-        self.process_tree: Dict[int, int] = {}  # child_pid -> parent_pid
-        self.start_timestamp: Optional[int] = None
-        self.end_timestamp: Optional[int] = None
-        self.target_stdout: List[str] = []
-        self.target_stderr: List[str] = []
-        self.exit_code: int = 0
-        self.all_syscall_counts: Dict[str, int] = {}  # All syscalls seen (from catch-all probe)
-    
     # Syscalls we explicitly trace (for detecting untraced ones)
     TRACED_SYSCALLS = {
         # Process
@@ -1236,11 +1755,19 @@ class MacTrace:
         "dup", "dup2", "fcntl", "fcntl_nocancel", "ioctl", "fsync", "fsync_nocancel",
         "getdirentries64", "getattrlistbulk",
         # Network
-        "socket", "connect", "connect_nocancel", "bind", "listen", "accept", "accept_nocancel",
+        "socket", "socketpair", "connect", "connect_nocancel", "bind", "listen", 
+        "accept", "accept_nocancel",
         "sendto", "sendto_nocancel", "recvfrom", "recvfrom_nocancel",
+        "sendmsg", "sendmsg_nocancel", "recvmsg", "recvmsg_nocancel",
         "shutdown", "setsockopt", "getsockopt",
+        # NECP (Network Extension Control Policy)
+        "necp_open", "necp_client_action", "necp_session_open", "necp_session_action",
         # Memory
         "mmap", "munmap", "mprotect",
+        # MAC (Mandatory Access Control)
+        "__mac_execve", "__mac_syscall", "__mac_get_file", "__mac_set_file",
+        "__mac_get_link", "__mac_set_link", "__mac_get_proc", "__mac_set_proc",
+        "__mac_get_fd", "__mac_set_fd", "__mac_get_pid",
         # Misc
         "pipe", "select", "select_nocancel", "poll", "poll_nocancel",
         "kill", "sigaction", "sigprocmask",
@@ -1414,6 +1941,16 @@ class MacTrace:
                 # MACTRACE_SYSCALL pid tid syscall retval errno [args...]
                 self._parse_syscall(parts[1:], base_timestamp)
                 
+            elif event_type == "MACTRACE_IO":
+                # MACTRACE_IO pid tid syscall fd bytes <tracemem data>
+                # tracemem outputs hex bytes, parse and attach to corresponding syscall
+                self._parse_io_data(line, base_timestamp)
+                
+            elif event_type == "MACTRACE_SOCKADDR":
+                # MACTRACE_SOCKADDR pid tid syscall retval errno ts fd family <tracemem data>
+                # Socket address captured by connect/bind/accept/sendto/recvfrom
+                self._parse_sockaddr_line(line, base_timestamp)
+                
         except (ValueError, IndexError) as e:
             if self.verbose:
                 print(f"Warning: Failed to parse line: {line} ({e})", file=sys.stderr)
@@ -1450,7 +1987,15 @@ class MacTrace:
             pid = int(tokens[0])
             tid = int(tokens[1])
             syscall = tokens[2]
-            retval = int(tokens[3]) if not tokens[3].startswith("0x") else int(tokens[3], 16)
+            # Handle return values - can be decimal, hex with 0x prefix, or pointer (hex without prefix)
+            retval_str = tokens[3]
+            if retval_str.startswith("0x") or retval_str.startswith("-0x"):
+                retval = int(retval_str, 16)
+            elif any(c in retval_str for c in 'abcdefABCDEF'):
+                # Contains hex letters - it's a pointer/address without 0x prefix
+                retval = int(retval_str, 16)
+            else:
+                retval = int(retval_str)
             errno_val = int(tokens[4])
             
             self.pids_traced.add(pid)
@@ -1478,6 +2023,255 @@ class MacTrace:
         except (ValueError, IndexError) as e:
             if self.verbose:
                 print(f"Warning: Failed to parse syscall: {full_line} ({e})", file=sys.stderr)
+    
+    def _merge_io_hexdumps(self, lines: List[str]) -> List[str]:
+        """Pre-process dtrace output to merge MACTRACE_IO/MACTRACE_SOCKADDR with tracemem hexdumps.
+        
+        tracemem() outputs a formatted hexdump like:
+             0  1  2  3  4  5  6  7  8  9  a  b  c  d  e  f  0123456789abcdef
+             0: 27 48 65 6c 6c 6f 20 00 ...  'Hello .........
+            10: 00 00 00 00 00 00 00 00 ...  ................
+        
+        We extract just the hex bytes and append them to the MACTRACE_IO/MACTRACE_SOCKADDR line.
+        """
+        result = []
+        i = 0
+        while i < len(lines):
+            line = lines[i]
+            stripped = line.strip()
+            
+            if stripped.startswith("MACTRACE_IO") or stripped.startswith("MACTRACE_SOCKADDR"):
+                # Found IO or SOCKADDR line - collect following hexdump
+                merged_line = stripped
+                i += 1
+                hex_bytes = []
+                
+                # Skip header line if present (starts with spaces and "0  1  2")
+                if i < len(lines) and re.match(r'^\s+0\s+1\s+2', lines[i]):
+                    i += 1
+                
+                # Collect hexdump lines
+                # Format: "    <addr>: <hex bytes>  <ascii>"
+                while i < len(lines):
+                    hexline = lines[i]
+                    # Match hexdump format: address followed by hex bytes
+                    match = re.match(r'^\s*([0-9a-fA-F]+):\s+((?:[0-9a-fA-F]{2}\s*)+)', hexline)
+                    if match:
+                        # Extract hex bytes from this line
+                        hex_part = match.group(2).strip()
+                        # Remove spaces and add to our collection
+                        hex_bytes.append(hex_part.replace(' ', ''))
+                        i += 1
+                    else:
+                        # Not a hexdump line, stop collecting
+                        break
+                
+                # Append collected hex to line
+                if hex_bytes:
+                    merged_line = merged_line + " " + "".join(hex_bytes)
+                
+                result.append(merged_line)
+            else:
+                result.append(line)
+                i += 1
+        
+        return result
+    
+    def _parse_io_data(self, line: str, base_timestamp: int) -> None:
+        """Parse MACTRACE_IO line and attach data to corresponding syscall event."""
+        # Format after _merge_io_hexdumps: MACTRACE_IO pid tid syscall fd nbytes <hex_string>
+        # The hex_string has no spaces (concatenated from hexdump)
+        try:
+            parts = line.split()
+            if len(parts) < 6:
+                return
+                
+            pid = int(parts[1])
+            tid = int(parts[2])
+            syscall = parts[3]
+            fd = int(parts[4])
+            nbytes = int(parts[5])
+            
+            # Hex data is at parts[6] (no spaces)
+            hex_data = parts[6] if len(parts) > 6 else ""
+            
+            # Parse hex and trim to actual byte count
+            if hex_data:
+                try:
+                    data_bytes = bytes.fromhex(hex_data)
+                except ValueError:
+                    data_bytes = b''
+                # CRITICAL: trim to actual byte count, discarding trailing zeros/padding
+                if len(data_bytes) > nbytes:
+                    data_bytes = data_bytes[:nbytes]
+                data_hex = data_bytes.hex()
+            else:
+                data_bytes = b''
+                data_hex = ''
+            
+            # Find the most recent matching syscall event and attach the data
+            matched_event = None
+            for event in reversed(self.events):
+                if (event.pid == pid and event.tid == tid and 
+                    event.syscall.startswith(syscall.replace('_nocancel', '')) and
+                    event.args.get('fd') == fd):
+                    if data_hex:
+                        event.args['data'] = data_hex
+                        event.args['data_len'] = len(data_bytes)
+                    matched_event = event
+                    break
+            
+            # Warn if I/O was truncated (actual bytes > capture limit)
+            if self.capture_io and nbytes > self.io_size:
+                warn_key = (pid, syscall, fd)
+                if warn_key not in self._truncation_warnings:
+                    self._truncation_warnings.add(warn_key)
+                    # Try to get target info from the matched event
+                    target = "fd %d" % fd
+                    if matched_event:
+                        if 'path' in matched_event.args:
+                            target = matched_event.args['path']
+                        elif 'address' in matched_event.args:
+                            target = matched_event.args['address']
+                    
+                    def _fmt_size(n):
+                        if n >= 1024*1024:
+                            return "%.1fM" % (n / (1024*1024))
+                        elif n >= 1024:
+                            return "%.1fK" % (n / 1024)
+                        return str(n)
+                    
+                    print(f"⚠️  PID {pid} {syscall} {_fmt_size(nbytes)} from {target} — "
+                          f"exceeds capture limit of {_fmt_size(self.io_size)}. "
+                          f"Use --io-size={_fmt_size(nbytes)} to capture fully.",
+                          file=sys.stderr)
+                    
+        except (ValueError, IndexError) as e:
+            if self.verbose:
+                print(f"Warning: Failed to parse IO data: {line[:100]} ({e})", file=sys.stderr)
+    
+    def _decode_sockaddr(self, data: bytes, family: int) -> Dict[str, Any]:
+        """Decode sockaddr bytes based on address family."""
+        import struct
+        import socket
+        
+        result = {"family": self.AF_NAMES.get(family, f"AF_{family}")}
+        
+        try:
+            if family == 2:  # AF_INET
+                if len(data) >= 8:
+                    # struct sockaddr_in: sa_len(1), sa_family(1), sin_port(2), sin_addr(4)
+                    port = struct.unpack(">H", data[2:4])[0]  # port is big-endian
+                    addr_bytes = data[4:8]
+                    addr = socket.inet_ntoa(addr_bytes)
+                    result["address"] = addr
+                    result["port"] = port
+                    result["display"] = f"{addr}:{port}"
+                    
+            elif family == 30:  # AF_INET6
+                if len(data) >= 28:
+                    # struct sockaddr_in6: sa_len(1), sa_family(1), sin6_port(2), 
+                    #                      sin6_flowinfo(4), sin6_addr(16), sin6_scope_id(4)
+                    port = struct.unpack(">H", data[2:4])[0]
+                    addr_bytes = data[8:24]
+                    addr = socket.inet_ntop(socket.AF_INET6, addr_bytes)
+                    result["address"] = addr
+                    result["port"] = port
+                    result["display"] = f"[{addr}]:{port}"
+                    
+            elif family == 1:  # AF_UNIX
+                if len(data) > 2:
+                    # struct sockaddr_un: sa_len(1), sa_family(1), sun_path(104)
+                    path_bytes = data[2:]
+                    # Find null terminator
+                    null_idx = path_bytes.find(b'\x00')
+                    if null_idx > 0:
+                        path_bytes = path_bytes[:null_idx]
+                    path = path_bytes.decode('utf-8', errors='replace')
+                    result["path"] = path
+                    result["display"] = path
+                    
+            elif family == 32:  # AF_SYSTEM (macOS specific)
+                result["display"] = "AF_SYSTEM"
+                
+        except Exception:
+            pass
+            
+        return result
+    
+    def _parse_sockaddr_line(self, line: str, base_timestamp: int) -> None:
+        """Parse MACTRACE_SOCKADDR line and create syscall event with address info."""
+        # Format: MACTRACE_SOCKADDR pid tid syscall retval errno ts fd family <hex>
+        # Note: tracemem hexdump will be on following lines, already merged by _merge_io_hexdumps
+        try:
+            parts = line.split()
+            if len(parts) < 8:
+                return
+                
+            pid = int(parts[1])
+            tid = int(parts[2])
+            syscall = parts[3]
+            retval_str = parts[4]
+            if retval_str.startswith("0x") or retval_str.startswith("-0x"):
+                retval = int(retval_str, 16)
+            else:
+                retval = int(retval_str)
+            errno_val = int(parts[5])
+            ts = int(parts[6])
+            fd = int(parts[7])
+            family = int(parts[8]) if len(parts) > 8 else 0
+            
+            # Parse args based on syscall type
+            args = {
+                "fd": fd,
+                "errno_name": self.ERRNO_NAMES.get(errno_val, f"E{errno_val}"),
+            }
+            
+            # For sendto/recvfrom, we have extra fields: len and flags
+            if syscall in ("sendto", "recvfrom"):
+                if len(parts) > 9:
+                    args["count"] = int(parts[9])  # len is before family in output
+                    # Actually the format is: pid tid syscall ret errno ts fd len family flags hex
+                    # Let me re-check the DTrace output format...
+                    # printf("MACTRACE_SOCKADDR %d %d sendto %d %d %d %d %d %d 0x%x ",
+                    #     pid, tid, (int)arg1, errno, self->sendto_ts,
+                    #     self->sendto_fd, self->sendto_len, this->family, self->sendto_flags);
+                    # So: parts[7]=fd, parts[8]=len, parts[9]=family, parts[10]=flags
+                    args["count"] = int(parts[8])
+                    family = int(parts[9])
+                    args["flags"] = parts[10] if len(parts) > 10 else "0x0"
+                    hex_start = 11
+                else:
+                    hex_start = 9
+            else:
+                hex_start = 9
+            
+            # Get hex data (after merge, it should be one concatenated hex string)
+            if len(parts) > hex_start:
+                hex_data = parts[hex_start]
+                try:
+                    sockaddr_bytes = bytes.fromhex(hex_data)
+                    addr_info = self._decode_sockaddr(sockaddr_bytes, family)
+                    args.update(addr_info)
+                except ValueError:
+                    pass
+            
+            self.pids_traced.add(pid)
+            
+            event = SyscallEvent(
+                timestamp_us=len(self.events),
+                pid=pid,
+                tid=tid,
+                syscall=syscall,
+                return_value=retval,
+                errno=errno_val,
+                args=args
+            )
+            self.events.append(event)
+            
+        except (ValueError, IndexError) as e:
+            if self.verbose:
+                print(f"Warning: Failed to parse sockaddr: {line[:100]} ({e})", file=sys.stderr)
     
     def _parse_syscall_args(self, syscall: str, args: List[str]) -> Dict[str, Any]:
         """Parse syscall-specific arguments"""
@@ -1678,13 +2472,15 @@ class MacTrace:
             
         return result
     
-    def trace(self, command: List[str], timeout: Optional[int] = None) -> TraceResult:
+    def trace(self, command: List[str], timeout: Optional[int] = None,
+              run_as_user: Optional[tuple] = None) -> TraceResult:
         """
         Execute and trace a command.
         
         Args:
             command: Command and arguments to execute
             timeout: Optional timeout in seconds
+            run_as_user: Optional (uid, gid, username) tuple to run command as
             
         Returns:
             TraceResult with all collected data
@@ -1698,6 +2494,154 @@ class MacTrace:
         # Prepare DTrace script - use $target which dtrace sets to the launched PID
         dtrace_script = DTRACE_SCRIPT.replace("$target_pid", "$target")
         
+        # Substitute DTrace options
+        dtrace_script = dtrace_script.replace("$STRSIZE$", str(self.strsize))
+        dtrace_script = dtrace_script.replace("$BUFSIZE$", self.bufsize)
+        dtrace_script = dtrace_script.replace("$DYNVARSIZE$", self.dynvarsize)
+        
+        # Add rawio pragma and I/O buffer capture if requested
+        if self.capture_io:
+            dtrace_script = dtrace_script.replace("$RAWIO_PRAGMA$", "#pragma D option rawbytes")
+            io_size = self.io_size  # tracemem is independent of strsize
+            io_capture_probes = f'''
+/* ============================================ */
+/* I/O DATA CAPTURE (--capture-io)              */
+/* ============================================ */
+/* Captures actual buffer contents via tracemem() */
+/* Output: MACTRACE_IO pid tid syscall fd actual_bytes <hex data> */
+/* tracemem outputs {io_size} bytes; trim to actual_bytes on parse */
+
+/* Save buffer pointers on entry */
+syscall::read:entry,
+syscall::read_nocancel:entry
+/TRACED/
+{{
+    self->read_buf = arg1;
+}}
+
+syscall::pread:entry,
+syscall::pread_nocancel:entry
+/TRACED/
+{{
+    self->pread_buf = arg1;
+}}
+
+syscall::write:entry,
+syscall::write_nocancel:entry
+/TRACED/
+{{
+    self->write_buf = arg1;
+}}
+
+syscall::pwrite:entry,
+syscall::pwrite_nocancel:entry
+/TRACED/
+{{
+    self->pwrite_buf = arg1;
+}}
+
+syscall::sendto:entry,
+syscall::sendto_nocancel:entry
+/TRACED/
+{{
+    self->sendto_buf = arg1;
+}}
+
+syscall::recvfrom:entry,
+syscall::recvfrom_nocancel:entry
+/TRACED/
+{{
+    self->recvfrom_buf = arg1;
+}}
+
+/* Read: capture buffer on return with actual bytes read */
+syscall::read:return,
+syscall::read_nocancel:return
+/TRACED && arg1 > 0 && self->read_buf/
+{{
+    this->nbytes = arg1 < {io_size} ? arg1 : {io_size};
+    printf("MACTRACE_IO %d %d read %d %d ", pid, tid, self->read_fd, (int)arg1);
+    tracemem(copyin(self->read_buf, this->nbytes), {io_size}, this->nbytes);
+    printf("\\n");
+    self->read_buf = 0;
+}}
+
+syscall::pread:return,
+syscall::pread_nocancel:return
+/TRACED && arg1 > 0 && self->pread_buf/
+{{
+    this->nbytes = arg1 < {io_size} ? arg1 : {io_size};
+    printf("MACTRACE_IO %d %d pread %d %d ", pid, tid, self->pread_fd, (int)arg1);
+    tracemem(copyin(self->pread_buf, this->nbytes), {io_size}, this->nbytes);
+    printf("\\n");
+    self->pread_buf = 0;
+}}
+
+/* Write: capture buffer on return (we saved buf ptr on entry) */
+syscall::write:return,
+syscall::write_nocancel:return
+/TRACED && arg1 > 0 && self->write_buf/
+{{
+    this->nbytes = arg1 < {io_size} ? arg1 : {io_size};
+    printf("MACTRACE_IO %d %d write %d %d ", pid, tid, self->write_fd, (int)arg1);
+    tracemem(copyin(self->write_buf, this->nbytes), {io_size}, this->nbytes);
+    printf("\\n");
+    self->write_buf = 0;
+}}
+
+syscall::pwrite:return,
+syscall::pwrite_nocancel:return
+/TRACED && arg1 > 0 && self->pwrite_buf/
+{{
+    this->nbytes = arg1 < {io_size} ? arg1 : {io_size};
+    printf("MACTRACE_IO %d %d pwrite %d %d ", pid, tid, self->pwrite_fd, (int)arg1);
+    tracemem(copyin(self->pwrite_buf, this->nbytes), {io_size}, this->nbytes);
+    printf("\\n");
+    self->pwrite_buf = 0;
+}}
+
+/* Network: sendto/recvfrom */
+syscall::sendto:return,
+syscall::sendto_nocancel:return
+/TRACED && arg1 > 0 && self->sendto_buf/
+{{
+    this->nbytes = arg1 < {io_size} ? arg1 : {io_size};
+    printf("MACTRACE_IO %d %d sendto %d %d ", pid, tid, self->sendto_fd, (int)arg1);
+    tracemem(copyin(self->sendto_buf, this->nbytes), {io_size}, this->nbytes);
+    printf("\\n");
+    self->sendto_buf = 0;
+}}
+
+syscall::recvfrom:return,
+syscall::recvfrom_nocancel:return
+/TRACED && arg1 > 0 && self->recvfrom_buf/
+{{
+    this->nbytes = arg1 < {io_size} ? arg1 : {io_size};
+    printf("MACTRACE_IO %d %d recvfrom %d %d ", pid, tid, self->recvfrom_fd, (int)arg1);
+    tracemem(copyin(self->recvfrom_buf, this->nbytes), {io_size}, this->nbytes);
+    printf("\\n");
+    self->recvfrom_buf = 0;
+}}
+
+/* sendmsg/recvmsg - metadata only (iovec is complex to parse in DTrace) */
+syscall::sendmsg:return,
+syscall::sendmsg_nocancel:return
+/TRACED && arg1 > 0/
+{{
+    printf("MACTRACE_IO %d %d sendmsg %d %d\\n", pid, tid, self->sendmsg_fd, (int)arg1);
+}}
+
+syscall::recvmsg:return,
+syscall::recvmsg_nocancel:return
+/TRACED && arg1 > 0/
+{{
+    printf("MACTRACE_IO %d %d recvmsg %d %d\\n", pid, tid, self->recvmsg_fd, (int)arg1);
+}}
+'''
+            dtrace_script += io_capture_probes
+        else:
+            dtrace_script = dtrace_script.replace("$RAWIO_PRAGMA$", "")
+        
         with tempfile.NamedTemporaryFile(mode='w', suffix='.d', delete=False) as f:
             f.write(dtrace_script)
             dtrace_path = f.name
@@ -1705,7 +2649,18 @@ class MacTrace:
         # Build the command string for -c
         # Need to properly quote/escape for shell
         import shlex
-        cmd_str = ' '.join(shlex.quote(c) for c in command)
+        
+        # If run_as_user is specified, wrap command with sudo -u
+        if run_as_user:
+            uid, gid, username = run_as_user
+            # Use sudo -u to drop privileges to the specified user
+            # The outer sudo (for DTrace) will spawn this inner sudo
+            inner_cmd = ' '.join(shlex.quote(c) for c in command)
+            cmd_str = f'sudo -u {shlex.quote(username)} -- {inner_cmd}'
+            if self.verbose:
+                print(f"Command wrapped for user {username}: {cmd_str}", file=sys.stderr)
+        else:
+            cmd_str = ' '.join(shlex.quote(c) for c in command)
         
         dtrace_proc = None
         target_pid = None
@@ -1713,14 +2668,25 @@ class MacTrace:
         target_stderr_lines = []
         dtrace_output = []
         
+        # Get TTY for real-time output (may be None if not a terminal)
+        # Use binary mode to preserve \r characters exactly
         try:
-            # Start DTrace with -c to launch and trace the command
-            # The target's stdout/stderr will be mixed with dtrace output,
-            # but our MACTRACE_ prefix lets us separate them
-            # Note: script must be run as root (sudo ./mactrace), so no sudo here
+            tty = open('/dev/tty', 'wb', buffering=0)
+        except OSError:
+            tty = None
+        
+        # Create temp file for dtrace output (separate from target stdout)
+        dtrace_output_file = tempfile.NamedTemporaryFile(mode='w', suffix='.dtrace', delete=False)
+        dtrace_output_path = dtrace_output_file.name
+        dtrace_output_file.close()
+        
+        try:
+            # Start DTrace with -o to write output to file (clean separation)
+            # Target's stdout/stderr flow through normally, no interleaving
             dtrace_cmd = [
                 "/usr/sbin/dtrace",
                 "-C",  # Enable C preprocessor for #define macros
+                "-o", dtrace_output_path,  # Write dtrace output to file
                 "-s", dtrace_path,
                 "-c", cmd_str
             ]
@@ -1734,38 +2700,82 @@ class MacTrace:
                 stderr=subprocess.PIPE
             )
             
-            # Wait for dtrace to complete (it runs until the target exits)
-            try:
-                stdout_data, stderr_data = dtrace_proc.communicate(timeout=timeout)
-                stdout_lines = stdout_data.decode(errors='replace').splitlines()
-                stderr_lines = stderr_data.decode(errors='replace').splitlines()
-                
-                # Separate DTrace output from target output
-                # DTrace output starts with MACTRACE_ or is dtrace info
-                for line in stdout_lines:
-                    if line.startswith("MACTRACE_"):
-                        dtrace_output.append(line)
-                    elif line.startswith("dtrace:"):
-                        # dtrace info/warnings go to verbose
-                        if self.verbose:
-                            print(f"DTrace: {line}", file=sys.stderr)
-                    else:
-                        # Target's stdout
+            # Read target stdout/stderr in real-time using threads
+            # These are now PURE target output - no dtrace mixing
+            import threading
+            
+            def read_stdout():
+                """Read and echo target stdout to tty"""
+                for line_bytes in dtrace_proc.stdout:
+                    # Echo to tty
+                    if tty:
+                        try:
+                            tty.write(line_bytes)
+                        except:
+                            pass
+                    # Capture (handle \r for final visible state)
+                    line = line_bytes.decode(errors='replace').rstrip('\n')
+                    if '\r' in line:
+                        segments = line.split('\r')
+                        for seg in reversed(segments):
+                            if seg:
+                                target_stdout_lines.append(seg)
+                                break
+                    elif line:
                         target_stdout_lines.append(line)
-                
-                # stderr is usually all from the target (dtrace errors are rare)
-                for line in stderr_lines:
-                    if line.startswith("dtrace:"):
+            
+            def read_stderr():
+                """Read and echo target stderr to tty"""
+                for line_bytes in dtrace_proc.stderr:
+                    line = line_bytes.decode(errors='replace').rstrip('\n')
+                    # Filter dtrace messages
+                    if line.lstrip().startswith('dtrace:'):
                         if self.verbose:
-                            print(f"DTrace: {line}", file=sys.stderr)
+                            print(f"DTrace: {line.lstrip()}", file=sys.stderr)
                     else:
-                        target_stderr_lines.append(line)
-                        
+                        # Echo to tty
+                        if tty:
+                            try:
+                                tty.write(line_bytes)
+                            except:
+                                pass
+                        # Capture
+                        if '\r' in line:
+                            segments = line.split('\r')
+                            for seg in reversed(segments):
+                                if seg:
+                                    target_stderr_lines.append(seg)
+                                    break
+                        elif line:
+                            target_stderr_lines.append(line)
+            
+            stdout_thread = threading.Thread(target=read_stdout, daemon=True)
+            stderr_thread = threading.Thread(target=read_stderr, daemon=True)
+            stdout_thread.start()
+            stderr_thread.start()
+            
+            # Wait for dtrace to complete
+            try:
+                dtrace_proc.wait(timeout=timeout)
+                # Wait for reader threads to finish
+                stdout_thread.join(timeout=2)
+                stderr_thread.join(timeout=2)
             except subprocess.TimeoutExpired:
                 dtrace_proc.kill()
                 dtrace_proc.wait()
                 if self.verbose:
                     print("Timeout expired, killed dtrace", file=sys.stderr)
+            
+            # Read dtrace output from file
+            try:
+                with open(dtrace_output_path, 'r', errors='replace') as f:
+                    for line in f:
+                        line = line.rstrip('\n')
+                        if line:
+                            dtrace_output.append(line)
+            except Exception as e:
+                if self.verbose:
+                    print(f"Error reading dtrace output: {e}", file=sys.stderr)
                     
             # Extract target PID from MACTRACE_START
             for line in dtrace_output:
@@ -1783,12 +2793,25 @@ class MacTrace:
                 os.unlink(dtrace_path)
             except:
                 pass
+            try:
+                os.unlink(dtrace_output_path)
+            except:
+                pass
+            if tty:
+                try:
+                    tty.close()
+                except:
+                    pass
                 
         end_time = datetime.now()
         
         # Store target output for inclusion in result
         self.target_stdout = target_stdout_lines
         self.target_stderr = target_stderr_lines
+        
+        # Pre-process: merge MACTRACE_IO/MACTRACE_SOCKADDR lines with following tracemem hexdump blocks
+        # Always run this since SOCKADDR lines have hexdumps even without --capture-io
+        dtrace_output = self._merge_io_hexdumps(dtrace_output)
         
         # Parse DTrace output
         for line in dtrace_output:
@@ -1824,17 +2847,370 @@ class MacTrace:
         )
 
 
+def get_mactrace_config() -> Dict[str, str]:
+    """
+    Load mactrace configuration, handling sudo environment stripping.
+    
+    Priority:
+    1. Environment variables (if set)
+    2. Config file at $MACTRACE_HOME/config or ~SUDO_USER/.mactrace/config
+    3. Defaults
+    
+    Config file format:
+        # Comments
+        KEY=value
+        KEY2=$KEY/subdir      # Variable expansion
+        KEY3=~/path           # ~ expands to sudo user's home
+    
+    Returns:
+        Dict with config values (MACTRACE_OUTPUT, MACTRACE_HOME, etc.)
+    """
+    import pwd
+    import re
+    
+    config = {}
+    
+    # Determine sudo user's home for ~ expansion
+    sudo_user = os.environ.get('SUDO_USER')
+    if sudo_user:
+        try:
+            sudo_home = pwd.getpwnam(sudo_user).pw_dir
+        except KeyError:
+            sudo_home = os.path.expanduser('~')
+    else:
+        sudo_home = os.environ.get('HOME', os.path.expanduser('~'))
+    
+    def expand_value(value: str) -> str:
+        """Expand ~ and $VAR references in a value."""
+        # Expand ~ to sudo user's home
+        if value.startswith('~/'):
+            value = sudo_home + value[1:]
+        elif value == '~':
+            value = sudo_home
+        
+        # Expand $VAR and ${VAR} references to config values
+        def replace_var(match):
+            var_name = match.group(1) or match.group(2)
+            # Check config first, then environment
+            return config.get(var_name, os.environ.get(var_name, match.group(0)))
+        
+        # Match $VAR or ${VAR}
+        value = re.sub(r'\$\{(\w+)\}|\$(\w+)', replace_var, value)
+        return value
+    
+    # First, try to find MACTRACE_HOME
+    mactrace_home = os.environ.get('MACTRACE_HOME')
+    if not mactrace_home:
+        mactrace_home = os.path.join(sudo_home, '.mactrace')
+    
+    config['MACTRACE_HOME'] = mactrace_home
+    
+    # Try to read config file
+    config_file = os.path.join(mactrace_home, 'config')
+    if os.path.exists(config_file):
+        try:
+            with open(config_file) as f:
+                for line in f:
+                    line = line.strip()
+                    if line and not line.startswith('#') and '=' in line:
+                        key, value = line.split('=', 1)
+                        key = key.strip()
+                        value = value.strip().strip('"').strip("'")
+                        value = expand_value(value)
+                        config[key] = value
+        except (IOError, OSError):
+            pass
+    
+    # Environment variables override config file
+    for key in ['MACTRACE_OUTPUT', 'MACTRACE_HOME', 'MACTRACE_USER', 'MACTRACE_DB']:
+        env_val = os.environ.get(key)
+        if env_val:
+            config[key] = env_val
+    
+    return config
+
+
+# Global config loaded once
+_mactrace_config: Optional[Dict[str, str]] = None
+
+def get_config_value(key: str) -> Optional[str]:
+    """Get a mactrace config value."""
+    global _mactrace_config
+    if _mactrace_config is None:
+        _mactrace_config = get_mactrace_config()
+    return _mactrace_config.get(key)
+
+
+def resolve_path(path: str, env_var: str, check_exists: bool = True) -> str:
+    """
+    Resolve a path, prepending config/environment variable if path is relative.
+    
+    Rules:
+    - Absolute paths (starting with '/') are used as-is
+    - Paths starting with './' or '../' are used as-is (explicit relative)
+    - Other paths have $env_var prepended (if set via env or config file)
+    
+    Args:
+        path: The path to resolve
+        env_var: Config/environment variable name to use as prefix (e.g., 'MACTRACE_OUTPUT')
+        check_exists: If True, check if the resolved path exists before returning
+                     (falls back to original path if not found)
+    
+    Returns:
+        Resolved path
+    """
+    # Absolute path - use as-is
+    if path.startswith('/'):
+        return path
+    
+    # Explicit relative path (./ or ../) - use as-is
+    if path.startswith('./') or path.startswith('../'):
+        return path
+    
+    # Check config (includes env vars)
+    env_value = get_config_value(env_var)
+    if not env_value:
+        return path
+    
+    # Build candidate path
+    candidate = os.path.join(env_value, path)
+    
+    # If check_exists, verify the file exists at the candidate location
+    if check_exists:
+        if os.path.exists(candidate):
+            return candidate
+        # Fall back to original if candidate doesn't exist
+        return path
+    
+    # For output paths (check_exists=False), always use the env var prefix
+    return candidate
+
+
+def resolve_user(user_spec: Optional[str]) -> Optional[tuple]:
+    """
+    Resolve a user specification to (uid, gid, username).
+    
+    Args:
+        user_spec: Username or numeric UID, or None
+        
+    Returns:
+        Tuple of (uid, gid, username) or None if no user specified
+        
+    Raises:
+        ValueError: If user doesn't exist
+    """
+    if not user_spec:
+        return None
+    
+    import pwd
+    
+    try:
+        # Try as numeric UID first
+        uid = int(user_spec)
+        try:
+            pw = pwd.getpwuid(uid)
+            return (pw.pw_uid, pw.pw_gid, pw.pw_name)
+        except KeyError:
+            raise ValueError(f"No user with UID {uid}")
+    except ValueError:
+        pass
+    
+    # Try as username
+    try:
+        pw = pwd.getpwnam(user_spec)
+        return (pw.pw_uid, pw.pw_gid, pw.pw_name)
+    except KeyError:
+        raise ValueError(f"No user named '{user_spec}'")
+
+
+def get_mactrace_home() -> str:
+    """Get MACTRACE_HOME, defaulting to ~/.mactrace using MACTRACE_HOME or HOME."""
+    mactrace_home = os.environ.get('MACTRACE_HOME')
+    if mactrace_home:
+        return mactrace_home
+    
+    # Fall back to $HOME/.mactrace (not hardcoded ~)
+    home = os.environ.get('HOME', os.path.expanduser('~'))
+    return os.path.join(home, '.mactrace')
+
+
+def filter_wrapper_processes(result: 'TraceResult', original_command: List[str], 
+                              verbose: bool = False) -> 'TraceResult':
+    """
+    Filter out wrapper processes (sudo, sh, bash) and keep only the real target.
+    
+    When using -u/--user, the command is wrapped with 'sudo -u username -- cmd'.
+    This function finds the first execve of the actual target command (not the wrappers)
+    and filters events to only include that process and its descendants.
+    
+    Args:
+        result: The full TraceResult with all events
+        original_command: The user's original command (e.g., ['nmap', '-sV', 'target'])
+        verbose: Print debug info
+        
+    Returns:
+        Filtered TraceResult with only target command events
+    """
+    import os.path
+    
+    # Wrappers to skip when looking for the real target
+    WRAPPER_BASENAMES = {'sudo', 'sh', 'bash', 'zsh', 'dash', 'ksh', 'env'}
+    
+    # What we're actually looking for (basename of the command)
+    target_basename = os.path.basename(original_command[0]) if original_command else None
+    if not target_basename:
+        return result
+    
+    # Find the PID and timestamp of the real target by scanning execve events
+    real_target_pid = None
+    real_target_start_ts = None
+    
+    for event in result.events:
+        syscall = event.get('syscall', '')
+        if syscall not in ('execve', 'posix_spawn'):
+            continue
+        
+        args = event.get('args', {})
+        path = args.get('path', '')
+        if not path:
+            continue
+        
+        exec_basename = os.path.basename(path)
+        
+        # Skip wrapper processes
+        if exec_basename in WRAPPER_BASENAMES:
+            continue
+        
+        # Found the real target
+        if exec_basename == target_basename or path.endswith('/' + target_basename):
+            real_target_pid = event.get('pid')
+            real_target_start_ts = event.get('timestamp_us', 0)
+            if verbose:
+                print(f"Found real target: {path} (pid={real_target_pid}, ts={real_target_start_ts})", 
+                      file=sys.stderr)
+            break
+    
+    if not real_target_pid:
+        if verbose:
+            print(f"Warning: Could not find execve of target '{target_basename}', keeping all events", 
+                  file=sys.stderr)
+            print(f"  (DTrace may have failed to capture execve paths - try --no-filter-wrapper)", 
+                  file=sys.stderr)
+        return result
+    
+    # Build set of PIDs to keep: real target + its descendants
+    # process_tree is Dict[child_pid, parent_pid] - build reverse mapping
+    children_of = {}  # parent_pid -> [child_pids]
+    for child_pid, parent_pid in result.process_tree.items():
+        if isinstance(child_pid, str):
+            child_pid = int(child_pid)
+        children_of.setdefault(parent_pid, []).append(child_pid)
+    
+    # Collect real target and all descendants
+    keep_pids = {real_target_pid}
+    queue = [real_target_pid]
+    while queue:
+        pid = queue.pop()
+        for child in children_of.get(pid, []):
+            if child not in keep_pids:
+                keep_pids.add(child)
+                queue.append(child)
+    
+    if verbose:
+        print(f"Keeping {len(keep_pids)} PIDs: {sorted(keep_pids)}", file=sys.stderr)
+    
+    # Filter events
+    filtered_events = [e for e in result.events if e.get('pid') in keep_pids]
+    filtered_process_events = [e for e in result.process_events if e.get('pid') in keep_pids]
+    
+    # Filter process tree
+    filtered_tree = {k: v for k, v in result.process_tree.items() if int(k) in keep_pids}
+    
+    # Rebuild summary
+    summary = {}
+    for event in filtered_events:
+        syscall = event.get('syscall', 'unknown')
+        summary[syscall] = summary.get(syscall, 0) + 1
+    
+    if verbose:
+        orig_count = len(result.events)
+        new_count = len(filtered_events)
+        print(f"Filtered {orig_count - new_count} wrapper events ({orig_count} -> {new_count})", 
+              file=sys.stderr)
+    
+    # Create new result with filtered data
+    return TraceResult(
+        command=original_command,
+        start_time=result.start_time,
+        end_time=result.end_time,
+        duration_ms=result.duration_ms,
+        target_pid=real_target_pid,  # Update to real target
+        exit_code=result.exit_code,
+        pids_traced=list(keep_pids),
+        process_tree=filtered_tree,
+        syscall_count=len(filtered_events),
+        events=filtered_events,
+        process_events=filtered_process_events,
+        summary=summary,
+        target_stdout=result.target_stdout,
+        target_stderr=result.target_stderr
+    )
+
+
 def main():
     parser = argparse.ArgumentParser(
         description="mactrace - strace-like utility for macOS using DTrace",
-        epilog="Requires root/sudo/EUID=0 for DTrace. E.g.: sudo ./mactrace ls -la"
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""
+Requires root privileges. Use: sudo ./mactrace ls -la
+
+Configuration (in priority order):
+  1. Command-line flags
+  2. Environment variables (need sudo -E to preserve)
+  3. Config file: ~/.mactrace/config (works without sudo -E)
+  4. Defaults
+
+Config file format (processed top-to-bottom):
+  # Comments start with #
+  MACTRACE_HOME=~/.mactrace       # ~ = sudo caller's home
+  MACTRACE_OUTPUT=~/traces
+  MACTRACE_DB=$MACTRACE_HOME/db   # $VAR expands to config value
+
+User selection:
+  -u flag > MACTRACE_USER > SUDO_USER (auto) > root
+
+Wrapper filtering (when -u or SUDO_USER is used):
+  By default, syscalls from wrapper processes (sudo, sh, bash) are
+  filtered out, keeping only the actual target command and its children.
+  Use --no-filter-wrapper to disable and trace everything.
+
+Path resolution for -o:
+  /absolute/path  -> used as-is
+  ./relative      -> used as-is
+  filename.json   -> $MACTRACE_OUTPUT/filename.json
+
+"""
     )
-    parser.add_argument("-o", "--output", help="Output file (default: stdout)")
+    parser.add_argument("-o", "--output", help="Output file (default: stdout). Relative paths use $MACTRACE_OUTPUT.")
+    parser.add_argument("-u", "--user", 
+                        help="Run traced program as this user (name or UID). Default: auto-detect from $SUDO_USER")
     parser.add_argument("-t", "--timeout", type=int, help="Timeout in seconds")
     parser.add_argument("-v", "--verbose", action="store_true", help="Verbose output to stderr")
     parser.add_argument("-p", "--pretty", action="store_true", help="Pretty-print JSON output")
     parser.add_argument("-e", "--untraced", action="store_true", 
                         help="Show untraced syscalls summary to stderr")
+    parser.add_argument("-d", "--capture-io", action="store_true",
+                        help="Capture actual I/O data via tracemem (attached to syscall events as hex)")
+    parser.add_argument("--io-size", type=int, default=1*1024*1024,
+                        help="Max bytes to capture per I/O op (default: 1M, max ~4M due to dtrace limits)")
+    parser.add_argument("--strsize", type=int, default=16384,
+                        help="DTrace strsize - max string size for paths etc (default: 16K)")
+    parser.add_argument("--bufsize", type=str, default="256m",
+                        help="DTrace bufsize - trace buffer size (default: 256m)")
+    parser.add_argument("--dynvarsize", type=str, default="128m",
+                        help="DTrace dynvarsize - dynamic variable space (default: 128m)")
+    parser.add_argument("--no-filter-wrapper", action="store_true",
+                        help="Don't filter out wrapper processes (sudo/sh/bash) when using -u")
     parser.add_argument("command", nargs=argparse.REMAINDER, help="Command to trace")
     
     args = parser.parse_args()
@@ -1847,19 +3223,66 @@ def main():
     if os.geteuid() != 0:
         print("Error: mactrace requires root privileges. Run with sudo.", file=sys.stderr)
         sys.exit(1)
-        
-    tracer = MacTrace(verbose=args.verbose)
-    result = tracer.trace(args.command, timeout=args.timeout)
     
-    # Print target's output to stderr so it doesn't mix with JSON
-    if result.target_stdout:
-        print("--- Target stdout ---", file=sys.stderr)
-        for line in result.target_stdout:
-            print(line, file=sys.stderr)
-    if result.target_stderr:
-        print("--- Target stderr ---", file=sys.stderr)
-        for line in result.target_stderr:
-            print(line, file=sys.stderr)
+    # Resolve user: -u/--user flag > MACTRACE_USER env var > SUDO_USER (auto-detect)
+    user_spec = args.user or os.environ.get('MACTRACE_USER')
+    run_as_user = None
+    
+    if user_spec:
+        try:
+            run_as_user = resolve_user(user_spec)
+            if args.verbose:
+                print(f"Will run traced program as user: {run_as_user[2]} (uid={run_as_user[0]}, gid={run_as_user[1]})", file=sys.stderr)
+        except ValueError as e:
+            print(f"Error: {e}", file=sys.stderr)
+            sys.exit(1)
+    else:
+        # Auto-detect: if running under sudo, use the original user
+        sudo_user = os.environ.get('SUDO_USER')
+        if sudo_user:
+            try:
+                run_as_user = resolve_user(sudo_user)
+                if args.verbose:
+                    print(f"Auto-detected sudo caller: {run_as_user[2]} (uid={run_as_user[0]}, gid={run_as_user[1]})", file=sys.stderr)
+            except ValueError as e:
+                # SUDO_USER exists but user doesn't - weird, but continue as root
+                if args.verbose:
+                    print(f"Warning: SUDO_USER={sudo_user} but user not found, running as root", file=sys.stderr)
+    
+    # Workaround for macOS 15+ dtrace bug: scripts with #!/bin/sh shebang
+    # fail to execute properly when launched via dtrace -c. The script
+    # exits immediately after sh execs to bash. Fix by explicitly running
+    # such scripts via /bin/bash.
+    command = args.command
+    if command and os.path.isfile(command[0]):
+        try:
+            with open(command[0], 'rb') as f:
+                shebang = f.read(64)
+                # Check for #!/bin/sh (but not #!/bin/bash)
+                if shebang.startswith(b'#!') and b'/bin/sh' in shebang.split(b'\n')[0] and b'bash' not in shebang:
+                    if args.verbose:
+                        print(f"Detected #!/bin/sh script, wrapping with /bin/bash to work around macOS dtrace bug", file=sys.stderr)
+                    command = ['/bin/bash'] + command
+        except (IOError, OSError):
+            pass  # Not readable, let it fail naturally
+        
+    tracer = MacTrace(
+        verbose=args.verbose,
+        capture_io=args.capture_io,
+        io_size=args.io_size,
+        strsize=args.strsize,
+        bufsize=args.bufsize,
+        dynvarsize=args.dynvarsize
+    )
+    result = tracer.trace(command, timeout=args.timeout, run_as_user=run_as_user)
+    
+    # Filter out wrapper processes (sudo, sh, bash) when using -u
+    # This keeps only the real target command and its children
+    if run_as_user and not args.no_filter_wrapper:
+        result = filter_wrapper_processes(result, command, verbose=args.verbose)
+    
+    # Target stdout/stderr is already echoed to TTY in real-time during tracing
+    # No need to print again here
     
     # Summary to stderr
     print(f"--- Trace summary ---", file=sys.stderr)
@@ -1887,9 +3310,40 @@ def main():
     output_data = json.dumps(result.to_dict(), indent=2 if args.pretty else None)
     
     if args.output:
-        with open(args.output, 'w') as f:
+        # Use resolve_path for consistent path handling
+        # check_exists=False because this is an output file (doesn't exist yet)
+        output_path = resolve_path(args.output, 'MACTRACE_OUTPUT', check_exists=False)
+        
+        # Refuse to overwrite existing files
+        if os.path.exists(output_path):
+            print(f"Error: Output file already exists: {output_path}", file=sys.stderr)
+            print(f"Will not overwrite. Remove the file or choose a different output path.", file=sys.stderr)
+            sys.exit(1)
+        
+        # Ensure output directory exists
+        output_dir = os.path.dirname(output_path)
+        if output_dir:
+            dir_created = not os.path.exists(output_dir)
+            os.makedirs(output_dir, exist_ok=True)
+            # Chown newly created directory to the user we ran as
+            if dir_created and run_as_user:
+                try:
+                    os.chown(output_dir, run_as_user[0], run_as_user[1])
+                except OSError:
+                    pass  # Best effort
+        
+        with open(output_path, 'w') as f:
             f.write(output_data)
-        print(f"Trace written to: {args.output}", file=sys.stderr)
+        
+        # Chown output file to the user we ran as (not root)
+        if run_as_user:
+            try:
+                os.chown(output_path, run_as_user[0], run_as_user[1])
+            except OSError as e:
+                if args.verbose:
+                    print(f"Warning: Could not chown {output_path}: {e}", file=sys.stderr)
+        
+        print(f"Trace written to: {output_path}", file=sys.stderr)
     else:
         print(output_data)
 

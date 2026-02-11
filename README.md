@@ -9,6 +9,56 @@ An strace-like utility for macOS using DTrace. Traces system calls for a command
 - Python 3.8+
 - Root privileges (DTrace requires sudo)
 
+## Environment Variables
+
+Set these to run mactrace from anywhere:
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `MACTRACE_HOME` | `$HOME/.mactrace` | Base directory for all mactrace data |
+| `MACTRACE_DB` | `$MACTRACE_HOME/mactrace.db` | SQLite database for timeline server |
+| `MACTRACE_OUTPUT` | `.` (cwd) | Where to save/read JSON trace files |
+| `MACTRACE_PORT` | `3000` | Default port for timeline server |
+| `MACTRACE_USER` | (none) | Default user to run traced programs as |
+
+Add to your shell config:
+
+```bash
+# Add to PATH
+export PATH="$HOME/phd/src/mactrace:$PATH"
+
+# Create config file (works without sudo -E)
+mkdir -p ~/.mactrace ~/traces
+cat > ~/.mactrace/config << 'EOF'
+MACTRACE_HOME=~/.mactrace
+MACTRACE_OUTPUT=~/traces
+MACTRACE_DB=$MACTRACE_HOME/mactrace.db
+EOF
+```
+
+Now you can run from anywhere and outputs go to `~/traces/`. Traced programs automatically run as the sudo caller (not root).
+
+The config file is read using `SUDO_USER`, so it works even though sudo resets environment variables. See [ENVIRONMENT.md](ENVIRONMENT.md) for full config file syntax (supports `~`, `$VAR` expansion, comments).
+
+## Path Resolution
+
+All mactrace tools use consistent path resolution:
+
+- **Absolute paths** (`/path/to/file`) → used as-is
+- **Explicit relative** (`./file`, `../file`) → used as-is
+- **Simple filename** (`file.json`) → prefixed with appropriate env var
+
+```bash
+# With MACTRACE_OUTPUT="$HOME/traces":
+sudo mactrace -o myapp.json ./myapp   # Writes to ~/traces/myapp.json
+sudo mactrace -o ./myapp.json ./myapp # Writes to ./myapp.json (explicit)
+
+# With MACTRACE_OUTPUT set, import finds the file:
+mactrace-import myapp.json            # Reads from ~/traces/myapp.json
+```
+
+See [ENVIRONMENT.md](ENVIRONMENT.md) for full details.
+
 ## Usage
 
 ```bash
@@ -18,6 +68,10 @@ sudo ./mactrace ls -la
 # Write to file with pretty printing
 sudo ./mactrace -o trace.json -p ls -la
 
+# Run traced program as a specific user (not root)
+sudo ./mactrace -u zen -o trace.json ./myapp
+sudo ./mactrace -u 501 -o trace.json ./myapp  # By UID
+
 # With timeout (seconds)
 sudo ./mactrace -t 10 ./long_running_command
 
@@ -26,7 +80,37 @@ sudo ./mactrace -v -o trace.json ./my_program
 
 # Show untraced syscalls (detect gaps in coverage)
 sudo ./mactrace -e -o trace.json ./my_program
+
+# Capture I/O data (read/write buffer contents)
+sudo ./mactrace --capture-io -o trace.json ./my_program
+
+# Adjust buffer sizes for heavy tracing
+sudo ./mactrace --capture-io --strsize 65536 --io-size 65536 -o trace.json ./my_program
 ```
+
+### Running as a Non-Root User
+
+**By default, mactrace automatically detects who ran sudo and runs the traced program as that user.** This avoids common issues:
+- Files created by the traced program are owned by you, not root
+- The program behaves the same as when run normally
+- Programs that refuse to run as root work correctly
+
+```bash
+# Automatic: if you're 'zen' running sudo, the traced program runs as 'zen'
+sudo ./mactrace -o trace.json ./myapp
+
+# Explicit user (overrides auto-detection)
+sudo ./mactrace -u testuser -o trace.json ./myapp
+
+# Run as root explicitly
+sudo ./mactrace -u root -o trace.json ./myapp
+```
+
+User selection priority:
+1. `-u`/`--user` flag
+2. `MACTRACE_USER` env var
+3. `SUDO_USER` (auto-detected)
+4. root (fallback)
 
 ## Output Format
 
@@ -173,6 +257,44 @@ The `process_events` array contains these event types:
 - `signal_send` — Signal sent
 - `signal_handle` — Signal handled
 
+## I/O Metadata Tracking
+
+The `--capture-io` flag emits `MACTRACE_IO` events for read/write/send/recv syscalls:
+
+```bash
+sudo ./mactrace --capture-io -o trace.json /bin/cat /etc/passwd
+```
+
+### What It Captures
+
+**Metadata only** - syscall name, fd, and byte count:
+```
+MACTRACE_IO 12345 12345 read 3 1024
+MACTRACE_IO 12345 12345 write 1 512
+```
+
+**Note:** DTrace cannot practically capture actual buffer contents for variable-length I/O. 
+For full buffer capture, use `strace` on Linux or reconstruct from file/network captures.
+
+### DTrace Buffer Options
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--capture-io` / `-d` | off | Emit MACTRACE_IO events |
+| `--strsize` | 16384 | DTrace strsize - max string size |
+| `--bufsize` | 256m | DTrace bufsize - trace buffer size |
+| `--dynvarsize` | 128m | DTrace dynvarsize - dynamic variable space |
+
+### Analyzer I/O Support
+
+The analyzer tracks I/O bytes from syscall return values (not buffer contents):
+
+```bash
+# Show network activity with byte counts (from read/write on socket fds)
+./mactrace-analyze trace.json
+# Output: fd=6 AF_INET/SOCK_STREAM [connected] (sent 1.9 KB, recv 1.8 MB)
+```
+
 ## Detecting Untraced Syscalls
 
 Use `-e`/`--untraced` to identify syscalls your traced process makes that aren't explicitly captured:
@@ -222,23 +344,30 @@ jq --arg pid "12346" '.events[] | select(.pid == ($pid | tonumber))' trace.json
 
 ## Analysis Tools
 
-### mactrace_analyze.py
+### mactrace-analyze
 
 Analyze trace output to get a human-readable summary:
 
 ```bash
 # Basic analysis
-./mactrace_analyze.py trace.json
+./mactrace-analyze trace.json
 
 # Filter by category
-./mactrace_analyze.py trace.json --category file
-./mactrace_analyze.py trace.json --category network
+./mactrace-analyze trace.json --category file
+./mactrace-analyze trace.json --category network
 
 # Show only errors
-./mactrace_analyze.py trace.json --errors-only
+./mactrace-analyze trace.json --errors-only
+
+# Hide startup/library files
+./mactrace-analyze trace.json --hide-startup
 
 # Output JSON for further processing
-./mactrace_analyze.py trace.json --json
+./mactrace-analyze trace.json --json
+
+# Extract I/O data to files (requires --capture-io during trace)
+./mactrace-analyze trace.json --save-io ./io_output
+./mactrace-analyze trace.json --save-io ./io_output --hexdump --render-terminal
 ```
 
 Output includes:
@@ -248,13 +377,14 @@ Output includes:
 - Network connections
 - Process tree
 - Error summary
+- I/O data extraction (with `--save-io`)
 
-### mactrace_timeline.py
+### mactrace-timeline
 
 Generate an interactive HTML timeline:
 
 ```bash
-./mactrace_timeline.py trace.json -o timeline.html
+./mactrace-timeline trace.json -o timeline.html
 ```
 
 Features:
@@ -264,13 +394,78 @@ Features:
 - fd→path tracking for file operations
 - Error highlighting
 
+## Timeline Server
+
+The `server/` directory contains a web-based timeline viewer:
+
+```bash
+# Import trace into SQLite database
+mactrace-import trace.json --db mactrace.db
+
+# Start the web server
+mactrace-server --db mactrace.db
+# Opens at http://localhost:3000
+```
+
+Set `MACTRACE_DB` and `MACTRACE_PORT` environment variables to avoid repeating flags.
+
+### Import Options
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--db <path>` | `mactrace.db` | SQLite database file |
+| `--io-dir <path>` | `<trace_name>/` | Directory for I/O binary files |
+
+The importer automatically:
+- Creates `.bin` files from captured I/O data (`args.data` in JSON)
+- Creates `.meta.json` files with chunk offset information
+- Generates hexdump files on-the-fly via the server
+
+### Server Options
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--db <path>` | `$MACTRACE_DB` or `mactrace.db` | SQLite database file |
+| `--port <port>` | `$MACTRACE_PORT` or `3000` | Server port |
+
+### Web UI Features
+
+- **Timeline view**: Sortable event list with category filtering
+- **Hexdump viewer**: Click `[+]` on I/O events to view captured data
+- **Search**: Filter events by syscall, target, or details
+- **Process filtering**: View events for specific PIDs
+
+### Database Management
+
+```bash
+mactrace-db list              # List all imported traces
+mactrace-db info <id>         # Show details for a trace
+mactrace-db delete <id>       # Delete a trace
+mactrace-db vacuum            # Compact the database
+mactrace-db stats             # Show database statistics
+```
+
+### FTS5 Note
+
+The import may show:
+```
+Note: FTS5 not available, search will use LIKE
+```
+
+This is informational. **FTS5** (Full-Text Search 5) is a SQLite extension for fast text search. The server uses **sql.js** (WebAssembly SQLite), which doesn't include FTS5 by default.
+
+**Impact:** Search still works via `LIKE '%term%'` queries. For ~100K events this is fine. For millions of events, search would be slower.
+
+**If you need FTS5:** Use native SQLite with FTS5 compiled in, or a sql.js build with FTS5 enabled (larger WASM file).
+
 ## Future Improvements
 
 - [ ] Socket address decoding (IP/port extraction)
 - [ ] More granular timestamps per syscall
 - [ ] Output filtering options (file-only, network-only, etc.)
-- [ ] Timeline visualization tool
-- [ ] Data content capture for read/write (with size limits)
+- [x] Timeline visualization tool (mactrace-timeline)
+- [x] Data content capture for read/write (`--capture-io`)
+- [x] Web-based timeline server with hexdump viewer
 
 ## License
 
