@@ -1,0 +1,1332 @@
+#!/usr/bin/env python3
+"""
+Analyze mactrace JSON output to show what happened during execution.
+
+Reads JSON from mactrace and produces a human-readable summary
+including file access, network activity, process lifecycle, and errors.
+
+Usage:
+    ./mactrace_analyze.py trace.json
+    ./mactrace -o - /bin/ls | ./mactrace_analyze.py -
+
+    # Filter by syscall category
+    ./mactrace_analyze.py trace.json --category file
+    ./mactrace_analyze.py trace.json --category network
+
+    # Show only errors
+    ./mactrace_analyze.py trace.json --errors-only
+
+    # Output JSON summary instead of text
+    ./mactrace_analyze.py trace.json --json
+
+    # Save I/O data to files (excludes startup libs/config)
+    # NOTE: Requires mactrace to be run with --capture-io flag!
+    sudo ./mactrace --capture-io -o trace.json /bin/cat /etc/passwd
+    ./mactrace_analyze.py trace.json --save-io ./io_output
+
+    # Save ALL I/O data including startup
+    ./mactrace_analyze.py trace.json --save-all-io ./io_output
+
+    # Also create .hexdump versions for binary analysis
+    ./mactrace_analyze.py trace.json --save-io ./io_output --hexdump
+
+    # Render terminal output (strips ANSI, handles cursor movement)
+    ./mactrace_analyze.py trace.json --save-io ./io_output --render-terminal
+"""
+
+import sys
+import json
+import argparse
+import os
+import re
+import pwd
+from collections import defaultdict
+from dataclasses import dataclass, field
+from typing import Optional, List, Dict, Any, Set
+from datetime import datetime
+
+
+# ============================================================================
+# Configuration
+# ============================================================================
+
+def get_mactrace_config() -> dict:
+    """
+    Read mactrace config file, supporting variable expansion.
+    Config is at ~/.mactrace/config (using SUDO_USER's home if running as root).
+    
+    Returns dict of config values with variables expanded.
+    """
+    config = {}
+    
+    # Determine whose home directory to use
+    sudo_user = os.environ.get('SUDO_USER')
+    if sudo_user and os.geteuid() == 0:
+        try:
+            home = pwd.getpwnam(sudo_user).pw_dir
+        except KeyError:
+            home = os.path.expanduser('~')
+    else:
+        home = os.path.expanduser('~')
+    
+    config_path = os.path.join(home, '.mactrace', 'config')
+    
+    if not os.path.exists(config_path):
+        return config
+    
+    try:
+        with open(config_path, 'r') as f:
+            for line in f:
+                line = line.strip()
+                if not line or line.startswith('#'):
+                    continue
+                if '=' not in line:
+                    continue
+                    
+                key, value = line.split('=', 1)
+                key = key.strip()
+                value = value.strip()
+                
+                # Expand ~ to home directory (of sudo caller, not root)
+                if '~' in value:
+                    value = value.replace('~', home)
+                
+                # Expand $VAR and ${VAR} references (from config or environment)
+                def expand_var(match):
+                    var_name = match.group(1) or match.group(2)
+                    # First check our config (allows forward references within file)
+                    if var_name in config:
+                        return config[var_name]
+                    # Then check environment
+                    return os.environ.get(var_name, match.group(0))
+                
+                value = re.sub(r'\$\{(\w+)\}|\$(\w+)', expand_var, value)
+                config[key] = value
+                
+    except (IOError, OSError):
+        pass
+    
+    return config
+
+
+def get_config_value(key: str, default: str = None) -> str:
+    """Get a config value, checking env vars first, then config file."""
+    # Environment takes precedence
+    env_val = os.environ.get(key)
+    if env_val:
+        return env_val
+    
+    # Then config file
+    config = get_mactrace_config()
+    return config.get(key, default)
+
+
+def resolve_input_path(path: str) -> str:
+    """
+    Resolve input file path using MACTRACE_OUTPUT if path is relative.
+    
+    Returns the resolved path (which may or may not exist).
+    """
+    if not path or path == '-':
+        return path
+    
+    # Absolute paths or explicit relative (./) used as-is
+    if os.path.isabs(path) or path.startswith('./') or path.startswith('../'):
+        return path
+    
+    # If file exists in current directory, use it
+    if os.path.exists(path):
+        return path
+    
+    # Try MACTRACE_OUTPUT directory
+    output_dir = get_config_value('MACTRACE_OUTPUT')
+    if output_dir:
+        resolved = os.path.join(output_dir, path)
+        return resolved
+    
+    return path
+
+
+# ============================================================================
+# Utility Functions
+# ============================================================================
+
+def format_bytes(n: int) -> str:
+    """Format bytes in human-readable form."""
+    if n < 1024:
+        return f"{n} B"
+    elif n < 1024 * 1024:
+        return f"{n / 1024:.1f} KB"
+    elif n < 1024 * 1024 * 1024:
+        return f"{n / (1024 * 1024):.1f} MB"
+    else:
+        return f"{n / (1024 * 1024 * 1024):.2f} GB"
+
+
+def format_duration(ms: float) -> str:
+    """Format duration in human-readable form."""
+    if ms < 1:
+        return f"{ms * 1000:.1f} µs"
+    elif ms < 1000:
+        return f"{ms:.1f} ms"
+    elif ms < 60000:
+        return f"{ms / 1000:.2f} s"
+    else:
+        return f"{ms / 60000:.1f} min"
+
+
+def format_timestamp(ts: str) -> str:
+    """Format ISO timestamp to shorter form."""
+    try:
+        dt = datetime.fromisoformat(ts)
+        return dt.strftime("%H:%M:%S.%f")[:-3]
+    except (ValueError, TypeError):
+        return str(ts)
+
+
+# File classification patterns
+CONFIG_FILE_PATTERNS = [
+    r'\..*rc$',
+    r'\.config/',
+    r'\.local/',
+    r'/etc/',
+    r'\.plist$',
+    r'\.conf$',
+    r'\.cfg$',
+    r'\.ini$',
+    r'\.yaml$',
+    r'\.yml$',
+    r'preferences\.plist$',
+]
+
+LIBRARY_PATTERNS = [
+    r'\.dylib$',
+    r'\.so(\.\d+)*$',
+    r'/lib/',
+    r'/usr/lib/',
+    r'/System/Library/',
+    r'/Library/Frameworks/',
+]
+
+STARTUP_PATTERNS = [
+    r'/usr/lib/dyld$',
+    r'libSystem',
+    r'libc\+\+',
+    r'libdyld',
+    r'/dev/null$',
+    r'/dev/urandom$',
+    r'/dev/random$',
+]
+
+
+def extract_raw_bytes(data) -> bytes:
+    """
+    Extract raw bytes from data representation.
+    
+    Handles:
+    - Raw bytes
+    - Hex strings (e.g., "48656c6c6f")
+    - Strings with escape sequences (\\n, \\xNN, etc.)
+    - Base64 encoded data
+    """
+    if data is None:
+        return b''
+    
+    if isinstance(data, bytes):
+        return data
+    
+    if isinstance(data, list):
+        # List of byte values
+        try:
+            return bytes(data)
+        except (TypeError, ValueError):
+            pass
+    
+    if not isinstance(data, str):
+        return str(data).encode('utf-8', errors='replace')
+    
+    # Try hex string first (common in trace output)
+    if all(c in '0123456789abcdefABCDEF' for c in data) and len(data) % 2 == 0 and len(data) > 0:
+        try:
+            return bytes.fromhex(data)
+        except ValueError:
+            pass
+    
+    # Handle escape sequences
+    result = bytearray()
+    i = 0
+    
+    while i < len(data):
+        if data[i] == '\\' and i + 1 < len(data):
+            next_char = data[i + 1]
+            
+            if next_char == 'n':
+                result.append(ord('\n'))
+                i += 2
+            elif next_char == 'r':
+                result.append(ord('\r'))
+                i += 2
+            elif next_char == 't':
+                result.append(ord('\t'))
+                i += 2
+            elif next_char == '\\':
+                result.append(ord('\\'))
+                i += 2
+            elif next_char == '"':
+                result.append(ord('"'))
+                i += 2
+            elif next_char == '0' and i + 2 < len(data) and not data[i + 2].isdigit():
+                result.append(0)
+                i += 2
+            elif next_char == 'x' and i + 3 < len(data):
+                try:
+                    hex_val = int(data[i + 2:i + 4], 16)
+                    result.append(hex_val)
+                    i += 4
+                except ValueError:
+                    result.append(ord(data[i]))
+                    i += 1
+            elif next_char.isdigit():
+                # Octal escape
+                octal = ''
+                j = i + 1
+                while j < len(data) and j < i + 4 and data[j].isdigit() and data[j] in '01234567':
+                    octal += data[j]
+                    j += 1
+                if octal:
+                    try:
+                        result.append(int(octal, 8) & 0xFF)
+                        i = j
+                    except ValueError:
+                        result.append(ord(data[i]))
+                        i += 1
+                else:
+                    result.append(ord(data[i]))
+                    i += 1
+            else:
+                result.append(ord(data[i]))
+                i += 1
+        else:
+            result.append(ord(data[i]))
+            i += 1
+    
+    return bytes(result)
+
+
+def sanitize_filename(s: str, max_len: int = 60) -> str:
+    """Sanitize a string for use in a filename."""
+    if not s:
+        return "unknown"
+    
+    # Replace problematic chars
+    s = s.replace('/', '_').replace('\\', '_')
+    s = s.replace(':', '_').replace('*', '_')
+    s = s.replace('?', '_').replace('"', '_')
+    s = s.replace('<', '_').replace('>', '_')
+    s = s.replace('|', '_').replace(' ', '_')
+    s = s.replace('\n', '_').replace('\r', '_')
+    
+    # Remove leading underscores/dots
+    s = s.lstrip('_.')
+    
+    # Collapse multiple underscores
+    while '__' in s:
+        s = s.replace('__', '_')
+    
+    # Truncate
+    if len(s) > max_len:
+        s = s[:max_len]
+    
+    return s.rstrip('_') or "unknown"
+
+
+def render_terminal(data: bytes, width: int = 80) -> bytes:
+    """
+    Render terminal data as it would appear on screen.
+    
+    Processes CR, LF, backspace, tab, and ANSI escape sequences.
+    """
+    # Strip ANSI escapes
+    cleaned = bytearray()
+    i = 0
+    
+    while i < len(data):
+        if data[i] == 0x1b and i + 1 < len(data):
+            next_byte = data[i + 1]
+            if next_byte == ord('['):
+                # CSI sequence
+                i += 2
+                while i < len(data) and 0x20 <= data[i] <= 0x3F:
+                    i += 1
+                if i < len(data) and 0x40 <= data[i] <= 0x7E:
+                    i += 1
+                continue
+            elif next_byte == ord(']'):
+                # OSC sequence
+                i += 2
+                while i < len(data):
+                    if data[i] == 0x07:
+                        i += 1
+                        break
+                    if data[i] == 0x1b and i + 1 < len(data) and data[i + 1] == ord('\\'):
+                        i += 2
+                        break
+                    i += 1
+                continue
+            else:
+                i += 2
+                continue
+        elif data[i] >= 0x20 or data[i] in (0x09, 0x0a, 0x0d):
+            cleaned.append(data[i])
+            i += 1
+        else:
+            i += 1
+    
+    # Simulate terminal with cursor tracking
+    lines = [[]]
+    row = 0
+    col = 0
+    
+    for byte in cleaned:
+        if byte == 0x0d:  # CR
+            col = 0
+        elif byte == 0x0a:  # LF
+            row += 1
+            col = 0
+            while len(lines) <= row:
+                lines.append([])
+        elif byte == 0x08:  # BS
+            if col > 0:
+                col -= 1
+        elif byte == 0x09:  # TAB
+            col = ((col // 8) + 1) * 8
+        elif byte >= 0x20:
+            while len(lines) <= row:
+                lines.append([])
+            while len(lines[row]) <= col:
+                lines[row].append(ord(' '))
+            lines[row][col] = byte
+            col += 1
+    
+    # Build output
+    result = bytearray()
+    for i, line in enumerate(lines):
+        line_bytes = bytes(line).rstrip(b' ')
+        result.extend(line_bytes)
+        if i < len(lines) - 1:
+            result.append(0x0a)
+    
+    return bytes(result).strip(b'\n')
+
+
+def is_config_file(path: str) -> bool:
+    """Check if a path looks like a configuration file."""
+    for pattern in CONFIG_FILE_PATTERNS:
+        if re.search(pattern, path):
+            return True
+    return False
+
+
+def is_library(path: str) -> bool:
+    """Check if a path looks like a shared library."""
+    for pattern in LIBRARY_PATTERNS:
+        if re.search(pattern, path):
+            return True
+    return False
+
+
+def is_startup_file(path: str) -> bool:
+    """Check if a path is a startup-related file."""
+    if is_library(path):
+        return True
+    for pattern in STARTUP_PATTERNS:
+        if re.search(pattern, path):
+            return True
+    return False
+
+
+# ============================================================================
+# Data Classes
+# ============================================================================
+
+@dataclass
+class FileAccess:
+    """Track file access patterns."""
+    path: str
+    opened: bool = False
+    read: bool = False
+    written: bool = False
+    stat: bool = False
+    closed: bool = False
+    error: Optional[str] = None
+    bytes_read: int = 0
+    bytes_written: int = 0
+    pids: Set[int] = field(default_factory=set)
+    is_config: bool = False
+    is_library: bool = False
+    is_startup: bool = False
+
+
+@dataclass
+class NetworkConnection:
+    """Track network connections."""
+    fd: int
+    family: str = "unknown"  # AF_INET, AF_INET6, AF_UNIX
+    sock_type: str = "unknown"  # SOCK_STREAM, SOCK_DGRAM
+    local_addr: Optional[str] = None
+    remote_addr: Optional[str] = None
+    connected: bool = False
+    bytes_sent: int = 0
+    bytes_recv: int = 0
+    pid: Optional[int] = None
+
+
+@dataclass
+class ProcessInfo:
+    """Track process lifecycle."""
+    pid: int
+    parent_pid: Optional[int] = None
+    exec_path: Optional[str] = None
+    exit_code: Optional[int] = None
+    fork_time: Optional[int] = None
+    exec_time: Optional[int] = None
+    exit_time: Optional[int] = None
+
+
+@dataclass
+class IORecord:
+    """Record of an I/O operation for saving to files."""
+    pid: int
+    program: str
+    operation: str  # read, write, recv, send
+    target: str  # file path or socket description
+    data: bytes
+    is_startup: bool
+    seq: int = 0  # Event sequence number from trace
+    timestamp: Optional[float] = None
+    fd: Optional[int] = None
+
+
+# ============================================================================
+# Analyzer Class
+# ============================================================================
+
+# Import categories from shared module
+try:
+    from mactrace_categories import get_category, get_categories_for_display, CATEGORY_ORDER
+except ImportError:
+    # Fallback if module not found
+    def get_category(syscall):
+        return 'other'
+    def get_categories_for_display():
+        return ['file', 'network', 'process', 'memory', 'signal', 'other']
+    CATEGORY_ORDER = ['file', 'network', 'process', 'memory', 'signal', 'other']
+
+
+class MacTraceAnalyzer:
+    """Analyze mactrace JSON output."""
+
+    def __init__(self, save_io_dir: str = None, save_all_io: bool = False,
+                 hexdump: bool = False, render_terminal_output: bool = False):
+        self.save_io_dir = save_io_dir
+        self.save_all_io = save_all_io
+        self.hexdump = hexdump
+        self.render_terminal_output = render_terminal_output
+        
+        self.trace_data: Dict[str, Any] = {}
+        self.files: Dict[str, FileAccess] = {}
+        self.fd_to_path: Dict[int, Dict[int, str]] = defaultdict(dict)  # pid -> {fd -> path}
+        self.sockets: Dict[int, Dict[int, NetworkConnection]] = defaultdict(dict)  # pid -> {fd -> conn}
+        self.processes: Dict[int, ProcessInfo] = {}
+        self.errors: List[Dict[str, Any]] = []
+        self.syscall_counts: Dict[str, int] = defaultdict(int)
+        self.category_counts: Dict[str, int] = defaultdict(int)
+        self.io_records: List[IORecord] = []
+        self.current_seq: int = 0  # Current event sequence number
+        
+    def load(self, filepath: str) -> None:
+        """Load trace data from file or stdin."""
+        if filepath == '-':
+            self.trace_data = json.load(sys.stdin)
+        else:
+            with open(filepath, 'r') as f:
+                self.trace_data = json.load(f)
+                
+    def analyze(self) -> None:
+        """Analyze the loaded trace data."""
+        # Initialize root process
+        target_pid = self.trace_data.get('target_pid', 0)
+        if target_pid:
+            self.processes[target_pid] = ProcessInfo(
+                pid=target_pid,
+                exec_path=self.trace_data.get('command', [None])[0] if self.trace_data.get('command') else None
+            )
+        
+        # Process tree
+        for child_str, parent in self.trace_data.get('process_tree', {}).items():
+            child = int(child_str)
+            if child not in self.processes:
+                self.processes[child] = ProcessInfo(pid=child)
+            self.processes[child].parent_pid = parent
+            
+        # Process events
+        for event in self.trace_data.get('process_events', []):
+            self._process_event(event)
+            
+        # Syscall events
+        for seq, event in enumerate(self.trace_data.get('events', [])):
+            self.current_seq = seq
+            self._process_syscall(event)
+            
+    def _process_event(self, event: Dict[str, Any]) -> None:
+        """Process a process lifecycle event."""
+        event_type = event.get('event_type', '')
+        pid = event.get('pid', 0)
+        details = event.get('details', {})
+        
+        if pid not in self.processes:
+            self.processes[pid] = ProcessInfo(pid=pid)
+        proc = self.processes[pid]
+        
+        if event_type in ('fork', 'child_detected'):
+            # parent_pid may be in details or at top level of event
+            proc.parent_pid = details.get('parent_pid') or event.get('parent_pid')
+            proc.fork_time = event.get('timestamp_us')
+            
+        elif event_type == 'exec':
+            proc.exec_path = details.get('path')
+            proc.exec_time = event.get('timestamp_us')
+            
+        elif event_type == 'exit':
+            proc.exit_code = details.get('exit_code')
+            proc.exit_time = event.get('timestamp_us')
+            
+    def _process_syscall(self, event: Dict[str, Any]) -> None:
+        """Process a syscall event."""
+        syscall = event.get('syscall', '')
+        pid = event.get('pid', 0)
+        args = event.get('args', {})
+        retval = event.get('return_value', 0)
+        errno = event.get('errno', 0)
+        
+        # Count syscalls
+        self.syscall_counts[syscall] += 1
+        
+        # Get category from event (mactrace includes it) or fall back to lookup
+        category = event.get('category') or get_category(syscall)
+        self.category_counts[category] += 1
+            
+        # Track errors
+        if errno != 0:
+            error_name = args.get('errno_name', f'errno={errno}')
+            self.errors.append({
+                'syscall': syscall,
+                'pid': pid,
+                'errno': errno,
+                'errno_name': error_name,
+                'args': args,
+            })
+            
+        # Handle specific syscalls
+        if syscall in ('open', 'open_nocancel', 'openat', 'openat_nocancel'):
+            self._handle_open(pid, syscall, args, retval, errno)
+        elif syscall in ('close', 'close_nocancel'):
+            self._handle_close(pid, args, retval)
+        elif syscall in ('read', 'read_nocancel', 'pread', 'pread_nocancel'):
+            self._handle_read(pid, args, retval)
+        elif syscall in ('write', 'write_nocancel', 'pwrite', 'pwrite_nocancel'):
+            self._handle_write(pid, args, retval)
+        elif syscall in ('stat64', 'lstat64', 'fstat64', 'fstatat64', 'access', 'faccessat'):
+            self._handle_stat(pid, syscall, args, errno)
+        elif syscall == 'socket':
+            self._handle_socket(pid, args, retval)
+        elif syscall in ('connect', 'connect_nocancel'):
+            self._handle_connect(pid, args, retval, errno)
+        elif syscall in ('bind',):
+            self._handle_bind(pid, args, retval)
+        elif syscall in ('sendto', 'sendto_nocancel'):
+            self._handle_send(pid, args, retval)
+        elif syscall in ('recvfrom', 'recvfrom_nocancel'):
+            self._handle_recv(pid, args, retval)
+        elif syscall in ('execve', 'posix_spawn', '__mac_execve'):
+            self._handle_exec(pid, syscall, args, retval, errno)
+            
+    def _handle_exec(self, pid: int, syscall: str, args: Dict, retval: int, errno: int) -> None:
+        """Handle exec syscalls to track process exec paths."""
+        if errno != 0:
+            return  # Failed exec, don't update path
+        
+        path = args.get('path', '')
+        if not path:
+            return
+            
+        # For posix_spawn, the child pid might be different - it's in retval
+        # But usually we track by current pid
+        if pid not in self.processes:
+            self.processes[pid] = ProcessInfo(pid=pid)
+        
+        self.processes[pid].exec_path = path
+            
+    def _handle_open(self, pid: int, syscall: str, args: Dict, retval: int, errno: int) -> None:
+        """Handle open/openat syscalls."""
+        path = args.get('path', '')
+        if not path:
+            return
+            
+        if path not in self.files:
+            self.files[path] = FileAccess(
+                path=path,
+                is_config=is_config_file(path),
+                is_library=is_library(path),
+                is_startup=is_startup_file(path),
+            )
+            
+        fa = self.files[path]
+        fa.pids.add(pid)
+        
+        if errno == 0 and retval >= 0:
+            fa.opened = True
+            self.fd_to_path[pid][retval] = path
+            
+            # Check flags for read/write intent
+            flags = args.get('flags', '')
+            if isinstance(flags, str):
+                if 'O_WRONLY' in flags or 'O_RDWR' in flags:
+                    fa.written = True
+                if 'O_RDONLY' in flags or 'O_RDWR' in flags:
+                    fa.read = True
+        else:
+            fa.error = args.get('errno_name', f'errno={errno}')
+            
+    def _handle_close(self, pid: int, args: Dict, retval: int) -> None:
+        """Handle close syscalls."""
+        fd = args.get('fd')
+        if fd is not None and fd in self.fd_to_path.get(pid, {}):
+            path = self.fd_to_path[pid].pop(fd)
+            if path in self.files:
+                self.files[path].closed = True
+                
+    def _handle_read(self, pid: int, args: Dict, retval: int) -> None:
+        """Handle read syscalls."""
+        fd = args.get('fd')
+        if fd is not None and retval > 0:
+            # Check if this is a socket first (read/write on sockets is network I/O)
+            if fd in self.sockets.get(pid, {}):
+                self.sockets[pid][fd].bytes_recv += retval
+                if self.save_io_dir and 'data' in args:
+                    target = self._get_socket_target(pid, fd)
+                    self._record_io(pid, fd, 'recv', target, args['data'])
+            else:
+                # File I/O
+                path = self.fd_to_path.get(pid, {}).get(fd)
+                if path and path in self.files:
+                    self.files[path].read = True
+                    self.files[path].bytes_read += retval
+                if self.save_io_dir and 'data' in args:
+                    # Record I/O even for stdin/unknown fds
+                    target = path if path else None
+                    self._record_io(pid, fd, 'read', target, args['data'])
+                
+    def _handle_write(self, pid: int, args: Dict, retval: int) -> None:
+        """Handle write syscalls."""
+        fd = args.get('fd')
+        if fd is not None and retval > 0:
+            # Check if this is a socket first (read/write on sockets is network I/O)
+            if fd in self.sockets.get(pid, {}):
+                self.sockets[pid][fd].bytes_sent += retval
+                if self.save_io_dir and 'data' in args:
+                    target = self._get_socket_target(pid, fd)
+                    self._record_io(pid, fd, 'send', target, args['data'])
+            else:
+                # File I/O
+                path = self.fd_to_path.get(pid, {}).get(fd)
+                if path and path in self.files:
+                    self.files[path].written = True
+                    self.files[path].bytes_written += retval
+                if self.save_io_dir and 'data' in args:
+                    # Record I/O even for stdout/stderr/unknown fds
+                    target = path if path else None
+                    self._record_io(pid, fd, 'write', target, args['data'])
+                
+    def _handle_stat(self, pid: int, syscall: str, args: Dict, errno: int) -> None:
+        """Handle stat/access syscalls."""
+        path = args.get('path', '')
+        if not path:
+            # fstat64 uses fd instead
+            return
+            
+        if path not in self.files:
+            self.files[path] = FileAccess(
+                path=path,
+                is_config=is_config_file(path),
+                is_library=is_library(path),
+                is_startup=is_startup_file(path),
+            )
+            
+        fa = self.files[path]
+        fa.pids.add(pid)
+        fa.stat = True
+        
+        if errno != 0:
+            fa.error = args.get('errno_name', f'errno={errno}')
+            
+    def _handle_socket(self, pid: int, args: Dict, retval: int) -> None:
+        """Handle socket syscalls."""
+        if retval < 0:
+            return
+            
+        domain = args.get('domain', 'unknown')
+        sock_type = args.get('type', 'unknown')
+        
+        conn = NetworkConnection(
+            fd=retval,
+            family=domain,
+            sock_type=sock_type,
+            pid=pid,
+        )
+        self.sockets[pid][retval] = conn
+        
+    def _handle_connect(self, pid: int, args: Dict, retval: int, errno: int) -> None:
+        """Handle connect syscalls."""
+        fd = args.get('fd')
+        if fd is None:
+            return
+            
+        if fd in self.sockets.get(pid, {}):
+            conn = self.sockets[pid][fd]
+            if errno == 0 or errno == 36:  # EINPROGRESS
+                conn.connected = True
+                
+    def _handle_bind(self, pid: int, args: Dict, retval: int) -> None:
+        """Handle bind syscalls."""
+        fd = args.get('fd')
+        if fd is None:
+            return
+            
+        if fd in self.sockets.get(pid, {}):
+            conn = self.sockets[pid][fd]
+            # TODO: parse address when available
+            
+    def _handle_send(self, pid: int, args: Dict, retval: int) -> None:
+        """Handle sendto syscalls."""
+        fd = args.get('fd')
+        if fd is not None and retval > 0:
+            if fd in self.sockets.get(pid, {}):
+                self.sockets[pid][fd].bytes_sent += retval
+            # Record I/O if data is available
+            if self.save_io_dir and 'data' in args:
+                target = self._get_socket_target(pid, fd)
+                self._record_io(pid, fd, 'send', target, args['data'])
+                
+    def _handle_recv(self, pid: int, args: Dict, retval: int) -> None:
+        """Handle recvfrom syscalls."""
+        fd = args.get('fd')
+        if fd is not None and retval > 0:
+            if fd in self.sockets.get(pid, {}):
+                self.sockets[pid][fd].bytes_recv += retval
+            # Record I/O if data is available
+            if self.save_io_dir and 'data' in args:
+                target = self._get_socket_target(pid, fd)
+                self._record_io(pid, fd, 'recv', target, args['data'])
+
+    def _get_socket_target(self, pid: int, fd: int) -> str:
+        """Get descriptive target string for a socket."""
+        if fd in self.sockets.get(pid, {}):
+            conn = self.sockets[pid][fd]
+            parts = [conn.family, conn.sock_type]
+            if conn.remote_addr:
+                parts.append(conn.remote_addr)
+            return '-'.join(str(p) for p in parts if p and p != 'unknown')
+        return f"socket-fd{fd}"
+
+    def _get_program_name(self, pid: int, visited: set = None) -> str:
+        """Get program name for a pid, inheriting from parent if forked without exec."""
+        if visited is None:
+            visited = set()
+        
+        if pid in visited:
+            return "unknown"  # Avoid infinite recursion
+        visited.add(pid)
+        
+        proc = self.processes.get(pid)
+        if not proc:
+            return "unknown"
+        
+        if proc.exec_path:
+            return os.path.basename(proc.exec_path)
+        
+        # Inherit from parent (forked process runs same binary)
+        if proc.parent_pid and proc.parent_pid in self.processes:
+            return self._get_program_name(proc.parent_pid, visited)
+        
+        return "unknown"
+
+    def _record_io(self, pid: int, fd: int, operation: str, target: str, data) -> None:
+        """Record an I/O operation for later saving."""
+        if not target:
+            target = f"fd{fd}"
+        
+        # Determine if this is a startup file
+        is_startup = is_startup_file(target) if target else False
+        
+        # Handle stdin/stdout/stderr
+        if fd in (0, 1, 2):
+            fd_names = {0: 'stdin', 1: 'stdout', 2: 'stderr'}
+            target = fd_names.get(fd, target)
+            is_startup = False
+        
+        # Get program name (inherit from parent if forked without exec)
+        program = self._get_program_name(pid)
+        
+        # Extract raw bytes
+        raw_bytes = extract_raw_bytes(data)
+        
+        if raw_bytes:
+            record = IORecord(
+                pid=pid,
+                program=program,
+                operation=operation,
+                target=target,
+                data=raw_bytes,
+                is_startup=is_startup,
+                seq=self.current_seq,
+                fd=fd,
+            )
+            self.io_records.append(record)
+
+    def save_io_files(self) -> Dict[str, Any]:
+        """
+        Save recorded I/O to files.
+        
+        Returns a dict with statistics about saved files.
+        """
+        import subprocess
+        
+        if not self.save_io_dir:
+            return {}
+        
+        os.makedirs(self.save_io_dir, exist_ok=True)
+        
+        # Group records by (pid, program, operation, target)
+        grouped = defaultdict(list)
+        for record in self.io_records:
+            if not self.save_all_io and record.is_startup:
+                continue
+            key = (record.pid, record.program, record.operation, record.target)
+            grouped[key].append(record)
+        
+        stats = {
+            'files_saved': 0,
+            'total_bytes': 0,
+            'skipped_startup': 0,
+            'files': []
+        }
+        
+        if not self.save_all_io:
+            stats['skipped_startup'] = sum(1 for r in self.io_records if r.is_startup)
+        
+        for (pid, program, operation, target), records in grouped.items():
+            safe_program = sanitize_filename(program, max_len=20)
+            safe_target = sanitize_filename(target, max_len=40)
+            filename = f"{pid}-{safe_program}-{operation}-{safe_target}.bin"
+            filepath = os.path.join(self.save_io_dir, filename)
+            
+            # Handle collisions
+            base_filepath = filepath
+            seq = 1
+            while os.path.exists(filepath):
+                name, ext = os.path.splitext(base_filepath)
+                filepath = f"{name}.{seq}{ext}"
+                seq += 1
+            
+            # Combine data and track offsets
+            combined_data = b''
+            offset_map = []
+            for r in records:
+                offset_map.append({
+                    'offset': len(combined_data),
+                    'length': len(r.data),
+                    'seq': r.seq
+                })
+                combined_data += r.data
+            
+            # Write binary file
+            with open(filepath, 'wb') as f:
+                f.write(combined_data)
+            
+            # Write metadata
+            meta_filepath = filepath + '.meta.json'
+            with open(meta_filepath, 'w') as f:
+                json.dump({'offsets': offset_map, 'total_size': len(combined_data)}, f)
+            
+            stats['files_saved'] += 1
+            stats['total_bytes'] += len(combined_data)
+            stats['files'].append({
+                'path': filepath,
+                'size': len(combined_data),
+                'operation': operation,
+                'target': target,
+                'pid': pid,
+                'program': program
+            })
+            
+            # Create hexdump if requested
+            if self.hexdump:
+                try:
+                    result = subprocess.run(
+                        ['hexdump', '-C', filepath],
+                        capture_output=True,
+                        timeout=30
+                    )
+                    if result.returncode == 0 and result.stdout:
+                        hexdump_filepath = filepath + '.hexdump'
+                        with open(hexdump_filepath, 'wb') as f:
+                            f.write(result.stdout)
+                except (subprocess.TimeoutExpired, FileNotFoundError):
+                    pass
+            
+            # Create rendered version if requested
+            if self.render_terminal_output:
+                rendered_data = render_terminal(combined_data)
+                if rendered_data != combined_data:
+                    rendered_filepath = filepath + '.rendered'
+                    with open(rendered_filepath, 'wb') as f:
+                        f.write(rendered_data)
+        
+        return stats
+
+    # ========================================================================
+    # Output Methods
+    # ========================================================================
+    
+    def print_summary(self, category: Optional[str] = None, 
+                      errors_only: bool = False,
+                      hide_startup: bool = False) -> None:
+        """Print human-readable summary."""
+        
+        print("=" * 70)
+        print("MACTRACE ANALYSIS")
+        print("=" * 70)
+        
+        # Basic info
+        cmd = self.trace_data.get('command', [])
+        print(f"\nCommand: {' '.join(cmd)}")
+        print(f"Duration: {format_duration(self.trace_data.get('duration_ms', 0))}")
+        print(f"Target PID: {self.trace_data.get('target_pid', 'unknown')}")
+        print(f"Exit code: {self.trace_data.get('exit_code', 'unknown')}")
+        print(f"Processes traced: {len(self.trace_data.get('pids_traced', []))}")
+        print(f"Total syscalls: {self.trace_data.get('syscall_count', 0)}")
+        
+        # Category breakdown
+        print("\n--- Syscall Categories ---")
+        for cat in CATEGORY_ORDER:
+            count = self.category_counts.get(cat, 0)
+            if count > 0:
+                print(f"  {cat:12} {count:6}")
+                
+        if not errors_only:
+            # Top syscalls
+            print("\n--- Top Syscalls ---")
+            sorted_syscalls = sorted(self.syscall_counts.items(), key=lambda x: -x[1])[:15]
+            for syscall, count in sorted_syscalls:
+                print(f"  {syscall:24} {count:6}")
+                
+        # File access (unless filtering to other category)
+        if (category is None or category == 'file') and not errors_only:
+            self._print_file_summary(hide_startup)
+            
+        # Network activity
+        if (category is None or category == 'network') and not errors_only:
+            self._print_network_summary()
+            
+        # Process tree
+        if (category is None or category == 'process') and not errors_only:
+            self._print_process_summary()
+            
+        # Errors
+        if self.errors:
+            self._print_errors()
+            
+    def _print_file_summary(self, hide_startup: bool = False) -> None:
+        """Print file access summary."""
+        # Separate files by type
+        regular_files = []
+        config_files = []
+        library_files = []
+        
+        for path, fa in self.files.items():
+            if hide_startup and fa.is_startup:
+                continue
+            if fa.is_library:
+                library_files.append(fa)
+            elif fa.is_config:
+                config_files.append(fa)
+            else:
+                regular_files.append(fa)
+                
+        if regular_files:
+            print("\n--- Files Accessed ---")
+            print("  Flags: R=Read, W=Write, S=Stat/access only (not opened), E=Error")
+            for fa in sorted(regular_files, key=lambda x: x.path):
+                flags = []
+                if fa.read: flags.append('R')
+                if fa.written: flags.append('W')
+                if fa.stat and not fa.opened: flags.append('S')
+                if fa.error: flags.append(f'E:{fa.error}')
+                
+                io_info = ""
+                if fa.bytes_read > 0 or fa.bytes_written > 0:
+                    parts = []
+                    if fa.bytes_read > 0:
+                        parts.append(f"read {format_bytes(fa.bytes_read)}")
+                    if fa.bytes_written > 0:
+                        parts.append(f"wrote {format_bytes(fa.bytes_written)}")
+                    io_info = f" ({', '.join(parts)})"
+                    
+                print(f"  [{','.join(flags):5}] {fa.path}{io_info}")
+                
+        if config_files:
+            print("\n--- Config Files ---")
+            for fa in sorted(config_files, key=lambda x: x.path):
+                flags = []
+                if fa.read: flags.append('R')
+                if fa.written: flags.append('W')
+                if fa.stat and not fa.opened: flags.append('S')
+                if fa.error: flags.append('E')
+                print(f"  [{','.join(flags):5}] {fa.path}")
+                
+        if library_files and not hide_startup:
+            print(f"\n--- Libraries ({len(library_files)} loaded) ---")
+            # Just show count and first few
+            for fa in sorted(library_files, key=lambda x: x.path)[:5]:
+                print(f"  {fa.path}")
+            if len(library_files) > 5:
+                print(f"  ... and {len(library_files) - 5} more")
+                
+    def _print_network_summary(self) -> None:
+        """Print network activity summary."""
+        all_sockets = []
+        for pid, sockets in self.sockets.items():
+            for fd, conn in sockets.items():
+                all_sockets.append(conn)
+                
+        if not all_sockets:
+            return
+            
+        print("\n--- Network Activity ---")
+        for conn in all_sockets:
+            status = "connected" if conn.connected else "created"
+            io_info = ""
+            if conn.bytes_sent > 0 or conn.bytes_recv > 0:
+                parts = []
+                if conn.bytes_sent > 0:
+                    parts.append(f"sent {format_bytes(conn.bytes_sent)}")
+                if conn.bytes_recv > 0:
+                    parts.append(f"recv {format_bytes(conn.bytes_recv)}")
+                io_info = f" ({', '.join(parts)})"
+                
+            print(f"  fd={conn.fd} {conn.family}/{conn.sock_type} [{status}]{io_info}")
+            
+    def _print_process_summary(self) -> None:
+        """Print process tree summary."""
+        if len(self.processes) <= 1:
+            return
+            
+        print("\n--- Process Tree ---")
+        
+        # Find root processes (no parent or parent not in trace)
+        roots = []
+        for pid, proc in self.processes.items():
+            if proc.parent_pid is None or proc.parent_pid not in self.processes:
+                roots.append(pid)
+                
+        def get_exec_path(pid: int, is_inherited: bool = False) -> str:
+            """Get exec_path for a process, inheriting from parent if needed."""
+            proc = self.processes.get(pid)
+            if not proc:
+                return "(unknown)"
+            if proc.exec_path:
+                path = proc.exec_path
+                return f"{path} (fork)" if is_inherited else path
+            # No exec_path - inherit from parent (forked processes run same binary)
+            if proc.parent_pid and proc.parent_pid in self.processes:
+                return get_exec_path(proc.parent_pid, is_inherited=True)
+            return "(unknown)"
+        
+        def print_tree(pid: int, indent: int = 0):
+            proc = self.processes.get(pid)
+            if not proc:
+                return
+                
+            prefix = "  " * indent
+            path = get_exec_path(pid)
+            exit_info = f" -> exit({proc.exit_code})" if proc.exit_code is not None else ""
+            print(f"{prefix}[{pid}] {path}{exit_info}")
+            
+            # Find children
+            for child_pid, child_proc in self.processes.items():
+                if child_proc.parent_pid == pid:
+                    print_tree(child_pid, indent + 1)
+                    
+        for root in sorted(roots):
+            print_tree(root)
+            
+    def _print_errors(self) -> None:
+        """Print error summary."""
+        print(f"\n--- Errors ({len(self.errors)} total) ---")
+        
+        # Group by error type
+        by_errno = defaultdict(list)
+        for err in self.errors:
+            key = (err['syscall'], err['errno_name'])
+            by_errno[key].append(err)
+            
+        for (syscall, errno_name), errs in sorted(by_errno.items()):
+            print(f"  {syscall}: {errno_name} ({len(errs)}x)")
+            # Show first example
+            if errs:
+                args = errs[0].get('args', {})
+                if 'path' in args:
+                    print(f"    e.g., path={args['path']}")
+                    
+    def to_json(self) -> Dict[str, Any]:
+        """Return analysis as JSON-serializable dict."""
+        return {
+            'command': self.trace_data.get('command'),
+            'duration_ms': self.trace_data.get('duration_ms'),
+            'target_pid': self.trace_data.get('target_pid'),
+            'exit_code': self.trace_data.get('exit_code'),
+            'syscall_count': self.trace_data.get('syscall_count'),
+            'category_counts': dict(self.category_counts),
+            'syscall_counts': dict(self.syscall_counts),
+            'files': {
+                path: {
+                    'opened': fa.opened,
+                    'read': fa.read,
+                    'written': fa.written,
+                    'stat': fa.stat,
+                    'error': fa.error,
+                    'bytes_read': fa.bytes_read,
+                    'bytes_written': fa.bytes_written,
+                    'is_config': fa.is_config,
+                    'is_library': fa.is_library,
+                }
+                for path, fa in self.files.items()
+            },
+            'network': [
+                {
+                    'fd': conn.fd,
+                    'family': conn.family,
+                    'type': conn.sock_type,
+                    'connected': conn.connected,
+                    'bytes_sent': conn.bytes_sent,
+                    'bytes_recv': conn.bytes_recv,
+                    'pid': conn.pid,
+                }
+                for sockets in self.sockets.values()
+                for conn in sockets.values()
+            ],
+            'processes': {
+                pid: {
+                    'parent_pid': proc.parent_pid,
+                    'exec_path': proc.exec_path,
+                    'exit_code': proc.exit_code,
+                }
+                for pid, proc in self.processes.items()
+            },
+            'errors': self.errors,
+        }
+
+
+# ============================================================================
+# Main
+# ============================================================================
+
+def main():
+    parser = argparse.ArgumentParser(
+        description='Analyze mactrace JSON output',
+        epilog='Reads JSON from mactrace and produces analysis summary.'
+    )
+    parser.add_argument('file', help='mactrace JSON file (use - for stdin)')
+    parser.add_argument('-c', '--category', choices=CATEGORY_ORDER,
+                        help='Filter to specific syscall category')
+    parser.add_argument('--errors-only', action='store_true',
+                        help='Only show errors')
+    parser.add_argument('--hide-startup', action='store_true',
+                        help='Hide startup/library files')
+    parser.add_argument('--json', action='store_true',
+                        help='Output JSON instead of text')
+    parser.add_argument('--save-io', metavar='DIR',
+                        help='Save I/O data to files in DIR (excludes startup libs/config)')
+    parser.add_argument('--save-all-io', metavar='DIR',
+                        help='Save ALL I/O data to files in DIR (includes startup files)')
+    parser.add_argument('--hexdump', action='store_true',
+                        help='Create .hexdump versions of I/O files (output of hexdump -C)')
+    parser.add_argument('--render-terminal', action='store_true',
+                        help='Create .rendered versions showing terminal output as user would see it')
+    
+    args = parser.parse_args()
+    
+    # Resolve input file path using config
+    input_file = resolve_input_path(args.file)
+    
+    # Determine save_io directory
+    save_io_dir = args.save_all_io or args.save_io
+    save_all_io = args.save_all_io is not None
+    
+    # If save_io_dir is relative, use MACTRACE_OUTPUT
+    if save_io_dir and not os.path.isabs(save_io_dir) and not save_io_dir.startswith('./'):
+        output_dir = get_config_value('MACTRACE_OUTPUT')
+        if output_dir:
+            save_io_dir = os.path.join(output_dir, save_io_dir)
+    
+    analyzer = MacTraceAnalyzer(
+        save_io_dir=save_io_dir,
+        save_all_io=save_all_io,
+        hexdump=args.hexdump,
+        render_terminal_output=args.render_terminal,
+    )
+    
+    try:
+        analyzer.load(input_file)
+    except FileNotFoundError:
+        # Show the full path we tried if it differs from what user typed
+        if input_file != args.file:
+            print(f"Error: File not found: {input_file}", file=sys.stderr)
+            print(f"  (resolved from: {args.file})", file=sys.stderr)
+        else:
+            print(f"Error: File not found: {args.file}", file=sys.stderr)
+            # Hint about MACTRACE_OUTPUT if it's set
+            output_dir = get_config_value('MACTRACE_OUTPUT')
+            if output_dir:
+                print(f"  (MACTRACE_OUTPUT={output_dir})", file=sys.stderr)
+        sys.exit(1)
+    except json.JSONDecodeError as e:
+        print(f"Error: Invalid JSON in {input_file}: {e}", file=sys.stderr)
+        sys.exit(1)
+        
+    analyzer.analyze()
+    
+    # Save I/O files if requested
+    if save_io_dir:
+        stats = analyzer.save_io_files()
+        if stats.get('files_saved', 0) > 0:
+            print(f"\n--- I/O Files Saved ---", file=sys.stderr)
+            print(f"  Directory: {save_io_dir}", file=sys.stderr)
+            print(f"  Files: {stats['files_saved']}", file=sys.stderr)
+            print(f"  Total bytes: {format_bytes(stats['total_bytes'])}", file=sys.stderr)
+            if stats.get('skipped_startup', 0) > 0:
+                print(f"  Skipped startup I/O: {stats['skipped_startup']}", file=sys.stderr)
+    
+    if args.json:
+        print(json.dumps(analyzer.to_json(), indent=2))
+    else:
+        analyzer.print_summary(
+            category=args.category,
+            errors_only=args.errors_only,
+            hide_startup=args.hide_startup,
+        )
+
+
+if __name__ == '__main__':
+    main()

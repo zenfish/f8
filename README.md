@@ -54,7 +54,7 @@ sudo mactrace -o myapp.json ./myapp   # Writes to ~/traces/myapp.json
 sudo mactrace -o ./myapp.json ./myapp # Writes to ./myapp.json (explicit)
 
 # With MACTRACE_OUTPUT set, import finds the file:
-mactrace-import myapp.json            # Reads from ~/traces/myapp.json
+mactrace_import myapp.json            # Reads from ~/traces/myapp.json
 ```
 
 See [ENVIRONMENT.md](ENVIRONMENT.md) for full details.
@@ -291,7 +291,7 @@ The analyzer tracks I/O bytes from syscall return values (not buffer contents):
 
 ```bash
 # Show network activity with byte counts (from read/write on socket fds)
-./mactrace-analyze trace.json
+./mactrace_analyze trace.json
 # Output: fd=6 AF_INET/SOCK_STREAM [connected] (sent 1.9 KB, recv 1.8 MB)
 ```
 
@@ -344,30 +344,30 @@ jq --arg pid "12346" '.events[] | select(.pid == ($pid | tonumber))' trace.json
 
 ## Analysis Tools
 
-### mactrace-analyze
+### mactrace_analyze
 
 Analyze trace output to get a human-readable summary:
 
 ```bash
 # Basic analysis
-./mactrace-analyze trace.json
+./mactrace_analyze trace.json
 
 # Filter by category
-./mactrace-analyze trace.json --category file
-./mactrace-analyze trace.json --category network
+./mactrace_analyze trace.json --category file
+./mactrace_analyze trace.json --category network
 
 # Show only errors
-./mactrace-analyze trace.json --errors-only
+./mactrace_analyze trace.json --errors-only
 
 # Hide startup/library files
-./mactrace-analyze trace.json --hide-startup
+./mactrace_analyze trace.json --hide-startup
 
 # Output JSON for further processing
-./mactrace-analyze trace.json --json
+./mactrace_analyze trace.json --json
 
 # Extract I/O data to files (requires --capture-io during trace)
-./mactrace-analyze trace.json --save-io ./io_output
-./mactrace-analyze trace.json --save-io ./io_output --hexdump --render-terminal
+./mactrace_analyze trace.json --save-io ./io_output
+./mactrace_analyze trace.json --save-io ./io_output --hexdump --render-terminal
 ```
 
 Output includes:
@@ -379,12 +379,12 @@ Output includes:
 - Error summary
 - I/O data extraction (with `--save-io`)
 
-### mactrace-timeline
+### mactrace_timeline
 
 Generate an interactive HTML timeline:
 
 ```bash
-./mactrace-timeline trace.json -o timeline.html
+./mactrace_timeline trace.json -o timeline.html
 ```
 
 Features:
@@ -400,10 +400,10 @@ The `server/` directory contains a web-based timeline viewer:
 
 ```bash
 # Import trace into SQLite database
-mactrace-import trace.json --db mactrace.db
+mactrace_import trace.json --db mactrace.db
 
 # Start the web server
-mactrace-server --db mactrace.db
+mactrace_server --db mactrace.db
 # Opens at http://localhost:3000
 ```
 
@@ -438,11 +438,11 @@ The importer automatically:
 ### Database Management
 
 ```bash
-mactrace-db list              # List all imported traces
-mactrace-db info <id>         # Show details for a trace
-mactrace-db delete <id>       # Delete a trace
-mactrace-db vacuum            # Compact the database
-mactrace-db stats             # Show database statistics
+mactrace_db list              # List all imported traces
+mactrace_db info <id>         # Show details for a trace
+mactrace_db delete <id>       # Delete a trace
+mactrace_db vacuum            # Compact the database
+mactrace_db stats             # Show database statistics
 ```
 
 ### FTS5 Note
@@ -463,7 +463,7 @@ This is informational. **FTS5** (Full-Text Search 5) is a SQLite extension for f
 - [ ] Socket address decoding (IP/port extraction)
 - [ ] More granular timestamps per syscall
 - [ ] Output filtering options (file-only, network-only, etc.)
-- [x] Timeline visualization tool (mactrace-timeline)
+- [x] Timeline visualization tool (mactrace_timeline)
 - [x] Data content capture for read/write (`--capture-io`)
 - [x] Web-based timeline server with hexdump viewer
 

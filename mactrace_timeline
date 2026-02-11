@@ -1,0 +1,1444 @@
+#!/usr/bin/env python3
+"""
+Generate an HTML timeline view of mactrace syscall data.
+
+Reads JSON output from mactrace and generates an interactive HTML
+timeline with sortable/filterable table, syscall categorization,
+pagination, search, and I/O data links.
+
+Usage:
+    ./mactrace_timeline.py trace.json -o timeline.html
+    ./mactrace_timeline.py trace.json -o timeline.html -d ./io_output
+"""
+
+import sys
+import json
+import argparse
+import os
+import re
+import pwd
+import html
+from datetime import datetime
+from typing import Optional, Dict, List, Any, Tuple
+from collections import defaultdict, Counter
+from pathlib import Path
+
+
+# ============================================================================
+# Configuration
+# ============================================================================
+
+def get_mactrace_config() -> dict:
+    """
+    Read mactrace config file, supporting variable expansion.
+    Config is at ~/.mactrace/config (using SUDO_USER's home if running as root).
+    """
+    config = {}
+    
+    sudo_user = os.environ.get('SUDO_USER')
+    if sudo_user and os.geteuid() == 0:
+        try:
+            home = pwd.getpwnam(sudo_user).pw_dir
+        except KeyError:
+            home = os.path.expanduser('~')
+    else:
+        home = os.path.expanduser('~')
+    
+    config_path = os.path.join(home, '.mactrace', 'config')
+    
+    if not os.path.exists(config_path):
+        return config
+    
+    try:
+        with open(config_path, 'r') as f:
+            for line in f:
+                line = line.strip()
+                if not line or line.startswith('#'):
+                    continue
+                if '=' not in line:
+                    continue
+                    
+                key, value = line.split('=', 1)
+                key = key.strip()
+                value = value.strip()
+                
+                if '~' in value:
+                    value = value.replace('~', home)
+                
+                def expand_var(match):
+                    var_name = match.group(1) or match.group(2)
+                    if var_name in config:
+                        return config[var_name]
+                    return os.environ.get(var_name, match.group(0))
+                
+                value = re.sub(r'\$\{(\w+)\}|\$(\w+)', expand_var, value)
+                config[key] = value
+                
+    except (IOError, OSError):
+        pass
+    
+    return config
+
+
+def get_config_value(key: str, default: str = None) -> str:
+    """Get a config value, checking env vars first, then config file."""
+    env_val = os.environ.get(key)
+    if env_val:
+        return env_val
+    config = get_mactrace_config()
+    return config.get(key, default)
+
+
+def resolve_input_path(path: str) -> str:
+    """Resolve input file path using MACTRACE_OUTPUT if path is relative."""
+    if not path or path == '-':
+        return path
+    
+    if os.path.isabs(path) or path.startswith('./') or path.startswith('../'):
+        return path
+    
+    if os.path.exists(path):
+        return path
+    
+    output_dir = get_config_value('MACTRACE_OUTPUT')
+    if output_dir:
+        return os.path.join(output_dir, path)
+    
+    return path
+
+
+# Color palette for column headers
+HEADER_COLORS = [
+    "#e08214",  # seq
+    "#fdb863",  # pid
+    "#fee0b6",  # syscall
+    "#d8daeb",  # result
+    "#b2abd2",  # target
+    "#8073ac",  # details
+]
+
+def lighten_color(hex_color: str, factor: float = 0.85) -> str:
+    """Lighten a hex color by mixing with white."""
+    hex_color = hex_color.lstrip('#')
+    r = int(hex_color[0:2], 16)
+    g = int(hex_color[2:4], 16)
+    b = int(hex_color[4:6], 16)
+    r = int(r + (255 - r) * factor)
+    g = int(g + (255 - g) * factor)
+    b = int(b + (255 - b) * factor)
+    return f"#{r:02x}{g:02x}{b:02x}"
+
+DATA_COLORS = [lighten_color(c) for c in HEADER_COLORS]
+
+# Import categories from shared module
+try:
+    from mactrace_categories import (
+        get_category, get_color, get_text_color, get_categories_for_display,
+        CATEGORY_COLORS, CATEGORY_ORDER
+    )
+except ImportError:
+    CATEGORY_COLORS = {
+        'file': '#4CAF50', 'network': '#2196F3', 'process': '#FF9800',
+        'memory': '#9C27B0', 'signal': '#F44336', 'other': '#607D8B',
+    }
+    CATEGORY_ORDER = ['file', 'network', 'process', 'memory', 'signal', 'other']
+    def get_category(syscall):
+        return 'other'
+    def get_color(category):
+        return CATEGORY_COLORS.get(category, '#607D8B')
+    def get_text_color(category):
+        return '#ffffff'
+    def get_categories_for_display():
+        return CATEGORY_ORDER
+
+
+# I/O syscalls that can have data captured
+IO_SYSCALLS = {
+    'read', 'read_nocancel', 'pread', 'pread_nocancel',
+    'write', 'write_nocancel', 'pwrite', 'pwrite_nocancel',
+    'sendto', 'sendto_nocancel', 'recvfrom', 'recvfrom_nocancel',
+    'sendmsg', 'sendmsg_nocancel', 'recvmsg', 'recvmsg_nocancel',
+}
+
+
+def format_bytes(n: int) -> str:
+    """Format bytes with K, M, G suffixes."""
+    if n < 1024:
+        return f"{n}"
+    elif n < 1024 * 1024:
+        return f"{n / 1024:.1f}K"
+    elif n < 1024 * 1024 * 1024:
+        return f"{n / (1024 * 1024):.1f}M"
+    else:
+        return f"{n / (1024 * 1024 * 1024):.2f}G"
+
+
+def format_duration(ms: float) -> str:
+    """Format duration."""
+    if ms < 1:
+        return f"{ms * 1000:.1f}µs"
+    elif ms < 1000:
+        return f"{ms:.1f}ms"
+    else:
+        return f"{ms / 1000:.2f}s"
+
+
+def sanitize_filename(s: str, max_len: int = 60) -> str:
+    """Sanitize a string for use in a filename."""
+    if not s:
+        return "unknown"
+    s = s.replace('/', '_').replace('\\', '_').replace(':', '_')
+    s = s.replace('*', '_').replace('?', '_').replace('"', '_')
+    s = s.replace('<', '_').replace('>', '_').replace('|', '_')
+    s = s.replace(' ', '_').replace('\n', '_').replace('\r', '_')
+    s = s.lstrip('_.')
+    while '__' in s:
+        s = s.replace('__', '_')
+    if len(s) > max_len:
+        s = s[:max_len]
+    return s.rstrip('_') or "unknown"
+
+
+class TimelineGenerator:
+    """Generate HTML timeline from mactrace JSON data."""
+
+    def __init__(self, input_file: str = None, output_dir: str = None):
+        self.input_file = input_file or "stdin"
+        self.output_dir = output_dir
+        self.trace_data: Dict[str, Any] = {}
+        # pid -> {fd -> target_info}
+        self.fd_map: Dict[int, Dict[int, Dict]] = defaultdict(dict)
+        # Scan I/O files if output_dir provided
+        self.io_files: Dict[str, List[Dict]] = {}
+
+    def load(self, filepath: str) -> None:
+        """Load trace data from file or stdin."""
+        if filepath == '-':
+            self.trace_data = json.load(sys.stdin)
+        else:
+            with open(filepath, 'r') as f:
+                self.trace_data = json.load(f)
+        
+        if self.output_dir:
+            self.io_files = self._scan_io_files()
+
+    def _scan_io_files(self) -> Dict[str, List[Dict]]:
+        """Scan output directory for I/O files."""
+        files = defaultdict(list)
+        if not self.output_dir or not os.path.isdir(self.output_dir):
+            return files
+        
+        for filename in os.listdir(self.output_dir):
+            filepath = os.path.join(self.output_dir, filename)
+            if not os.path.isfile(filepath):
+                continue
+            
+            # Parse: PID-program-operation-target.bin[.hexdump|.rendered]
+            is_hexdump = filename.endswith('.hexdump')
+            is_rendered = filename.endswith('.rendered')
+            is_bin = filename.endswith('.bin') and not is_hexdump and not is_rendered
+            
+            if is_bin:
+                base_name = filename
+            elif is_hexdump:
+                base_name = filename[:-8]
+            elif is_rendered:
+                base_name = filename[:-9]
+            else:
+                continue
+            
+            match = re.match(r'^(\d+)-([^-]+)-(\w+)-(.+)\.bin$', base_name)
+            if match:
+                pid = int(match.group(1))
+                program = match.group(2)
+                operation = match.group(3)
+                target = match.group(4)
+                
+                key = f"{pid}-{program}-{operation}-{target}"
+                file_info = {
+                    'path': filepath,
+                    'filename': filename,
+                    'size': os.path.getsize(filepath),
+                    'pid': pid,
+                    'program': program,
+                    'operation': operation,
+                    'target': target,
+                    'type': 'bin' if is_bin else ('hexdump' if is_hexdump else 'rendered'),
+                }
+                files[key].append(file_info)
+        
+        return files
+
+    def _find_io_files(self, pid: int, operation: str, target: str, fd: int = None) -> Dict[str, Dict]:
+        """Find I/O files matching criteria."""
+        result = {}
+        if not self.io_files:
+            return result
+        
+        # Build list of patterns to search for
+        patterns = []
+        
+        if target:
+            target_basename = os.path.basename(target) if '/' in target else target
+            sanitized = sanitize_filename(target_basename, 40)
+            patterns.append(sanitized)
+            if target_basename != sanitized:
+                patterns.append(target_basename)
+        
+        # For sockets, also try matching by family/type (how mactrace_analyze names them)
+        if fd is not None:
+            fd_info = self.fd_map.get(pid, {}).get(fd, {})
+            if fd_info.get('type') == 'socket':
+                domain = fd_info.get('domain', '')
+                sock_type = fd_info.get('sock_type', '')
+                if domain and sock_type:
+                    socket_pattern = f"{domain}-{sock_type}"
+                    patterns.append(socket_pattern)
+        
+        # Also check stdin/stdout/stderr
+        if fd in (0, 1, 2):
+            fd_names = {0: 'stdin', 1: 'stdout', 2: 'stderr'}
+            patterns.append(fd_names[fd])
+        
+        if not patterns:
+            return result
+        
+        # Determine operation pattern (read/recv or write/send)
+        op_patterns = [f"-{operation}-"]
+        if operation == 'read':
+            op_patterns.append("-recv-")
+        elif operation == 'write':
+            op_patterns.append("-send-")
+        
+        # Look for matching files
+        for key, files in self.io_files.items():
+            if not key.startswith(f"{pid}-"):
+                continue
+            if not any(op in key for op in op_patterns):
+                continue
+            
+            if any(pat in key for pat in patterns):
+                for f in files:
+                    if f['type'] not in result:
+                        result[f['type']] = f
+        
+        return result
+
+    def _track_fd(self, event: Dict) -> None:
+        """Track file descriptor to target mapping."""
+        syscall = event.get('syscall', '')
+        args = event.get('args', {})
+        retval = event.get('return_value', 0)
+        pid = event.get('pid', 0)
+        errno = event.get('errno', 0)
+        
+        # File opens
+        if syscall in ('open', 'open_nocancel', 'openat', 'openat_nocancel'):
+            if errno == 0 and retval >= 0:
+                path = args.get('path', '')
+                if path:
+                    self.fd_map[pid][retval] = {'type': 'file', 'path': path}
+        
+        # Socket creation
+        elif syscall == 'socket':
+            if errno == 0 and retval >= 0:
+                domain = args.get('domain', 'unknown')
+                sock_type = args.get('type', 'unknown')
+                self.fd_map[pid][retval] = {
+                    'type': 'socket',
+                    'domain': domain,
+                    'sock_type': sock_type,
+                }
+        
+        # Connect - associates fd with remote address
+        elif syscall in ('connect', 'connect_nocancel'):
+            fd = args.get('fd')
+            if fd is not None and fd in self.fd_map.get(pid, {}):
+                display = args.get('display', '')
+                if display:
+                    self.fd_map[pid][fd]['remote'] = display
+                    self.fd_map[pid][fd]['display'] = display
+        
+        # Bind - associates fd with local address
+        elif syscall == 'bind':
+            fd = args.get('fd')
+            if fd is not None and fd in self.fd_map.get(pid, {}):
+                display = args.get('display', '')
+                if display:
+                    self.fd_map[pid][fd]['local'] = display
+                    if 'display' not in self.fd_map[pid][fd]:
+                        self.fd_map[pid][fd]['display'] = display
+        
+        # Accept - new fd with client address
+        elif syscall in ('accept', 'accept_nocancel'):
+            if errno == 0 and retval >= 0:
+                display = args.get('display', '')
+                self.fd_map[pid][retval] = {
+                    'type': 'socket',
+                    'remote': display,
+                    'display': display or f'client-fd{retval}',
+                }
+        
+        # Close
+        elif syscall in ('close', 'close_nocancel'):
+            fd = args.get('fd')
+            if fd is not None and fd in self.fd_map.get(pid, {}):
+                del self.fd_map[pid][fd]
+
+    def _get_fd_target(self, pid: int, fd: int) -> str:
+        """Get the target (path/address) for an fd."""
+        # Handle stdin/stdout/stderr
+        if fd == 0:
+            return "stdin"
+        elif fd == 1:
+            return "stdout"
+        elif fd == 2:
+            return "stderr"
+        
+        info = self.fd_map.get(pid, {}).get(fd, {})
+        if 'display' in info:
+            return info['display']
+        if 'path' in info:
+            return info['path']
+        return f"fd={fd}"
+
+    def _extract_target(self, event: Dict) -> str:
+        """Extract the primary target from a syscall event."""
+        syscall = event.get('syscall', '')
+        args = event.get('args', {})
+        pid = event.get('pid', 0)
+        
+        # Socket address from connect/bind/accept/sendto/recvfrom
+        if 'display' in args:
+            return args['display']
+        
+        # File path
+        if 'path' in args:
+            return args['path']
+        
+        # fd-based operations - look up the target
+        if 'fd' in args:
+            fd = args['fd']
+            return self._get_fd_target(pid, fd)
+        
+        # Socket creation
+        if syscall == 'socket':
+            domain = args.get('domain', '?')
+            sock_type = args.get('type', '?')
+            return f"{domain}/{sock_type}"
+        
+        return ""
+
+    def _extract_details(self, event: Dict) -> str:
+        """Extract additional details from a syscall event."""
+        syscall = event.get('syscall', '')
+        args = event.get('args', {})
+        retval = event.get('return_value', 0)
+        
+        parts = []
+        
+        # Socket family (if not in target)
+        if 'family' in args and 'display' not in args:
+            parts.append(args['family'])
+        
+        # Flags for open
+        if 'flags' in args and syscall in ('open', 'openat', 'open_nocancel', 'openat_nocancel'):
+            parts.append(args['flags'])
+        
+        # Count for read/write
+        if 'count' in args:
+            parts.append(f"count={args['count']}")
+        
+        # Return value info
+        if syscall in ('read', 'write', 'pread', 'pwrite', 'sendto', 'recvfrom') and retval > 0:
+            parts.append(f"→ {format_bytes(retval)}")
+        elif syscall in ('open', 'openat', 'socket') and retval >= 0:
+            parts.append(f"→ fd={retval}")
+        elif syscall == 'accept' and retval >= 0:
+            parts.append(f"→ fd={retval}")
+        elif syscall == 'connect' and retval == 0:
+            parts.append("→ connected")
+        
+        return " ".join(parts)
+
+    def _is_io_syscall(self, syscall: str) -> bool:
+        """Check if syscall is an I/O operation."""
+        base = syscall.replace('_nocancel', '')
+        return base in ('read', 'pread', 'write', 'pwrite', 
+                       'sendto', 'recvfrom', 'sendmsg', 'recvmsg')
+
+    def _generate_analysis(self) -> Dict[str, Any]:
+        """Generate analysis summary."""
+        events = self.trace_data.get('events', [])
+        cmd = self.trace_data.get('command', [])
+        duration = self.trace_data.get('duration_ms', 0)
+        target_pid = self.trace_data.get('target_pid', 0)
+        exit_code = self.trace_data.get('exit_code', 0)
+        syscall_count = len(events)
+        
+        cat_counts = Counter()
+        syscall_counts = Counter()
+        files_read = set()
+        files_written = set()
+        errors = []
+        
+        for event in events:
+            category = event.get('category') or get_category(event.get('syscall', ''))
+            cat_counts[category] += 1
+            syscall_counts[event.get('syscall', '')] += 1
+            
+            args = event.get('args', {})
+            syscall = event.get('syscall', '')
+            errno = event.get('errno', 0)
+            
+            path = args.get('path', '')
+            if path:
+                if syscall in ('open', 'openat', 'open_nocancel', 'openat_nocancel'):
+                    flags = args.get('flags_raw', 0)
+                    if errno == 0:
+                        if flags & 0x3 in (0, 2):
+                            files_read.add(path)
+                        if flags & 0x3 in (1, 2):
+                            files_written.add(path)
+            
+            if errno != 0:
+                errno_name = args.get('errno_name', f'E{errno}')
+                errors.append({
+                    'syscall': syscall,
+                    'errno': errno,
+                    'errno_name': errno_name,
+                    'target': path or args.get('fd', ''),
+                })
+        
+        return {
+            'command': ' '.join(cmd),
+            'duration_ms': duration,
+            'target_pid': target_pid,
+            'exit_code': exit_code,
+            'syscall_count': syscall_count,
+            'cat_counts': dict(cat_counts),
+            'syscall_counts': dict(syscall_counts.most_common(10)),
+            'files_read': sorted(files_read)[:20],
+            'files_written': sorted(files_written)[:10],
+            'errors': errors[:20],
+            'error_count': len(errors),
+        }
+
+    def _render_analysis_html(self, analysis: Dict[str, Any]) -> str:
+        """Render analysis summary as HTML."""
+        lines = []
+        
+        lines.append(f"<strong>Command:</strong> {html.escape(analysis['command'])}")
+        
+        ms = analysis['duration_ms']
+        dur_str = f"{ms:.1f}ms" if ms < 1000 else f"{ms/1000:.2f}s"
+        
+        lines.append(f"<strong>Duration:</strong> {dur_str} | "
+                    f"<strong>PID:</strong> {analysis['target_pid']} | "
+                    f"<strong>Exit:</strong> {analysis['exit_code']} | "
+                    f"<strong>Syscalls:</strong> {analysis['syscall_count']}")
+        
+        if analysis['syscall_counts']:
+            lines.append("")
+            lines.append("<strong>Top Syscalls:</strong> " + 
+                        ", ".join(f"{k}({v})" for k, v in analysis['syscall_counts'].items()))
+        
+        if analysis['files_read']:
+            lines.append("")
+            lines.append("<strong>Files Read:</strong>")
+            for f in analysis['files_read'][:10]:
+                lines.append(f"  {html.escape(f)}")
+        
+        if analysis['files_written']:
+            lines.append("")
+            lines.append("<strong>Files Written:</strong>")
+            for f in analysis['files_written'][:5]:
+                lines.append(f"  {html.escape(f)}")
+        
+        if analysis['errors']:
+            lines.append("")
+            lines.append(f"<strong>Errors ({len(analysis['errors'])}):</strong>")
+            for err in analysis['errors'][:10]:
+                lines.append(f"  {err['syscall']}: {err['errno_name']} on {html.escape(str(err['target']))}")
+        
+        return "<br>".join(lines)
+
+    def generate(self, max_rows: int = None) -> str:
+        """Generate HTML timeline."""
+        events = self.trace_data.get('events', [])
+        
+        # Apply max_rows limit if specified
+        if max_rows and len(events) > max_rows:
+            events = events[:max_rows]
+        
+        # First pass: track fd mappings
+        for event in events:
+            self._track_fd(event)
+        
+        # Reset for second pass
+        self.fd_map = defaultdict(dict)
+        
+        # Build table rows
+        rows = []
+        for idx, event in enumerate(events):
+            self._track_fd(event)
+            
+            seq = event.get('timestamp_us', idx)
+            pid = event.get('pid', 0)
+            syscall = event.get('syscall', '')
+            retval = event.get('return_value', 0)
+            errno = event.get('errno', 0)
+            args = event.get('args', {})
+            
+            category = event.get('category') or get_category(syscall)
+            target = self._extract_target(event)
+            details = self._extract_details(event)
+            
+            # Check for I/O data
+            has_io_data = 'data' in args
+            is_io = self._is_io_syscall(syscall)
+            io_files = {}
+            if is_io and retval > 0:
+                op = 'read' if 'read' in syscall or 'recv' in syscall else 'write'
+                fd = args.get('fd')
+                io_files = self._find_io_files(pid, op, target, fd)
+            
+            errno_name = args.get('errno_name', '')
+            if errno != 0:
+                result = f'<span class="error">{retval} ({errno_name})</span>'
+            else:
+                result = str(retval)
+            
+            rows.append({
+                'seq': seq,
+                'pid': pid,
+                'syscall': syscall,
+                'category': category,
+                'result': result,
+                'result_raw': retval,
+                'target': target,
+                'details': details,
+                'is_error': errno != 0,
+                'is_io': is_io and retval > 0,
+                'has_io_data': has_io_data,
+                'io_files': io_files,
+                'io_size': retval if is_io and retval > 0 else 0,
+            })
+        
+        return self._render_html(rows)
+
+    def generate_virtual(self, max_rows: int = None) -> str:
+        """Generate HTML timeline with virtual scrolling for huge traces."""
+        import json as json_module
+        
+        events = self.trace_data.get('events', [])
+        if max_rows and len(events) > max_rows:
+            events = events[:max_rows]
+        
+        # Track fd mappings
+        for event in events:
+            self._track_fd(event)
+        self.fd_map = defaultdict(dict)
+        
+        # Build minimal row data as JSON (not HTML)
+        rows_json = []
+        cat_counts = defaultdict(int)
+        error_count = 0
+        
+        for idx, event in enumerate(events):
+            self._track_fd(event)
+            
+            seq = event.get('timestamp_us', idx)
+            pid = event.get('pid', 0)
+            syscall = event.get('syscall', '')
+            retval = event.get('return_value', 0)
+            errno = event.get('errno', 0)
+            args = event.get('args', {})
+            
+            category = event.get('category') or get_category(syscall)
+            target = self._extract_target(event)
+            details = self._extract_details(event)
+            
+            is_io = self._is_io_syscall(syscall) and retval > 0
+            io_files = {}
+            if is_io:
+                op = 'read' if 'read' in syscall or 'recv' in syscall else 'write'
+                fd = args.get('fd')
+                io_files = self._find_io_files(pid, op, target, fd)
+            
+            errno_name = args.get('errno_name', '')
+            is_error = errno != 0
+            
+            cat_counts[category] += 1
+            if is_error:
+                error_count += 1
+            
+            # Compact JSON row: [seq, pid, syscall, category, result, errno_name, target, details, is_error, io_files_compact]
+            io_compact = None
+            if io_files:
+                io_compact = {k: {'f': v['filename'], 's': v['size']} for k, v in io_files.items()}
+            
+            rows_json.append([seq, pid, syscall, category, retval, errno_name, target, details, is_error, io_compact])
+        
+        analysis = self._generate_analysis()
+        analysis_html = self._render_analysis_html(analysis)
+        cmd = self.trace_data.get('command', [])
+        
+        # Generate filter buttons
+        filter_buttons = ['<button class="filter-btn active" data-filter="all" style="background:#666;color:#fff">All</button>']
+        for cat in CATEGORY_ORDER:
+            if cat_counts.get(cat, 0) > 0:
+                bg = get_color(cat)
+                text = get_text_color(cat)
+                label = cat.upper() if cat in ('ipc', 'mac', 'necp') else cat.capitalize()
+                count = cat_counts[cat]
+                filter_buttons.append(f'<button class="filter-btn" data-filter="{cat}" style="background:{bg};color:{text}">{label} ({count})</button>')
+        if error_count > 0:
+            filter_buttons.append(f'<button class="filter-btn" data-filter="error" style="background:#d32f2f;color:#fff">Errors ({error_count})</button>')
+        
+        # Category colors for JS
+        cat_colors = {cat: {'bg': get_color(cat), 'text': get_text_color(cat)} for cat in CATEGORY_ORDER}
+        
+        page_title = f"mactrace: {' '.join(cmd)}"
+        
+        return f'''<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>{html.escape(page_title)}</title>
+    <style>
+        * {{ box-sizing: border-box; }}
+        body {{ font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Arial, sans-serif; margin: 20px; background: #fafafa; }}
+        h1 {{ color: #333; font-size: 1.5em; margin-bottom: 10px; }}
+        .analysis-section {{ background: white; border: 1px solid #ddd; border-radius: 8px; padding: 15px 20px; margin-bottom: 20px; box-shadow: 0 2px 4px rgba(0,0,0,0.1); }}
+        .analysis-section h4 {{ margin: 0 0 12px 0; color: #444; border-bottom: 2px solid #8073ac; padding-bottom: 8px; }}
+        .analysis-content {{ font-family: monospace; font-size: 12px; line-height: 1.6; }}
+        .table-container {{ background: white; border: 1px solid #ddd; border-radius: 8px; padding: 20px; box-shadow: 0 2px 4px rgba(0,0,0,0.1); }}
+        .filters {{ margin-bottom: 15px; display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }}
+        .filter-btn {{ padding: 5px 12px; border: 2px solid transparent; border-radius: 4px; cursor: pointer; font-size: 12px; font-weight: 500; }}
+        .filter-btn:hover {{ opacity: 0.85; }}
+        .filter-btn.active {{ border-color: #000; }}
+        .filter-label {{ font-size: 12px; color: #666; margin-right: 5px; }}
+        .search-box {{ padding: 6px 10px; border: 1px solid #ccc; border-radius: 4px; font-size: 14px; width: 200px; margin-left: auto; }}
+        .status {{ font-size: 12px; color: #666; margin-left: 10px; }}
+        .virtual-table {{ position: relative; overflow: auto; height: 70vh; border: 1px solid #ddd; }}
+        .virtual-spacer {{ width: 100%; }}
+        .virtual-viewport {{ position: absolute; top: 0; left: 0; right: 0; }}
+        .row {{ display: flex; border-bottom: 1px solid #eee; font-family: monospace; font-size: 12px; }}
+        .row:hover {{ background: rgba(0,0,0,0.02); }}
+        .row.error {{ background: #ffebee; }}
+        .cell {{ padding: 6px 8px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }}
+        .cell-seq {{ width: 80px; text-align: right; background: #fdf6ed; }}
+        .cell-pid {{ width: 60px; text-align: right; background: #fef5e7; }}
+        .cell-syscall {{ width: 180px; background: #fffaf0; }}
+        .cell-result {{ width: 100px; text-align: right; background: #f7f7fb; }}
+        .cell-target {{ width: 300px; background: #f5f4f9; }}
+        .cell-details {{ flex: 1; background: #f0eff6; }}
+        .header {{ display: flex; font-weight: bold; border-bottom: 2px solid #666; background: #8073ac; color: white; position: sticky; top: 0; z-index: 10; }}
+        .header .cell {{ padding: 10px 8px; }}
+        .syscall-badge {{ padding: 2px 8px; border-radius: 4px; display: inline-block; font-weight: 500; }}
+        .error-text {{ color: #d32f2f; font-weight: bold; }}
+        .io-link {{ color: #1976d2; cursor: pointer; margin-right: 4px; font-weight: bold; font-size: 11px; }}
+        .io-link.empty {{ color: #999; cursor: default; }}
+        .io-menu {{ display: none; position: fixed; background: white; border: 1px solid #ccc; border-radius: 4px; box-shadow: 0 4px 12px rgba(0,0,0,0.3); z-index: 100000; }}
+        .io-menu.show {{ display: block; }}
+        .io-menu a {{ display: block; padding: 8px 12px; color: #333; text-decoration: none; }}
+        .io-menu a:hover {{ background: #f0f0f0; }}
+    </style>
+</head>
+<body>
+    <h1>{html.escape(' '.join(cmd))}</h1>
+    <div class="analysis-section">
+        <h4>Analysis Summary</h4>
+        <div class="analysis-content">{analysis_html}</div>
+    </div>
+    <div class="table-container">
+        <div class="filters">
+            <span class="filter-label">Filter:</span>
+            {' '.join(filter_buttons)}
+            <input type="text" class="search-box" placeholder="Search..." id="search">
+            <span class="status" id="status"></span>
+        </div>
+        <div class="virtual-table" id="container">
+            <div class="header">
+                <div class="cell cell-seq">#</div>
+                <div class="cell cell-pid">PID</div>
+                <div class="cell cell-syscall">Syscall</div>
+                <div class="cell cell-result">Result</div>
+                <div class="cell cell-target">Target</div>
+                <div class="cell cell-details">Details</div>
+            </div>
+            <div class="virtual-spacer" id="spacer"></div>
+            <div class="virtual-viewport" id="viewport"></div>
+        </div>
+    </div>
+    <div class="io-menu" id="io-menu"></div>
+    <script>
+    (function() {{
+        const ROW_HEIGHT = 28;
+        const BUFFER = 10;
+        const allRows = {json_module.dumps(rows_json)};
+        const catColors = {json_module.dumps(cat_colors)};
+        
+        let filteredRows = allRows;
+        let currentFilter = 'all';
+        let searchTerm = '';
+        
+        const container = document.getElementById('container');
+        const viewport = document.getElementById('viewport');
+        const spacer = document.getElementById('spacer');
+        const statusEl = document.getElementById('status');
+        const ioMenu = document.getElementById('io-menu');
+        
+        function escapeHtml(s) {{
+            if (!s) return '';
+            return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+        }}
+        
+        function formatBytes(n) {{
+            if (n < 1024) return n + '';
+            if (n < 1024*1024) return (n/1024).toFixed(1) + 'K';
+            return (n/(1024*1024)).toFixed(1) + 'M';
+        }}
+        
+        function renderRow(r) {{
+            const [seq, pid, syscall, cat, result, errName, target, details, isErr, io] = r;
+            const c = catColors[cat] || {{bg:'#666',text:'#fff'}};
+            const errClass = isErr ? ' error' : '';
+            const resultHtml = isErr ? '<span class="error-text">' + result + ' (' + errName + ')</span>' : result;
+            
+            let ioHtml = '';
+            if (io) {{
+                ioHtml = '<span class="io-link" data-io=\\'' + JSON.stringify(io).replace(/'/g, "\\\\'") + '\\'>[+]</span>';
+            }}
+            
+            return '<div class="row' + errClass + '">' +
+                '<div class="cell cell-seq">' + seq + '</div>' +
+                '<div class="cell cell-pid">' + pid + '</div>' +
+                '<div class="cell cell-syscall">' + ioHtml + '<span class="syscall-badge" style="background:' + c.bg + ';color:' + c.text + '">' + escapeHtml(syscall) + '</span></div>' +
+                '<div class="cell cell-result">' + resultHtml + '</div>' +
+                '<div class="cell cell-target">' + escapeHtml(target) + '</div>' +
+                '<div class="cell cell-details">' + escapeHtml(details) + '</div>' +
+                '</div>';
+        }}
+        
+        function applyFilter() {{
+            const term = searchTerm.toLowerCase();
+            filteredRows = allRows.filter(r => {{
+                const [seq, pid, syscall, cat, result, errName, target, details, isErr] = r;
+                if (currentFilter !== 'all') {{
+                    if (currentFilter === 'error' && !isErr) return false;
+                    if (currentFilter !== 'error' && cat !== currentFilter) return false;
+                }}
+                if (term) {{
+                    const text = (syscall + ' ' + target + ' ' + details).toLowerCase();
+                    if (!text.includes(term)) return false;
+                }}
+                return true;
+            }});
+            spacer.style.height = (filteredRows.length * ROW_HEIGHT) + 'px';
+            statusEl.textContent = filteredRows.length.toLocaleString() + ' of ' + allRows.length.toLocaleString() + ' rows';
+            render();
+        }}
+        
+        function render() {{
+            const scrollTop = container.scrollTop;
+            const viewHeight = container.clientHeight;
+            const startIdx = Math.max(0, Math.floor(scrollTop / ROW_HEIGHT) - BUFFER);
+            const endIdx = Math.min(filteredRows.length, Math.ceil((scrollTop + viewHeight) / ROW_HEIGHT) + BUFFER);
+            
+            viewport.style.top = (startIdx * ROW_HEIGHT + 40) + 'px';  // 40 = header height
+            viewport.innerHTML = filteredRows.slice(startIdx, endIdx).map(renderRow).join('');
+        }}
+        
+        container.addEventListener('scroll', render);
+        window.addEventListener('resize', render);
+        
+        document.querySelectorAll('.filter-btn').forEach(btn => {{
+            btn.addEventListener('click', () => {{
+                document.querySelectorAll('.filter-btn').forEach(b => b.classList.remove('active'));
+                btn.classList.add('active');
+                currentFilter = btn.dataset.filter;
+                applyFilter();
+            }});
+        }});
+        
+        document.getElementById('search').addEventListener('input', e => {{
+            searchTerm = e.target.value;
+            applyFilter();
+        }});
+        
+        // I/O menu handling
+        document.addEventListener('click', e => {{
+            if (e.target.classList.contains('io-link')) {{
+                e.stopPropagation();
+                const io = JSON.parse(e.target.dataset.io);
+                let html = '';
+                if (io.bin) html += '<a href="' + escapeHtml(io.bin.f) + '" target="_blank">Raw (' + formatBytes(io.bin.s) + ')</a>';
+                if (io.hexdump) html += '<a href="' + escapeHtml(io.hexdump.f) + '" target="_blank">Hexdump</a>';
+                if (io.rendered) html += '<a href="' + escapeHtml(io.rendered.f) + '" target="_blank">Rendered</a>';
+                ioMenu.innerHTML = html;
+                const rect = e.target.getBoundingClientRect();
+                ioMenu.style.left = rect.left + 'px';
+                ioMenu.style.top = (rect.bottom + 2) + 'px';
+                ioMenu.classList.add('show');
+            }} else {{
+                ioMenu.classList.remove('show');
+            }}
+        }});
+        
+        applyFilter();
+    }})();
+    </script>
+</body>
+</html>'''
+
+    def _render_html(self, rows: List[Dict]) -> str:
+        """Render the HTML page."""
+        
+        analysis = self._generate_analysis()
+        analysis_html = self._render_analysis_html(analysis)
+        
+        cmd = self.trace_data.get('command', [])
+        
+        # Count by category + errors
+        cat_counts = defaultdict(int)
+        error_count = 0
+        for row in rows:
+            cat_counts[row['category']] += 1
+            if row['is_error']:
+                error_count += 1
+        
+        # Generate filter buttons (categories with counts + errors)
+        filter_buttons = ['<button class="filter-btn active" data-filter="all" style="background:#666;color:#fff">All</button>']
+        
+        for cat in CATEGORY_ORDER:
+            if cat_counts.get(cat, 0) > 0:
+                bg = get_color(cat)
+                text = get_text_color(cat)
+                label = cat.upper() if cat in ('ipc', 'mac', 'necp') else cat.capitalize()
+                count = cat_counts[cat]
+                filter_buttons.append(
+                    f'<button class="filter-btn" data-filter="{cat}" '
+                    f'style="background:{bg};color:{text}">{label} ({count})</button>'
+                )
+        
+        if error_count > 0:
+            filter_buttons.append(
+                f'<button class="filter-btn" data-filter="error" '
+                f'style="background:#d32f2f;color:#fff">Errors ({error_count})</button>'
+            )
+        
+        # Generate table rows
+        rows_html = []
+        for row in rows:
+            cat_bg = get_color(row['category'])
+            cat_text = get_text_color(row['category'])
+            error_class = ' class="error-row"' if row['is_error'] else ''
+            
+            # I/O dropdown
+            io_cell = ''
+            if row['is_io']:
+                if row['io_files']:
+                    menu_items = []
+                    for ftype in ['bin', 'hexdump', 'rendered']:
+                        if ftype in row['io_files']:
+                            finfo = row['io_files'][ftype]
+                            fname = finfo['filename']
+                            fsize = format_bytes(finfo['size'])
+                            if ftype == 'bin':
+                                menu_items.append(f'<a href="{html.escape(fname)}" target="_blank">Raw ({fsize})</a>')
+                            elif ftype == 'hexdump':
+                                menu_items.append(f'<a href="{html.escape(fname)}" target="_blank">Hexdump</a>')
+                            else:
+                                menu_items.append(f'<a href="{html.escape(fname)}" target="_blank">Rendered</a>')
+                    
+                    if menu_items:
+                        io_cell = f'''<span class="io-dropdown">
+                            <span class="io-toggle">[+]</span>
+                            <span class="io-menu">{''.join(f"<span>{item}</span>" for item in menu_items)}</span>
+                        </span>'''
+                    else:
+                        io_cell = '<span class="io-toggle io-empty" title="Use -d to link I/O files">[+]</span>'
+                else:
+                    io_cell = '<span class="io-toggle io-empty" title="Use -d to link I/O files">[+]</span>'
+            
+            rows_html.append(f'''<tr{error_class} data-category="{row['category']}">
+                <td style="background:{DATA_COLORS[0]}">{row['seq']}</td>
+                <td style="background:{DATA_COLORS[1]}">{row['pid']}</td>
+                <td style="background:{DATA_COLORS[2]}">{io_cell}<span class="syscall-badge" style="background:{cat_bg};color:{cat_text}">{html.escape(row['syscall'])}</span></td>
+                <td style="background:{DATA_COLORS[3]}">{row['result']}</td>
+                <td style="background:{DATA_COLORS[4]}">{html.escape(row['target'])}</td>
+                <td style="background:{DATA_COLORS[5]}">{html.escape(row['details'])}</td>
+            </tr>''')
+
+        page_title = f"mactrace: {' '.join(cmd)}"
+
+        html_content = f'''<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>{html.escape(page_title)}</title>
+    <link rel="stylesheet" href="https://cdn.datatables.net/1.13.7/css/jquery.dataTables.min.css">
+    <style>
+        body {{
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+            margin: 20px;
+            background: #fafafa;
+        }}
+        h1 {{
+            color: #333;
+            margin-bottom: 10px;
+            font-size: 1.5em;
+        }}
+        .analysis-section {{
+            background: white;
+            border: 1px solid #ddd;
+            border-radius: 8px;
+            padding: 15px 20px;
+            margin-bottom: 20px;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+        }}
+        .analysis-section h4 {{
+            margin: 0 0 12px 0;
+            color: #444;
+            border-bottom: 2px solid #8073ac;
+            padding-bottom: 8px;
+        }}
+        .analysis-content {{
+            font-family: "SFMono-Regular", Consolas, "Liberation Mono", Menlo, monospace;
+            font-size: 12px;
+            line-height: 1.6;
+        }}
+        .table-container {{
+            background: white;
+            border: 1px solid #ddd;
+            border-radius: 8px;
+            padding: 20px;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+            overflow-x: auto;
+        }}
+        #timeline {{
+            visibility: hidden;
+        }}
+        #timeline.initialized {{
+            visibility: visible;
+        }}
+        .loading-indicator {{
+            text-align: center;
+            padding: 40px 20px;
+            font-size: 16px;
+            color: #666;
+        }}
+        .loading-indicator .spinner {{
+            display: inline-block;
+            width: 20px;
+            height: 20px;
+            border: 3px solid #ddd;
+            border-top-color: #8073ac;
+            border-radius: 50%;
+            animation: spin 1s linear infinite;
+            margin-right: 10px;
+            vertical-align: middle;
+        }}
+        @keyframes spin {{
+            to {{ transform: rotate(360deg); }}
+        }}
+        table.dataTable {{
+            width: 100% !important;
+            border-collapse: collapse;
+        }}
+        table.dataTable thead th {{
+            font-weight: bold;
+            text-align: left;
+            padding: 12px 8px;
+            border-bottom: 2px solid #666;
+        }}
+        table.dataTable thead th:nth-child(1) {{ background: {HEADER_COLORS[0]}; }}
+        table.dataTable thead th:nth-child(2) {{ background: {HEADER_COLORS[1]}; }}
+        table.dataTable thead th:nth-child(3) {{ background: {HEADER_COLORS[2]}; }}
+        table.dataTable thead th:nth-child(4) {{ background: {HEADER_COLORS[3]}; }}
+        table.dataTable thead th:nth-child(5) {{ background: {HEADER_COLORS[4]}; }}
+        table.dataTable thead th:nth-child(6) {{ background: {HEADER_COLORS[5]}; color: white; }}
+        table.dataTable tbody td {{
+            padding: 6px 8px;
+            font-family: "SFMono-Regular", Consolas, "Liberation Mono", Menlo, monospace;
+            font-size: 12px;
+            border-bottom: 1px solid #eee;
+            vertical-align: top;
+        }}
+        table.dataTable tbody tr:hover td {{
+            box-shadow: inset 0 0 0 1000px rgba(0, 0, 0, 0.03);
+        }}
+        .syscall-badge {{
+            padding: 2px 8px;
+            border-radius: 4px;
+            display: inline-block;
+            font-weight: 500;
+        }}
+        .error {{
+            color: #d32f2f;
+            font-weight: bold;
+        }}
+        .error-row td {{
+            background-color: #ffebee !important;
+        }}
+        /* Filter buttons - merged categories */
+        .filters {{
+            margin-bottom: 15px;
+            display: flex;
+            gap: 8px;
+            flex-wrap: wrap;
+            align-items: center;
+        }}
+        .filter-btn {{
+            padding: 5px 12px;
+            border: 2px solid transparent;
+            border-radius: 4px;
+            cursor: pointer;
+            font-size: 12px;
+            font-weight: 500;
+            transition: all 0.15s;
+        }}
+        .filter-btn:hover {{
+            opacity: 0.85;
+        }}
+        .filter-btn.active {{
+            border-color: #000;
+        }}
+        .filter-label {{
+            font-size: 12px;
+            color: #666;
+            margin-right: 5px;
+        }}
+        /* I/O dropdown */
+        .io-dropdown {{
+            position: relative;
+            display: inline-block;
+            margin-right: 4px;
+        }}
+        .io-toggle {{
+            color: #1976d2;
+            cursor: pointer;
+            font-weight: bold;
+            font-size: 11px;
+        }}
+        .io-toggle.io-empty {{
+            color: #999;
+            cursor: default;
+        }}
+        .io-menu {{
+            display: none;
+            position: fixed;
+            background: white;
+            border: 1px solid #ccc;
+            border-radius: 4px;
+            box-shadow: 0 4px 12px rgba(0,0,0,0.3);
+            z-index: 100000;
+            min-width: 120px;
+        }}
+        .io-menu.show {{
+            display: block;
+        }}
+        .io-menu span {{
+            display: block;
+            padding: 8px 12px;
+            white-space: nowrap;
+        }}
+        .io-menu span:hover {{
+            background: #f0f0f0;
+        }}
+        .io-menu a {{
+            color: #333;
+            text-decoration: none;
+            display: block;
+        }}
+        .io-menu a:hover {{
+            text-decoration: underline;
+        }}
+        /* Search highlighting */
+        .search-highlight {{
+            background-color: #ffeb3b;
+            padding: 1px 2px;
+            border-radius: 2px;
+        }}
+        .inline-length-select {{
+            padding: 2px 6px;
+            border: 1px solid #ccc;
+            border-radius: 3px;
+            margin: 0 2px;
+            font-size: inherit;
+        }}
+        .dataTables_wrapper .dataTables_filter input {{
+            padding: 6px 10px;
+            border: 1px solid #ccc;
+            border-radius: 4px;
+            font-size: 14px;
+            margin-left: 6px;
+        }}
+    </style>
+</head>
+<body>
+    <h1>{html.escape(' '.join(cmd))}</h1>
+    
+    <div class="analysis-section">
+        <h4>Analysis Summary</h4>
+        <div class="analysis-content">
+            {analysis_html}
+        </div>
+    </div>
+    
+    <div class="table-container">
+        <div class="filters">
+            <span class="filter-label">Filter:</span>
+            {' '.join(filter_buttons)}
+        </div>
+        
+        <div id="loading-indicator" class="loading-indicator">
+            <span class="spinner"></span>Loading {len(rows)} syscalls...
+        </div>
+        
+        <table id="timeline" class="display">
+            <thead>
+                <tr>
+                    <th>#</th>
+                    <th>PID</th>
+                    <th>Syscall</th>
+                    <th>Result</th>
+                    <th>Target</th>
+                    <th>Details</th>
+                </tr>
+            </thead>
+            <tbody>
+                {''.join(rows_html)}
+            </tbody>
+        </table>
+    </div>
+
+    <script src="https://code.jquery.com/jquery-3.7.1.min.js"></script>
+    <script src="https://cdn.datatables.net/1.13.7/js/jquery.dataTables.min.js"></script>
+    <script>
+        $(document).ready(function() {{
+            var table = $('#timeline').DataTable({{
+                pageLength: 100,
+                lengthMenu: [[100, 500, 1000, 5000, -1], [100, 500, 1000, 5000, "All"]],
+                order: [[0, 'asc']],
+                columnDefs: [
+                    {{ targets: [0, 1, 3], className: 'dt-body-right' }}
+                ],
+                scrollX: true,
+                autoWidth: false,
+                deferRender: true,  // Critical: only create DOM nodes when needed
+                search: {{ smart: false, regex: false, caseInsensitive: false }},
+                dom: '<"top"f>rt<"bottom"lip>',
+                initComplete: function() {{
+                    $('#loading-indicator').hide();
+                    $('#timeline').addClass('initialized');
+                }}
+            }});
+            
+            var currentFilter = 'all';
+            
+            $.fn.dataTable.ext.search.push(function(settings, data, dataIndex) {{
+                if (currentFilter === 'all') return true;
+                var row = table.row(dataIndex).node();
+                var rowCategory = $(row).data('category');
+                var isError = $(row).hasClass('error-row');
+                if (currentFilter === 'error') return isError;
+                return rowCategory === currentFilter;
+            }});
+            
+            $('.filter-btn').on('click', function() {{
+                $('.filter-btn').removeClass('active');
+                $(this).addClass('active');
+                currentFilter = $(this).data('filter');
+                table.draw();
+            }});
+            
+            function updatePageLengthSelector() {{
+                var info = $('.dataTables_info');
+                if (!info.length) return;
+                var currentLen = table.page.len();
+                var pageInfo = table.page.info();
+                var start = pageInfo.start + 1;
+                var end = pageInfo.end;
+                var total = pageInfo.recordsDisplay;
+                var select = '<select class="inline-length-select">' +
+                    '<option value="100"' + (currentLen == 100 ? ' selected' : '') + '>100</option>' +
+                    '<option value="500"' + (currentLen == 500 ? ' selected' : '') + '>500</option>' +
+                    '<option value="1000"' + (currentLen == 1000 ? ' selected' : '') + '>1000</option>' +
+                    '<option value="5000"' + (currentLen == 5000 ? ' selected' : '') + '>5000</option>' +
+                    '<option value="-1"' + (currentLen == -1 ? ' selected' : '') + '>All</option>' +
+                    '</select>';
+                info.html('Showing ' + start.toLocaleString() + ' to ' + select + ' of ' + total.toLocaleString() + ' entries');
+                info.find('.inline-length-select').on('change', function() {{
+                    table.page.len(parseInt($(this).val())).draw();
+                }});
+            }}
+            
+            function highlightSearchMatches(term) {{
+                if (!term) return;
+                var regex = new RegExp('(' + term.replace(/[.*+?^${{}}()|[\]\\\\]/g, '\\\\$&') + ')', 'gi');
+                table.rows({{ page: 'current' }}).every(function() {{
+                    var row = $(this.node());
+                    row.find('td').each(function() {{
+                        var cell = $(this);
+                        var text = cell.text();
+                        if (text.match(regex)) {{
+                            var html = cell.html();
+                            if (!html.includes('search-highlight')) {{
+                                cell.html(html.replace(regex, '<span class="search-highlight">$1</span>'));
+                            }}
+                        }}
+                    }});
+                }});
+            }}
+            
+            function clearSearchHighlights() {{
+                $('.search-highlight').each(function() {{
+                    var text = $(this).text();
+                    $(this).replaceWith(text);
+                }});
+            }}
+            
+            table.on('draw', function() {{
+                updatePageLengthSelector();
+                var searchTerm = table.search();
+                if (searchTerm) {{
+                    highlightSearchMatches(searchTerm);
+                }} else {{
+                    clearSearchHighlights();
+                }}
+            }});
+            
+            // I/O dropdown click handling
+            var activeMenu = null;
+            var activeToggle = null;
+            
+            $(document).on('click', '.io-toggle', function(e) {{
+                e.preventDefault();
+                e.stopPropagation();
+                
+                var toggle = $(this);
+                var menu = toggle.siblings('.io-menu');
+                if (!menu.length) return;  // No menu (gray [+])
+                
+                var wasOpen = (activeMenu && activeMenu.is(menu) && menu.hasClass('show'));
+                
+                // Close any open dropdown
+                if (activeMenu && activeMenu.hasClass('show')) {{
+                    activeMenu.removeClass('show').detach();
+                    if (activeToggle) {{
+                        activeToggle.after(activeMenu);
+                    }}
+                    activeMenu = null;
+                    activeToggle = null;
+                }}
+                
+                if (!wasOpen) {{
+                    // Move menu to body to escape stacking context
+                    activeMenu = menu.detach().appendTo('body');
+                    activeToggle = toggle;
+                    
+                    // Position the menu
+                    var rect = this.getBoundingClientRect();
+                    activeMenu.css({{
+                        left: rect.left + 'px',
+                        top: (rect.bottom + 2) + 'px'
+                    }});
+                    activeMenu.addClass('show');
+                }}
+            }});
+            
+            // Close dropdown when clicking outside
+            $(document).on('click', function(e) {{
+                if (activeMenu && activeMenu.hasClass('show')) {{
+                    if (!$(e.target).closest('.io-menu').length) {{
+                        activeMenu.removeClass('show').detach();
+                        if (activeToggle) {{
+                            activeToggle.after(activeMenu);
+                        }}
+                        activeMenu = null;
+                        activeToggle = null;
+                    }}
+                }}
+            }});
+        }});
+    </script>
+</body>
+</html>'''
+        
+        return html_content
+
+
+def main():
+    parser = argparse.ArgumentParser(
+        description='Generate HTML timeline from mactrace JSON',
+        epilog='Reads JSON from mactrace and generates interactive HTML timeline.'
+    )
+    parser.add_argument('file', help='mactrace JSON file (use - for stdin)')
+    parser.add_argument('-o', '--output', required=True, help='Output HTML file')
+    parser.add_argument('-d', '--output-dir', help='Directory with I/O files from mactrace_analyze.py --save-io')
+    parser.add_argument('--max-rows', type=int, help='Limit output to first N rows (for huge traces)')
+    parser.add_argument('--virtual', action='store_true', 
+                        help='Use virtual scrolling (scales to 1M+ rows)')
+    
+    args = parser.parse_args()
+    
+    # Resolve input file path using config
+    input_file = resolve_input_path(args.file)
+    
+    # Resolve output-dir if provided
+    output_dir = args.output_dir
+    if output_dir and not os.path.isabs(output_dir) and not output_dir.startswith('./'):
+        mactrace_output = get_config_value('MACTRACE_OUTPUT')
+        if mactrace_output:
+            output_dir = os.path.join(mactrace_output, output_dir)
+    
+    generator = TimelineGenerator(input_file=input_file, output_dir=output_dir)
+    
+    try:
+        generator.load(input_file)
+    except FileNotFoundError:
+        if input_file != args.file:
+            print(f"Error: File not found: {input_file}", file=sys.stderr)
+            print(f"  (resolved from: {args.file})", file=sys.stderr)
+        else:
+            print(f"Error: File not found: {args.file}", file=sys.stderr)
+            mactrace_output = get_config_value('MACTRACE_OUTPUT')
+            if mactrace_output:
+                print(f"  (MACTRACE_OUTPUT={mactrace_output})", file=sys.stderr)
+        sys.exit(1)
+    except json.JSONDecodeError as e:
+        print(f"Error: Invalid JSON in {input_file}: {e}", file=sys.stderr)
+        sys.exit(1)
+    
+    # Check for large traces
+    event_count = len(generator.trace_data.get('events', []))
+    if event_count > 50000 and not args.virtual and not args.max_rows:
+        print(f"Warning: Large trace ({event_count:,} events). Consider --virtual or --max-rows.", 
+              file=sys.stderr)
+    
+    if args.virtual:
+        html_content = generator.generate_virtual(max_rows=args.max_rows)
+    else:
+        html_content = generator.generate(max_rows=args.max_rows)
+    
+    # Resolve output path using MACTRACE_OUTPUT
+    output_path = args.output
+    if not os.path.isabs(output_path) and not output_path.startswith('./'):
+        mactrace_output = get_config_value('MACTRACE_OUTPUT')
+        if mactrace_output:
+            os.makedirs(mactrace_output, exist_ok=True)
+            output_path = os.path.join(mactrace_output, output_path)
+    
+    with open(output_path, 'w') as f:
+        f.write(html_content)
+    
+    print(f"Timeline written to: {output_path}", file=sys.stderr)
+
+
+if __name__ == '__main__':
+    main()
