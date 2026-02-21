@@ -1287,7 +1287,7 @@
         // Separate: the main root, other roots with subtrees, and bare orphans
         const mainRoot = rootNode || allRoots[0];
         const otherRoots = allRoots.filter(n => n !== mainRoot && (n.childPids.length > 0 || n.programs.length > 0 || n.io.totalRead > 0 || n.io.totalWrite > 0));
-        const bareOrphans = allRoots.filter(n => n !== mainRoot && n.childPids.length === 0 && n.programs.length === 0 && !n.io.totalRead && !n.io.totalWrite);
+        const bareOrphans = allRoots.filter(n => n !== mainRoot && n.childPids.length === 0 && n.programs.length === 0 && !n.io.totalRead && !n.io.totalWrite && n.eventCount <= 5);
         
         let html = '';
         
@@ -1412,11 +1412,14 @@
         const isExpanded = depth < expandDepth;
         const program = node.programs.length > 0 ? node.programs[node.programs.length - 1] : '';
         const programShort = program ? program.split('/').pop() : '';
-        const programFull = program || '(no exec)';
+        const isInferred = node.programSource === 'inferred';
+        const programFull = program 
+            ? (isInferred ? `${program} (inferred from open)` : program) 
+            : `(no exec — ${node.eventCount} events)`;
         
         // Build I/O summary line
         const io = node.io;
-        const statsHtml = buildTreeStats(io, node.execCount);
+        const statsHtml = buildTreeStats(io, node.execCount, node.eventCount);
         
         // Build children summary (line 2)
         const childrenSummary = buildChildrenSummary(node, nodeMap);
@@ -1438,7 +1441,7 @@
                     <div class="tree-card" data-pid="${node.pid}">
                         <div class="tree-pid-badge">${node.pid}</div>
                         <div class="tree-card-body">
-                            <div class="tree-program" title="${escapeHtml(programFull)}">${escapeHtml(programShort || '(shell)')}</div>
+                            <div class="tree-program" title="${escapeHtml(programFull)}">${isInferred ? '<span style="color:#8e44ad" title="Inferred from first binary open()">≈ </span>' : ''}${escapeHtml(programShort || '(shell)')}</div>
                             <div class="tree-stats">${statsHtml}</div>
                             ${childrenSummary}
                         </div>
@@ -1524,7 +1527,7 @@
         return html;
     }
     
-    function buildTreeStats(io, execCount) {
+    function buildTreeStats(io, execCount, eventCount) {
         const parts = [];
         if (io.totalRead || io.totalWrite) {
             parts.push(`<span class="tree-stat"><span class="tree-stat-label">I/O</span> R:${formatBytes(io.totalRead)} W:${formatBytes(io.totalWrite)}</span>`);
@@ -1537,6 +1540,9 @@
         }
         if (execCount > 0) {
             parts.push(`<span class="tree-stat"><span class="tree-stat-label">Exec</span> ${execCount}</span>`);
+        }
+        if (parts.length === 0 && eventCount) {
+            return `<span class="tree-stat" style="color:#aaa">${eventCount} event${eventCount !== 1 ? 's' : ''}, no I/O</span>`;
         }
         return parts.join('') || '<span class="tree-stat" style="color:#aaa">no I/O</span>';
     }

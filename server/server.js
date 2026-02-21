@@ -398,7 +398,7 @@ app.get('/api/traces/:id/process-tree', (req, res) => {
 
         const rootPid = trace.target_pid;
 
-        // Per-PID I/O stats
+        // Per-PID I/O stats (also grab first binary open as fallback program name)
         const pidStats = query(`
             SELECT pid,
                 COUNT(*) as event_count,
@@ -461,29 +461,55 @@ app.get('/api/traces/:id/process-tree', (req, res) => {
 
         // Get execve/posix_spawn targets per PID (program names)
         const execEvents = query(`
-            SELECT pid, target, syscall FROM events
+            SELECT pid, target, syscall, seq FROM events
             WHERE trace_id = ? AND syscall IN ('execve', 'posix_spawn') AND errno = 0 AND target != ''
             ORDER BY seq
         `, [traceId]);
 
         const pidPrograms = new Map(); // pid → [program paths]
+        const pidProgramSource = new Map(); // pid → 'exec' | 'spawn' | 'inferred'
+        
         for (const ee of execEvents) {
             if (ee.syscall === 'execve') {
                 // execve fires in the child
                 if (!pidPrograms.has(ee.pid)) pidPrograms.set(ee.pid, []);
                 pidPrograms.get(ee.pid).push(ee.target);
+                pidProgramSource.set(ee.pid, 'exec');
             } else {
                 // posix_spawn fires in the parent — find the child PID
                 const childRow = queryOne(`
                     SELECT DISTINCT pid FROM events
-                    WHERE trace_id = ? AND seq > (SELECT seq FROM events WHERE trace_id = ? AND pid = ? AND syscall = 'posix_spawn' AND target = ? LIMIT 1)
-                    AND seq < (SELECT seq FROM events WHERE trace_id = ? AND pid = ? AND syscall = 'posix_spawn' AND target = ? LIMIT 1) + 50
+                    WHERE trace_id = ? AND seq > ? AND seq < ? + 50
                     AND pid != ?
                     ORDER BY seq LIMIT 1
-                `, [traceId, traceId, ee.pid, ee.target, traceId, ee.pid, ee.target, ee.pid]);
+                `, [traceId, ee.seq, ee.seq, ee.pid]);
                 if (childRow) {
                     if (!pidPrograms.has(childRow.pid)) pidPrograms.set(childRow.pid, []);
                     pidPrograms.get(childRow.pid).push(ee.target);
+                    if (!pidProgramSource.has(childRow.pid)) pidProgramSource.set(childRow.pid, 'spawn');
+                }
+            }
+        }
+        
+        // For PIDs still without a program name, infer from first binary open()
+        // (the dynamic linker opens the executable as its first file op)
+        const orphanPids = pidStats
+            .filter(p => !pidPrograms.has(p.pid) && p.event_count > 5)
+            .map(p => p.pid);
+        
+        if (orphanPids.length > 0) {
+            // Batch query: for each orphan PID, find first open of a binary path
+            for (const opid of orphanPids) {
+                const firstBin = queryOne(`
+                    SELECT target FROM events
+                    WHERE trace_id = ? AND pid = ? AND syscall IN ('open', 'openat')
+                    AND (target LIKE '/%bin/%' OR target LIKE '/%libexec/%')
+                    AND errno = 0
+                    ORDER BY seq LIMIT 1
+                `, [traceId, opid]);
+                if (firstBin?.target) {
+                    pidPrograms.set(opid, [firstBin.target]);
+                    pidProgramSource.set(opid, 'inferred');
                 }
             }
         }
@@ -515,6 +541,7 @@ app.get('/api/traces/:id/process-tree', (req, res) => {
             parentPid: parentMap.get(p.pid) ?? null,
             childPids: childrenMap.get(p.pid) || [],
             programs: pidPrograms.get(p.pid) || [],
+            programSource: pidProgramSource.get(p.pid) || null, // 'exec'|'spawn'|'inferred'|null
             execCount: pidExecCount.get(p.pid) || 0,
             firstSeq: p.first_seq,
             lastSeq: p.last_seq,
