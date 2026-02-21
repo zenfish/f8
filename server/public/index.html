@@ -280,6 +280,201 @@
             color: #333;
         }
         
+        /* Tooltip for truncated cells */
+        .cell[title] { cursor: default; }
+        .row .cell[title]:hover { position: relative; }
+        
+        /* View toggle */
+        .view-toggle {
+            display: inline-flex;
+            background: #1a252f;
+            border-radius: 4px;
+            overflow: hidden;
+            margin-left: 20px;
+        }
+        .view-toggle button {
+            padding: 6px 14px;
+            border: none;
+            background: transparent;
+            color: #8899aa;
+            cursor: pointer;
+            font-size: 13px;
+            font-weight: 500;
+            transition: all 0.15s;
+        }
+        .view-toggle button:hover { color: #ccc; }
+        .view-toggle button.active {
+            background: #3498db;
+            color: white;
+        }
+        
+        /* Process Tree View */
+        .tree-container {
+            display: none;
+            background: white;
+            border-radius: 8px;
+            box-shadow: 0 1px 3px rgba(0,0,0,0.1);
+            padding: 20px;
+            overflow: auto;
+            max-height: calc(100vh - 340px);
+        }
+        .tree-container.visible { display: block; }
+        
+        .tree-node {
+            margin-left: 28px;
+            position: relative;
+        }
+        .tree-node.root { margin-left: 0; }
+        
+        /* Vertical tree lines */
+        .tree-node::before {
+            content: '';
+            position: absolute;
+            left: -18px;
+            top: 0;
+            bottom: 0;
+            width: 1px;
+            background: #ccc;
+        }
+        .tree-node.root::before { display: none; }
+        .tree-node:last-child::before { bottom: auto; height: 20px; }
+        
+        /* Horizontal connector */
+        .tree-card-wrap {
+            position: relative;
+            padding: 4px 0;
+        }
+        .tree-card-wrap::before {
+            content: '';
+            position: absolute;
+            left: -18px;
+            top: 20px;
+            width: 14px;
+            height: 1px;
+            background: #ccc;
+        }
+        .tree-node.root > .tree-card-wrap::before { display: none; }
+        
+        .tree-card {
+            display: inline-flex;
+            align-items: stretch;
+            background: #f8f9fa;
+            border: 1px solid #ddd;
+            border-radius: 6px;
+            font-size: 11px;
+            font-family: "SF Mono", Consolas, monospace;
+            overflow: hidden;
+            transition: box-shadow 0.15s;
+            max-width: 600px;
+        }
+        .tree-card:hover { box-shadow: 0 2px 8px rgba(0,0,0,0.12); }
+        
+        .tree-pid-badge {
+            background: #2c3e50;
+            color: white;
+            padding: 8px 10px;
+            font-weight: 700;
+            font-size: 12px;
+            display: flex;
+            align-items: center;
+            min-width: 60px;
+            justify-content: center;
+        }
+        
+        .tree-card-body {
+            padding: 6px 12px;
+            display: flex;
+            flex-direction: column;
+            gap: 2px;
+            min-width: 200px;
+        }
+        
+        .tree-program {
+            font-weight: 600;
+            color: #2c3e50;
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            max-width: 350px;
+            font-size: 12px;
+        }
+        
+        .tree-stats {
+            display: flex;
+            gap: 12px;
+            color: #666;
+            font-size: 10px;
+        }
+        .tree-stats .tree-stat { white-space: nowrap; }
+        .tree-stats .tree-stat-label { color: #999; }
+        
+        .tree-actions {
+            display: flex;
+            flex-direction: column;
+            justify-content: center;
+            padding: 4px 8px;
+            gap: 2px;
+            border-left: 1px solid #eee;
+        }
+        .tree-actions button {
+            padding: 3px 8px;
+            border: 1px solid #ccc;
+            border-radius: 3px;
+            background: white;
+            cursor: pointer;
+            font-size: 10px;
+            white-space: nowrap;
+        }
+        .tree-actions button:hover { background: #e8f4fd; border-color: #3498db; }
+        
+        .tree-toggle {
+            display: inline-block;
+            width: 18px;
+            height: 18px;
+            line-height: 18px;
+            text-align: center;
+            cursor: pointer;
+            color: #666;
+            font-size: 12px;
+            border-radius: 3px;
+            user-select: none;
+            margin-right: 4px;
+            vertical-align: middle;
+        }
+        .tree-toggle:hover { background: #e0e0e0; }
+        
+        .tree-children { display: block; }
+        .tree-children.collapsed { display: none; }
+        
+        .tree-group-summary {
+            display: inline-flex;
+            align-items: center;
+            background: #f0eff6;
+            border: 1px solid #d8daeb;
+            border-radius: 4px;
+            padding: 4px 10px;
+            font-size: 11px;
+            color: #555;
+            cursor: pointer;
+            margin: 3px 0;
+        }
+        .tree-group-summary:hover { background: #e8e6f0; }
+        .tree-group-count {
+            background: #8073ac;
+            color: white;
+            border-radius: 10px;
+            padding: 1px 7px;
+            font-size: 10px;
+            margin-right: 6px;
+            font-weight: 600;
+        }
+        
+        .tree-loading {
+            text-align: center;
+            padding: 40px;
+            color: #666;
+        }
+        
         /* Loading & home */
         .loading {
             text-align: center;
@@ -343,6 +538,10 @@
         <select id="trace-select">
             <option value="">Select a trace...</option>
         </select>
+        <div class="view-toggle" id="view-toggle" style="display:none">
+            <button class="active" data-view="timeline">Timeline</button>
+            <button data-view="tree">Process Tree</button>
+        </div>
     </div>
     
     <div class="container">
@@ -358,7 +557,7 @@
                 <button class="filter-btn active" data-filter="all" style="background:#666;color:#fff">All</button>
             </div>
             
-            <div class="table-container">
+            <div class="table-container" id="timeline-view">
                 <div class="table-header" id="table-header">
                     <div class="cell col-seq resizable" data-col="seq" data-resize="seq">#</div>
                     <div class="cell col-time resizable" data-col="time" data-resize="time">Time</div>
@@ -372,6 +571,11 @@
                     <div class="virtual-spacer" id="spacer"></div>
                     <div class="virtual-viewport" id="viewport"></div>
                 </div>
+            </div>
+            
+            <div class="tree-container" id="tree-view">
+                <div class="tree-loading" id="tree-loading">Loading process tree...</div>
+                <div id="tree-content"></div>
             </div>
         </div>
     </div>
@@ -396,6 +600,8 @@
     let sortCol = 'seq';
     let sortAsc = true;
     let traceStartTime = null; // Date object for absolute time display
+    let currentView = 'timeline'; // 'timeline' or 'tree'
+    let treeData = null; // Cached tree data
     
     const $ = id => document.getElementById(id);
     const traceSelect = $('trace-select');
@@ -410,6 +616,11 @@
     const spacer = $('spacer');
     const viewport = $('viewport');
     const ioPopup = $('io-popup');
+    const viewToggle = $('view-toggle');
+    const timelineView = $('timeline-view');
+    const treeViewEl = $('tree-view');
+    const treeContent = $('tree-content');
+    const treeLoading = $('tree-loading');
     
     // Utilities
     const escapeHtml = s => s ? String(s).replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c])) : '';
@@ -529,7 +740,18 @@
     async function loadTrace(id) {
         homeView.style.display = 'none';
         traceView.style.display = 'block';
+        viewToggle.style.display = '';
         summary.innerHTML = '<div class="loading">Loading trace...</div>';
+        
+        // Reset to timeline view and clear tree cache
+        currentView = 'timeline';
+        treeData = null;
+        viewToggle.querySelectorAll('button').forEach(b => {
+            b.classList.toggle('active', b.dataset.view === 'timeline');
+        });
+        timelineView.style.display = '';
+        treeViewEl.classList.remove('visible');
+        filters.style.display = '';
         
         try {
             currentTrace = await fetchJson(`/api/traces/${id}`);
@@ -620,6 +842,8 @@
                     <div class="stat-row"><span class="label">Duration</span><span class="value">${formatDuration(t.duration_ms)}</span></div>
                     <div class="stat-row"><span class="label">Target PID</span><span class="value">${t.target_pid}</span></div>
                     <div class="stat-row"><span class="label">Exit Code</span><span class="value">${t.exit_code}</span></div>
+                    <div class="stat-row"><span class="label">Processes</span><span class="value">${(t.pidCount || 0).toLocaleString()}</span></div>
+                    <div class="stat-row"><span class="label">Programs exec'd</span><span class="value">${(t.execCount || 0).toLocaleString()}</span></div>
                     <div class="stat-row ${t.errorCount > 0 ? 'highlight' : ''}"><span class="label">Errors</span><span class="value" style="color:${t.errorCount > 0 ? '#c0392b' : 'inherit'}">${t.errorCount.toLocaleString()}</span></div>
                 </div>
                 
@@ -856,14 +1080,17 @@
         const syscallDisplay = searchTerm ? highlightText(e.syscall, searchTerm) : escapeHtml(e.syscall);
         const dnsBadge = dnsLookupSeqs.has(e.seq) ? '<span class="dns-badge">DNS</span>' : '';
         
+        // Build full syscall detail text for tooltip
+        const syscallFull = [e.syscall, e.details, e.errno !== 0 ? `= ${e.return_value} (${e.errno_name || 'E'+e.errno})` : (e.return_value !== undefined ? `= ${e.return_value}` : '')].filter(Boolean).join(' ');
+        
         return `<div class="row${errClass}${dnsClass}" data-seq="${e.seq}">
-            <div class="cell col-seq">${e.seq}</div>
-            <div class="cell col-time">${timeStr}</div>
-            <div class="cell col-pid">${e.pid}</div>
-            <div class="cell col-read">${readStr}</div>
-            <div class="cell col-write">${writeStr}</div>
+            <div class="cell col-seq" title="Sequence #${e.seq}">${e.seq}</div>
+            <div class="cell col-time" title="${timeStr}">${timeStr}</div>
+            <div class="cell col-pid" title="PID ${e.pid}">${e.pid}</div>
+            <div class="cell col-read" title="${readStr ? e._read + ' bytes' : ''}">${readStr}</div>
+            <div class="cell col-write" title="${writeStr ? e._write + ' bytes' : ''}">${writeStr}</div>
             <div class="cell col-target" title="${escapeHtml(targetTitle)}" data-target="${escapeHtml(e.target)}">${targetDisplay}</div>
-            <div class="cell col-syscall">${io}<span class="syscall-badge" style="background:${col.bg};color:${col.text}">${syscallDisplay}</span>${dnsBadge}${dataStr} ${resultStr}</div>
+            <div class="cell col-syscall" title="${escapeHtml(syscallFull)}">${io}<span class="syscall-badge" style="background:${col.bg};color:${col.text}">${syscallDisplay}</span>${dnsBadge}${dataStr} ${resultStr}</div>
         </div>`;
     }
     
@@ -883,6 +1110,29 @@
     // Event handlers
     traceSelect.addEventListener('change', e => {
         if (e.target.value) loadTrace(e.target.value);
+    });
+    
+    // View toggle (Timeline / Tree)
+    viewToggle.addEventListener('click', e => {
+        const btn = e.target.closest('button[data-view]');
+        if (!btn) return;
+        const view = btn.dataset.view;
+        if (view === currentView) return;
+        
+        currentView = view;
+        viewToggle.querySelectorAll('button').forEach(b => b.classList.remove('active'));
+        btn.classList.add('active');
+        
+        if (view === 'timeline') {
+            timelineView.style.display = '';
+            treeViewEl.classList.remove('visible');
+            filters.style.display = '';
+        } else {
+            timelineView.style.display = 'none';
+            treeViewEl.classList.add('visible');
+            filters.style.display = 'none';
+            if (!treeData && currentTrace) loadTree(currentTrace.id);
+        }
     });
     
     traceList.addEventListener('click', e => {
@@ -1004,6 +1254,275 @@
         }
     }
     
+    // ===== Process Tree View =====
+    
+    async function loadTree(traceId) {
+        treeLoading.style.display = '';
+        treeContent.innerHTML = '';
+        
+        try {
+            treeData = await fetchJson(`/api/traces/${traceId}/process-tree`);
+            treeLoading.style.display = 'none';
+            renderTree(treeData);
+        } catch (e) {
+            treeLoading.textContent = 'Error loading tree: ' + e.message;
+        }
+    }
+    
+    function renderTree(data) {
+        const nodeMap = new Map();
+        data.nodes.forEach(n => nodeMap.set(n.pid, n));
+        
+        // Find root
+        const rootNode = nodeMap.get(data.rootPid);
+        if (!rootNode) {
+            treeContent.innerHTML = '<div style="padding:20px;color:#c0392b">Root PID not found in tree data</div>';
+            return;
+        }
+        
+        // Determine initial expansion depth based on tree size
+        const totalNodes = data.nodes.length;
+        let defaultDepth = 3;
+        if (totalNodes > 500) defaultDepth = 2;
+        if (totalNodes > 5000) defaultDepth = 1;
+        
+        treeContent.innerHTML = renderTreeNode(rootNode, nodeMap, 0, defaultDepth, true);
+        
+        // Attach tree event handlers
+        treeContent.addEventListener('click', handleTreeClick);
+    }
+    
+    function renderTreeNode(node, nodeMap, depth, expandDepth, isRoot) {
+        const hasChildren = node.childPids && node.childPids.length > 0;
+        const isExpanded = depth < expandDepth;
+        const program = node.programs.length > 0 ? node.programs[node.programs.length - 1] : '';
+        const programShort = program ? program.split('/').pop() : '';
+        const programFull = program || '(no exec)';
+        
+        // Build I/O summary line
+        const io = node.io;
+        const statsHtml = buildTreeStats(io, node.execCount);
+        
+        // Group children by program if there are many similar leaf children
+        let childrenHtml = '';
+        if (hasChildren) {
+            childrenHtml = renderTreeChildren(node, nodeMap, depth + 1, expandDepth);
+        }
+        
+        const rootClass = isRoot ? ' root' : '';
+        const toggleIcon = hasChildren ? (isExpanded ? '▼' : '▶') : '·';
+        const toggleClass = hasChildren ? 'tree-toggle' : 'tree-toggle" style="color:#ccc;cursor:default';
+        
+        return `
+            <div class="tree-node${rootClass}" data-pid="${node.pid}">
+                <div class="tree-card-wrap">
+                    <span class="${toggleClass}" data-action="toggle" data-pid="${node.pid}">${toggleIcon}</span>
+                    <div class="tree-card" data-pid="${node.pid}">
+                        <div class="tree-pid-badge">${node.pid}</div>
+                        <div class="tree-card-body">
+                            <div class="tree-program" title="${escapeHtml(programFull)}">${escapeHtml(programShort || '(shell)')}</div>
+                            <div class="tree-stats">${statsHtml}</div>
+                        </div>
+                        <div class="tree-actions">
+                            <button data-action="timeline" data-pid="${node.pid}" title="View timeline for PID ${node.pid} and children">📊 Timeline</button>
+                        </div>
+                    </div>
+                    ${hasChildren ? `<span style="color:#888;font-size:10px;margin-left:6px">${node.childPids.length} child${node.childPids.length !== 1 ? 'ren' : ''}</span>` : ''}
+                </div>
+                ${hasChildren ? `<div class="tree-children${isExpanded ? '' : ' collapsed'}" data-parent="${node.pid}">${childrenHtml}</div>` : ''}
+            </div>
+        `;
+    }
+    
+    function renderTreeChildren(parentNode, nodeMap, depth, expandDepth) {
+        const childPids = parentNode.childPids;
+        if (!childPids || childPids.length === 0) return '';
+        
+        // Group leaf children (no children of their own) by program name
+        const leafGroups = new Map(); // programName → [nodes]
+        const nonLeafChildren = [];
+        const leafSingles = [];
+        
+        for (const pid of childPids) {
+            const child = nodeMap.get(pid);
+            if (!child) continue;
+            
+            const isLeaf = !child.childPids || child.childPids.length === 0;
+            if (isLeaf) {
+                const prog = child.programs.length > 0 ? child.programs[child.programs.length - 1] : '(no exec)';
+                if (!leafGroups.has(prog)) leafGroups.set(prog, []);
+                leafGroups.get(prog).push(child);
+            } else {
+                nonLeafChildren.push(child);
+            }
+        }
+        
+        // Separate leaf groups: singles go inline, groups of 3+ get grouped
+        for (const [prog, nodes] of leafGroups) {
+            if (nodes.length >= 3) {
+                // Keep as group
+            } else {
+                leafSingles.push(...nodes);
+                leafGroups.delete(prog);
+            }
+        }
+        
+        let html = '';
+        
+        // Render non-leaf children first (they have subtrees)
+        for (const child of nonLeafChildren) {
+            html += renderTreeNode(child, nodeMap, depth, expandDepth, false);
+        }
+        
+        // Render individual leaf children
+        for (const child of leafSingles) {
+            html += renderTreeNode(child, nodeMap, depth, expandDepth, false);
+        }
+        
+        // Render grouped leaf children
+        for (const [prog, nodes] of leafGroups) {
+            const progShort = prog.split('/').pop();
+            const totalRead = nodes.reduce((s, n) => s + (n.io.totalRead || 0), 0);
+            const totalWrite = nodes.reduce((s, n) => s + (n.io.totalWrite || 0), 0);
+            const pids = nodes.map(n => n.pid).join(', ');
+            
+            html += `
+                <div class="tree-node">
+                    <div class="tree-card-wrap">
+                        <span class="tree-toggle" data-action="expand-group" data-parent="${parentNode.pid}" data-program="${escapeHtml(prog)}">▶</span>
+                        <div class="tree-group-summary" data-action="expand-group" data-parent="${parentNode.pid}" data-program="${escapeHtml(prog)}" title="PIDs: ${pids}">
+                            <span class="tree-group-count">${nodes.length}×</span>
+                            <span>${escapeHtml(progShort)}</span>
+                            ${totalRead || totalWrite ? `<span style="margin-left:8px;color:#888">R:${formatBytes(totalRead)} W:${formatBytes(totalWrite)}</span>` : ''}
+                        </div>
+                    </div>
+                    <div class="tree-children collapsed" data-group-parent="${parentNode.pid}" data-group-program="${escapeHtml(prog)}">
+                        ${nodes.map(n => renderTreeNode(n, nodeMap, depth, depth, false)).join('')}
+                    </div>
+                </div>
+            `;
+        }
+        
+        return html;
+    }
+    
+    function buildTreeStats(io, execCount) {
+        const parts = [];
+        if (io.totalRead || io.totalWrite) {
+            parts.push(`<span class="tree-stat"><span class="tree-stat-label">I/O</span> R:${formatBytes(io.totalRead)} W:${formatBytes(io.totalWrite)}</span>`);
+        }
+        if (io.netRead || io.netWrite) {
+            parts.push(`<span class="tree-stat"><span class="tree-stat-label">Net</span> ↓${formatBytes(io.netRead)} ↑${formatBytes(io.netWrite)}</span>`);
+        }
+        if (io.fileRead || io.fileWrite) {
+            parts.push(`<span class="tree-stat"><span class="tree-stat-label">Files</span> ↓${formatBytes(io.fileRead)} ↑${formatBytes(io.fileWrite)}</span>`);
+        }
+        if (execCount > 0) {
+            parts.push(`<span class="tree-stat"><span class="tree-stat-label">Exec</span> ${execCount}</span>`);
+        }
+        return parts.join('') || '<span class="tree-stat" style="color:#aaa">no I/O</span>';
+    }
+    
+    function handleTreeClick(e) {
+        const target = e.target.closest('[data-action]');
+        if (!target) return;
+        
+        const action = target.dataset.action;
+        
+        if (action === 'toggle') {
+            const pid = parseInt(target.dataset.pid, 10);
+            const nodeEl = target.closest('.tree-node');
+            const childrenEl = nodeEl.querySelector(`:scope > .tree-children`);
+            if (!childrenEl) return;
+            
+            const isCollapsed = childrenEl.classList.contains('collapsed');
+            childrenEl.classList.toggle('collapsed');
+            target.textContent = isCollapsed ? '▼' : '▶';
+            
+            // Lazy-render children if they're empty (were initially collapsed)
+            if (isCollapsed && childrenEl.innerHTML.trim() === '' && treeData) {
+                const nodeMap = new Map();
+                treeData.nodes.forEach(n => nodeMap.set(n.pid, n));
+                const node = nodeMap.get(pid);
+                if (node) {
+                    childrenEl.innerHTML = renderTreeChildren(node, nodeMap, 0, 0);
+                }
+            }
+        }
+        
+        if (action === 'expand-group') {
+            const groupEl = target.closest('.tree-node');
+            const childrenEl = groupEl.querySelector('.tree-children');
+            if (!childrenEl) return;
+            
+            const toggle = groupEl.querySelector('.tree-toggle');
+            const isCollapsed = childrenEl.classList.contains('collapsed');
+            childrenEl.classList.toggle('collapsed');
+            if (toggle) toggle.textContent = isCollapsed ? '▼' : '▶';
+        }
+        
+        if (action === 'timeline') {
+            e.stopPropagation();
+            const pid = parseInt(target.dataset.pid, 10);
+            openPidTimeline(pid);
+        }
+    }
+    
+    function openPidTimeline(pid) {
+        if (!currentTrace || !treeData) return;
+        
+        // Collect this PID and all descendant PIDs
+        const nodeMap = new Map();
+        treeData.nodes.forEach(n => nodeMap.set(n.pid, n));
+        
+        const pids = new Set();
+        function collectPids(p) {
+            pids.add(p);
+            const node = nodeMap.get(p);
+            if (node && node.childPids) {
+                node.childPids.forEach(collectPids);
+            }
+        }
+        collectPids(pid);
+        
+        // Open a new window with the timeline filtered to these PIDs
+        const pidList = Array.from(pids).join(',');
+        const url = `/index.html?trace=${currentTrace.id}&pids=${pidList}&root=${pid}`;
+        window.open(url, `timeline-${pid}`, 'width=1400,height=800');
+    }
+    
+    // Check URL params for PID-filtered timeline mode
+    function checkUrlParams() {
+        const params = new URLSearchParams(window.location.search);
+        const traceId = params.get('trace');
+        const pids = params.get('pids');
+        const rootPid = params.get('root');
+        
+        if (traceId) {
+            // Auto-load the trace
+            traceSelect.value = traceId;
+            loadTrace(traceId).then(() => {
+                if (pids) {
+                    // Filter to specific PIDs
+                    const pidSet = new Set(pids.split(',').map(Number));
+                    allEvents = allEvents.filter(e => pidSet.has(e.pid));
+                    filteredEvents = allEvents;
+                    sortData();
+                    updateStatus();
+                    render();
+                    
+                    // Update title
+                    document.title = `mactrace — PID ${rootPid} subtree`;
+                    
+                    // Hide the view toggle in sub-windows
+                    viewToggle.style.display = 'none';
+                }
+            });
+            return true;
+        }
+        return false;
+    }
+    
     // Column resizing
     (function setupColumnResize() {
         let resizing = null;
@@ -1045,7 +1564,9 @@
     })();
     
     // Init
-    loadTraces();
+    loadTraces().then(() => {
+        checkUrlParams();
+    });
 })();
 </script>
 </body>

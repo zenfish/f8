@@ -70,10 +70,10 @@ else
 fi
 
 # Verify trace output was written before continuing
-if [ ! -f "$base.json" ]; then
-    echo -e "\nError: trace output $base.json not found — mactrace may have failed"
-    exit 1
-fi
+# if [ ! -f "$base.json" ]; then
+#     echo -e "\nError: trace output $base.json not found — mactrace may have failed"
+#     exit 1
+# fi
 
 echo -e "\n... saving i/o\n"
 

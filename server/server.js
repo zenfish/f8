@@ -102,7 +102,19 @@ app.get('/api/traces/:id', (req, res) => {
         [req.params.id]
     );
     
-    res.json({ ...trace, categories, errorCount, topSyscalls, dnsLookups });
+    // Count exec'd/spawn'd programs
+    const execCount = queryOne(
+        "SELECT COUNT(*) as count FROM events WHERE trace_id = ? AND syscall IN ('execve', 'posix_spawn') AND errno = 0",
+        [req.params.id]
+    )?.count || 0;
+    
+    // Count unique PIDs (processes)
+    const pidCount = queryOne(
+        'SELECT COUNT(DISTINCT pid) as count FROM events WHERE trace_id = ?',
+        [req.params.id]
+    )?.count || 0;
+    
+    res.json({ ...trace, categories, errorCount, topSyscalls, dnsLookups, execCount, pidCount });
 });
 
 // Get DNS lookups for a trace
@@ -373,6 +385,164 @@ app.get('/api/traces/:id/target-events', (req, res) => {
     });
     } catch (err) {
         console.error('Error in /target-events:', err);
+        res.status(500).json({ error: err.message });
+    }
+});
+
+// Process tree for tree visualization
+app.get('/api/traces/:id/process-tree', (req, res) => {
+    try {
+        const traceId = req.params.id;
+        const trace = queryOne('SELECT * FROM traces WHERE id = ?', [traceId]);
+        if (!trace) return res.status(404).json({ error: 'Trace not found' });
+
+        const rootPid = trace.target_pid;
+
+        // Per-PID I/O stats
+        const pidStats = query(`
+            SELECT pid,
+                COUNT(*) as event_count,
+                MIN(seq) as first_seq,
+                MAX(seq) as last_seq,
+                SUM(CASE WHEN (syscall LIKE '%read%' OR syscall IN ('recv','recvfrom','recvmsg'))
+                         AND return_value > 0 THEN return_value ELSE 0 END) as total_read,
+                SUM(CASE WHEN (syscall LIKE '%write%' OR syscall IN ('send','sendto','sendmsg'))
+                         AND return_value > 0 THEN return_value ELSE 0 END) as total_write,
+                SUM(CASE WHEN (target GLOB '[0-9]*.[0-9]*.[0-9]*.[0-9]*:*' OR target LIKE 'AF_%')
+                         AND (syscall LIKE '%read%' OR syscall IN ('recv','recvfrom','recvmsg'))
+                         AND return_value > 0 THEN return_value ELSE 0 END) as net_read,
+                SUM(CASE WHEN (target GLOB '[0-9]*.[0-9]*.[0-9]*.[0-9]*:*' OR target LIKE 'AF_%')
+                         AND (syscall LIKE '%write%' OR syscall IN ('send','sendto','sendmsg'))
+                         AND return_value > 0 THEN return_value ELSE 0 END) as net_write,
+                SUM(CASE WHEN target LIKE '/%'
+                         AND (syscall LIKE '%read%') AND return_value > 0 THEN return_value ELSE 0 END) as file_read,
+                SUM(CASE WHEN target LIKE '/%'
+                         AND (syscall LIKE '%write%') AND return_value > 0 THEN return_value ELSE 0 END) as file_write
+            FROM events WHERE trace_id = ?
+            GROUP BY pid
+        `, [traceId]);
+
+        // Build parent→child map from fork/vfork events
+        const forkEvents = query(`
+            SELECT pid, return_value, seq FROM events
+            WHERE trace_id = ? AND syscall IN ('fork', 'vfork') AND return_value > 0 AND errno = 0
+            ORDER BY seq
+        `, [traceId]);
+
+        const allPids = new Set(pidStats.map(p => p.pid));
+        const parentMap = new Map(); // childPid → parentPid
+
+        for (const fe of forkEvents) {
+            const childPid = fe.return_value;
+            if (allPids.has(childPid) && !parentMap.has(childPid)) {
+                parentMap.set(childPid, fe.pid);
+            }
+        }
+
+        // Handle posix_spawn: find child PIDs by looking at next new PID after spawn event
+        const spawnEvents = query(`
+            SELECT pid, seq, target FROM events
+            WHERE trace_id = ? AND syscall = 'posix_spawn' AND errno = 0
+            ORDER BY seq
+        `, [traceId]);
+
+        for (const se of spawnEvents) {
+            // Find the next PID that appears right after this spawn that has no fork parent
+            const nextPidRow = queryOne(`
+                SELECT DISTINCT pid FROM events
+                WHERE trace_id = ? AND seq > ? AND seq < ? + 50
+                AND pid != ?
+                ORDER BY seq LIMIT 1
+            `, [traceId, se.seq, se.seq, se.pid]);
+            if (nextPidRow && !parentMap.has(nextPidRow.pid)) {
+                parentMap.set(nextPidRow.pid, se.pid);
+            }
+        }
+
+        // Get execve/posix_spawn targets per PID (program names)
+        const execEvents = query(`
+            SELECT pid, target, syscall FROM events
+            WHERE trace_id = ? AND syscall IN ('execve', 'posix_spawn') AND errno = 0 AND target != ''
+            ORDER BY seq
+        `, [traceId]);
+
+        const pidPrograms = new Map(); // pid → [program paths]
+        for (const ee of execEvents) {
+            if (ee.syscall === 'execve') {
+                // execve fires in the child
+                if (!pidPrograms.has(ee.pid)) pidPrograms.set(ee.pid, []);
+                pidPrograms.get(ee.pid).push(ee.target);
+            } else {
+                // posix_spawn fires in the parent — find the child PID
+                const childRow = queryOne(`
+                    SELECT DISTINCT pid FROM events
+                    WHERE trace_id = ? AND seq > (SELECT seq FROM events WHERE trace_id = ? AND pid = ? AND syscall = 'posix_spawn' AND target = ? LIMIT 1)
+                    AND seq < (SELECT seq FROM events WHERE trace_id = ? AND pid = ? AND syscall = 'posix_spawn' AND target = ? LIMIT 1) + 50
+                    AND pid != ?
+                    ORDER BY seq LIMIT 1
+                `, [traceId, traceId, ee.pid, ee.target, traceId, ee.pid, ee.target, ee.pid]);
+                if (childRow) {
+                    if (!pidPrograms.has(childRow.pid)) pidPrograms.set(childRow.pid, []);
+                    pidPrograms.get(childRow.pid).push(ee.target);
+                }
+            }
+        }
+
+        // Count exec/spawn per PID
+        const execCounts = query(`
+            SELECT pid, COUNT(*) as count FROM events
+            WHERE trace_id = ? AND syscall IN ('execve', 'posix_spawn') AND errno = 0
+            GROUP BY pid
+        `, [traceId]);
+        const pidExecCount = new Map(execCounts.map(e => [e.pid, e.count]));
+
+        // Build children map
+        const childrenMap = new Map(); // pid → [child pids]
+        for (const [child, parent] of parentMap) {
+            if (!childrenMap.has(parent)) childrenMap.set(parent, []);
+            childrenMap.get(parent).push(child);
+        }
+
+        // Sort children by first_seq
+        const pidFirstSeq = new Map(pidStats.map(p => [p.pid, p.first_seq]));
+        for (const [, children] of childrenMap) {
+            children.sort((a, b) => (pidFirstSeq.get(a) || 0) - (pidFirstSeq.get(b) || 0));
+        }
+
+        // Build nodes array
+        const nodes = pidStats.map(p => ({
+            pid: p.pid,
+            parentPid: parentMap.get(p.pid) ?? null,
+            childPids: childrenMap.get(p.pid) || [],
+            programs: pidPrograms.get(p.pid) || [],
+            execCount: pidExecCount.get(p.pid) || 0,
+            firstSeq: p.first_seq,
+            lastSeq: p.last_seq,
+            eventCount: p.event_count,
+            io: {
+                totalRead: p.total_read,
+                totalWrite: p.total_write,
+                netRead: p.net_read,
+                netWrite: p.net_write,
+                fileRead: p.file_read,
+                fileWrite: p.file_write
+            }
+        }));
+
+        // Total exec count
+        const totalExec = queryOne(`
+            SELECT COUNT(*) as count FROM events
+            WHERE trace_id = ? AND syscall IN ('execve', 'posix_spawn') AND errno = 0
+        `, [traceId]);
+
+        res.json({
+            rootPid,
+            command: trace.command,
+            nodes,
+            totalExecCount: totalExec?.count || 0
+        });
+    } catch (err) {
+        console.error('Error in /process-tree:', err);
         res.status(500).json({ error: err.message });
     }
 });
