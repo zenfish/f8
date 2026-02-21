@@ -2737,6 +2737,43 @@ class MacTrace:
             
         return result
     
+    def _capture_user_env(self, username: str) -> Optional[Dict[str, str]]:
+        """Capture a user's login shell environment.
+        
+        Runs 'sudo -iu <username> env' to get the full environment that
+        the user would see in an interactive login shell, including vars
+        set by .bashrc/.zshrc/.profile (PATH, N_PREFIX, LANG, etc.).
+        
+        Returns:
+            Dict of env vars, or None if capture fails.
+        """
+        try:
+            result = subprocess.run(
+                ['sudo', '-iu', username, 'env'],
+                capture_output=True, text=True, timeout=10
+            )
+            if result.returncode != 0:
+                if self.verbose:
+                    print(f"Warning: could not capture env for {username}: exit {result.returncode}",
+                          file=sys.stderr)
+                return None
+            
+            env = {}
+            for line in result.stdout.splitlines():
+                if '=' in line:
+                    key, _, value = line.partition('=')
+                    if key and not key.startswith('BASH_FUNC_'):  # skip shell function exports
+                        env[key] = value
+            
+            if self.verbose:
+                print(f"Captured {len(env)} env vars from {username}'s login shell", file=sys.stderr)
+            return env
+            
+        except (subprocess.TimeoutExpired, FileNotFoundError, PermissionError) as e:
+            if self.verbose:
+                print(f"Warning: could not capture env for {username}: {e}", file=sys.stderr)
+            return None
+    
     def trace(self, command: List[str], timeout: Optional[int] = None,
               run_as_user: Optional[tuple] = None) -> TraceResult:
         """
@@ -2915,13 +2952,30 @@ syscall::recvmsg_nocancel:return
         # Need to properly quote/escape for shell
         import shlex
         
-        # If run_as_user is specified, wrap command with sudo -u
+        # If run_as_user is specified, wrap command with sudo -u and the user's env
         if run_as_user:
             uid, gid, username = run_as_user
-            # Use sudo -u to drop privileges to the specified user
-            # The outer sudo (for DTrace) will spawn this inner sudo
+            # Capture the user's login environment so traced programs see the
+            # same PATH, N_PREFIX, LANG, etc. as an interactive shell.
+            user_env = self._capture_user_env(username)
             inner_cmd = ' '.join(shlex.quote(c) for c in command)
-            cmd_str = f'sudo -u {shlex.quote(username)} -- {inner_cmd}'
+            
+            if user_env:
+                # Build env prefix: env VAR1=val1 VAR2=val2 ... command
+                # Only pass vars that differ from current (root) env or are user-specific
+                env_exports = []
+                for key, val in sorted(user_env.items()):
+                    # Skip vars that are process-specific or would break tracing
+                    if key in ('_', 'SHLVL', 'PWD', 'OLDPWD', 'SUDO_COMMAND',
+                               'SUDO_USER', 'SUDO_UID', 'SUDO_GID', 'MAIL'):
+                        continue
+                    env_exports.append(f'{key}={shlex.quote(val)}')
+                env_str = ' '.join(env_exports)
+                cmd_str = f'sudo -u {shlex.quote(username)} env {env_str} {inner_cmd}'
+            else:
+                # Fallback: at least use -i for login environment
+                cmd_str = f'sudo -iu {shlex.quote(username)} -- {inner_cmd}'
+            
             if self.verbose:
                 print(f"Command wrapped for user {username}: {cmd_str}", file=sys.stderr)
         else:
