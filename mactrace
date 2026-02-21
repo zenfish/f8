@@ -2952,32 +2952,55 @@ syscall::recvmsg_nocancel:return
         # Need to properly quote/escape for shell
         import shlex
         
-        # If run_as_user is specified, wrap command with sudo -u and the user's env
+        # If run_as_user is specified, wrap command with sudo -u and the user's env.
+        # We write the env to a temp wrapper script to avoid:
+        #   - Leaking secrets (API keys etc.) in ps/process list
+        #   - Exceeding OS command line length limits
+        #   - Shell metacharacter issues in env values
+        env_wrapper_path = None
         if run_as_user:
             uid, gid, username = run_as_user
-            # Capture the user's login environment so traced programs see the
-            # same PATH, N_PREFIX, LANG, etc. as an interactive shell.
             user_env = self._capture_user_env(username)
             inner_cmd = ' '.join(shlex.quote(c) for c in command)
             
             if user_env:
-                # Build env prefix: env VAR1=val1 VAR2=val2 ... command
-                # Only pass vars that differ from current (root) env or are user-specific
-                env_exports = []
-                for key, val in sorted(user_env.items()):
-                    # Skip vars that are process-specific or would break tracing
-                    if key in ('_', 'SHLVL', 'PWD', 'OLDPWD', 'SUDO_COMMAND',
-                               'SUDO_USER', 'SUDO_UID', 'SUDO_GID', 'MAIL'):
-                        continue
-                    env_exports.append(f'{key}={shlex.quote(val)}')
-                env_str = ' '.join(env_exports)
-                cmd_str = f'sudo -u {shlex.quote(username)} env {env_str} {inner_cmd}'
+                # Write a wrapper script that sets the env and exec's the command.
+                # The wrapper is owned by root and readable only by root+user,
+                # and deleted in the finally block.
+                skip_vars = {'_', 'SHLVL', 'PWD', 'OLDPWD', 'SUDO_COMMAND',
+                             'SUDO_USER', 'SUDO_UID', 'SUDO_GID', 'MAIL',
+                             'TERM'}  # TERM set separately below
+                
+                with tempfile.NamedTemporaryFile(mode='w', suffix='.sh',
+                                                  prefix='mactrace_env_',
+                                                  delete=False) as ef:
+                    ef.write('#!/bin/bash\n')
+                    for key, val in sorted(user_env.items()):
+                        if key in skip_vars:
+                            continue
+                        if not key.isidentifier():
+                            continue  # skip malformed var names
+                        # Use printf to avoid shell interpretation of special chars
+                        escaped = val.replace('\\', '\\\\').replace("'", "'\\''")
+                        ef.write(f"export {key}='{escaped}'\n")
+                    # Set TERM to match the real terminal (not "unknown" from sudo -i)
+                    real_term = os.environ.get('TERM', 'xterm-256color')
+                    ef.write(f"export TERM='{real_term}'\n")
+                    ef.write(f'exec {inner_cmd}\n')
+                    env_wrapper_path = ef.name
+                
+                os.chmod(env_wrapper_path, 0o700)
+                cmd_str = f'sudo -u {shlex.quote(username)} {env_wrapper_path}'
+                
+                if self.verbose:
+                    print(f"Env wrapper: {env_wrapper_path} ({len(user_env)} vars)", file=sys.stderr)
+                    print(f"Command: sudo -u {username} {env_wrapper_path}", file=sys.stderr)
+                    print(f"  (wraps: {inner_cmd})", file=sys.stderr)
             else:
                 # Fallback: at least use -i for login environment
                 cmd_str = f'sudo -iu {shlex.quote(username)} -- {inner_cmd}'
-            
-            if self.verbose:
-                print(f"Command wrapped for user {username}: {cmd_str}", file=sys.stderr)
+                if self.verbose:
+                    print(f"Command wrapped for user {username}: {cmd_str}", file=sys.stderr)
         else:
             cmd_str = ' '.join(shlex.quote(c) for c in command)
         
@@ -2987,12 +3010,22 @@ syscall::recvmsg_nocancel:return
         target_stderr_lines = []
         dtrace_output = []
         
+        # Detect if we have a real terminal for interactive passthrough.
+        # If stdin is a TTY, use PTY mode so traced programs (curses menus,
+        # interactive prompts, etc.) work correctly. Otherwise use PIPE mode.
+        use_pty = os.isatty(sys.stdin.fileno()) if hasattr(sys.stdin, 'fileno') else False
+        
         # Get TTY for real-time output (may be None if not a terminal)
         # Use binary mode to preserve \r characters exactly
         try:
             tty = open('/dev/tty', 'wb', buffering=0)
         except OSError:
             tty = None
+            use_pty = False  # No terminal available, can't do PTY mode
+        
+        master_fd = None
+        slave_fd = None
+        old_tty_settings = None
         
         # Create temp file for dtrace output (separate from target stdout)
         dtrace_output_file = tempfile.NamedTemporaryFile(mode='w', suffix='.dtrace', delete=False)
@@ -3011,79 +3044,195 @@ syscall::recvmsg_nocancel:return
             ]
             
             if self.verbose:
-                print(f"Starting DTrace: {' '.join(dtrace_cmd)}", file=sys.stderr)
+                mode_str = "PTY (interactive)" if use_pty else "PIPE (non-interactive)"
+                print(f"Starting DTrace ({mode_str}): {' '.join(dtrace_cmd)}", file=sys.stderr)
             
-            dtrace_proc = subprocess.Popen(
-                dtrace_cmd,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE
-            )
-            
-            # Read target stdout/stderr in real-time using threads
-            # These are now PURE target output - no dtrace mixing
-            import threading
-            
-            def read_stdout():
-                """Read and echo target stdout to tty"""
-                for line_bytes in dtrace_proc.stdout:
-                    # Echo to tty
-                    if tty:
+            if use_pty:
+                # PTY mode: allocate a pseudo-terminal so traced programs see
+                # isatty()=True and can use curses, line editing, etc.
+                import pty as pty_module
+                import select
+                import termios
+                import tty as tty_module
+                import struct
+                import fcntl
+                
+                master_fd, slave_fd = pty_module.openpty()
+                
+                # Copy terminal size from real terminal to PTY
+                try:
+                    real_tty_fd = os.open('/dev/tty', os.O_RDWR)
+                    winsize = fcntl.ioctl(real_tty_fd, termios.TIOCGWINSZ, b'\x00' * 8)
+                    fcntl.ioctl(slave_fd, termios.TIOCSWINSZ, winsize)
+                    os.close(real_tty_fd)
+                except OSError:
+                    pass
+                
+                dtrace_proc = subprocess.Popen(
+                    dtrace_cmd,
+                    stdin=slave_fd,
+                    stdout=slave_fd,
+                    stderr=slave_fd,
+                    close_fds=False
+                )
+                os.close(slave_fd)
+                slave_fd = None
+                
+                # Set real stdin to raw mode so keystrokes pass through immediately
+                # (arrow keys, Ctrl-C, etc. go to the traced program)
+                try:
+                    old_tty_settings = termios.tcgetattr(sys.stdin)
+                    tty_module.setraw(sys.stdin)
+                except termios.error:
+                    old_tty_settings = None
+                
+                # select loop: forward stdin→master (user input) and master→tty (program output)
+                try:
+                    while dtrace_proc.poll() is None:
                         try:
-                            tty.write(line_bytes)
-                        except:
-                            pass
-                    # Capture (handle \r for final visible state)
-                    line = line_bytes.decode(errors='replace').rstrip('\n')
-                    if '\r' in line:
-                        segments = line.split('\r')
-                        for seg in reversed(segments):
-                            if seg:
-                                target_stdout_lines.append(seg)
+                            rlist, _, _ = select.select([sys.stdin, master_fd], [], [], 0.25)
+                        except (ValueError, OSError):
+                            break
+                        
+                        if sys.stdin in rlist:
+                            try:
+                                data = os.read(sys.stdin.fileno(), 4096)
+                                if data:
+                                    os.write(master_fd, data)
+                                else:
+                                    break  # EOF on stdin
+                            except OSError:
                                 break
-                    elif line:
-                        target_stdout_lines.append(line)
-            
-            def read_stderr():
-                """Read and echo target stderr to tty"""
-                for line_bytes in dtrace_proc.stderr:
-                    line = line_bytes.decode(errors='replace').rstrip('\n')
-                    # Filter dtrace messages
-                    if line.lstrip().startswith('dtrace:'):
-                        if self.verbose:
-                            print(f"DTrace: {line.lstrip()}", file=sys.stderr)
-                    else:
+                        
+                        if master_fd in rlist:
+                            try:
+                                data = os.read(master_fd, 4096)
+                                if data:
+                                    # Echo to real terminal
+                                    if tty:
+                                        try:
+                                            tty.write(data)
+                                        except:
+                                            pass
+                                    # Capture output (best-effort line splitting)
+                                    text = data.decode(errors='replace')
+                                    for line in text.splitlines():
+                                        line = line.rstrip()
+                                        if line:
+                                            # Filter dtrace stderr messages that come through the PTY
+                                            if line.lstrip().startswith('dtrace:'):
+                                                if self.verbose:
+                                                    print(f"\nDTrace: {line.lstrip()}", file=sys.stderr)
+                                            else:
+                                                target_stdout_lines.append(line)
+                                else:
+                                    break  # PTY closed
+                            except OSError:
+                                break
+                except KeyboardInterrupt:
+                    # Ctrl-C in raw mode comes as \x03 — but just in case
+                    pass
+                
+                # Drain any remaining output from master
+                try:
+                    while True:
+                        rlist, _, _ = select.select([master_fd], [], [], 0.1)
+                        if not rlist:
+                            break
+                        data = os.read(master_fd, 4096)
+                        if not data:
+                            break
+                        if tty:
+                            try:
+                                tty.write(data)
+                            except:
+                                pass
+                        text = data.decode(errors='replace')
+                        for line in text.splitlines():
+                            line = line.rstrip()
+                            if line and not line.lstrip().startswith('dtrace:'):
+                                target_stdout_lines.append(line)
+                except OSError:
+                    pass
+                
+                # Wait for dtrace to finish (should already be done)
+                try:
+                    dtrace_proc.wait(timeout=timeout or 5)
+                except subprocess.TimeoutExpired:
+                    dtrace_proc.kill()
+                    dtrace_proc.wait()
+                
+            else:
+                # PIPE mode: non-interactive, capture stdout/stderr via threads
+                dtrace_proc = subprocess.Popen(
+                    dtrace_cmd,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE
+                )
+                
+                import threading
+                
+                def read_stdout():
+                    """Read and echo target stdout to tty"""
+                    for line_bytes in dtrace_proc.stdout:
                         # Echo to tty
                         if tty:
                             try:
                                 tty.write(line_bytes)
                             except:
                                 pass
-                        # Capture
+                        # Capture (handle \r for final visible state)
+                        line = line_bytes.decode(errors='replace').rstrip('\n')
                         if '\r' in line:
                             segments = line.split('\r')
                             for seg in reversed(segments):
                                 if seg:
-                                    target_stderr_lines.append(seg)
+                                    target_stdout_lines.append(seg)
                                     break
                         elif line:
-                            target_stderr_lines.append(line)
-            
-            stdout_thread = threading.Thread(target=read_stdout, daemon=True)
-            stderr_thread = threading.Thread(target=read_stderr, daemon=True)
-            stdout_thread.start()
-            stderr_thread.start()
-            
-            # Wait for dtrace to complete
-            try:
-                dtrace_proc.wait(timeout=timeout)
-                # Wait for reader threads to finish
-                stdout_thread.join(timeout=2)
-                stderr_thread.join(timeout=2)
-            except subprocess.TimeoutExpired:
-                dtrace_proc.kill()
-                dtrace_proc.wait()
-                if self.verbose:
-                    print("Timeout expired, killed dtrace", file=sys.stderr)
+                            target_stdout_lines.append(line)
+                
+                def read_stderr():
+                    """Read and echo target stderr to tty"""
+                    for line_bytes in dtrace_proc.stderr:
+                        line = line_bytes.decode(errors='replace').rstrip('\n')
+                        # Filter dtrace messages
+                        if line.lstrip().startswith('dtrace:'):
+                            if self.verbose:
+                                print(f"DTrace: {line.lstrip()}", file=sys.stderr)
+                        else:
+                            # Echo to tty
+                            if tty:
+                                try:
+                                    tty.write(line_bytes)
+                                except:
+                                    pass
+                            # Capture
+                            if '\r' in line:
+                                segments = line.split('\r')
+                                for seg in reversed(segments):
+                                    if seg:
+                                        target_stderr_lines.append(seg)
+                                        break
+                            elif line:
+                                target_stderr_lines.append(line)
+                
+                stdout_thread = threading.Thread(target=read_stdout, daemon=True)
+                stderr_thread = threading.Thread(target=read_stderr, daemon=True)
+                stdout_thread.start()
+                stderr_thread.start()
+                
+                # Wait for dtrace to complete
+                try:
+                    dtrace_proc.wait(timeout=timeout)
+                    # Wait for reader threads to finish
+                    stdout_thread.join(timeout=2)
+                    stderr_thread.join(timeout=2)
+                except subprocess.TimeoutExpired:
+                    dtrace_proc.kill()
+                    dtrace_proc.wait()
+                    if self.verbose:
+                        print("Timeout expired, killed dtrace", file=sys.stderr)
             
             # Read dtrace output from file
             try:
@@ -3105,9 +3254,27 @@ syscall::recvmsg_nocancel:return
                         break
                     
         finally:
+            # Restore terminal settings (must happen before any other cleanup)
+            if old_tty_settings is not None:
+                try:
+                    import termios
+                    termios.tcsetattr(sys.stdin, termios.TCSADRAIN, old_tty_settings)
+                except:
+                    pass
+            
             # Cleanup
             if dtrace_proc and dtrace_proc.poll() is None:
                 dtrace_proc.kill()
+            if master_fd is not None:
+                try:
+                    os.close(master_fd)
+                except:
+                    pass
+            if slave_fd is not None:
+                try:
+                    os.close(slave_fd)
+                except:
+                    pass
             try:
                 os.unlink(dtrace_path)
             except:
@@ -3116,6 +3283,11 @@ syscall::recvmsg_nocancel:return
                 os.unlink(dtrace_output_path)
             except:
                 pass
+            if env_wrapper_path:
+                try:
+                    os.unlink(env_wrapper_path)
+                except:
+                    pass
             if tty:
                 try:
                     tty.close()
