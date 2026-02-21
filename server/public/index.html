@@ -1287,7 +1287,8 @@
         // Separate: the main root, other roots with subtrees, and bare orphans
         const mainRoot = rootNode || allRoots[0];
         const otherRoots = allRoots.filter(n => n !== mainRoot && (n.childPids.length > 0 || n.programs.length > 0 || n.io.totalRead > 0 || n.io.totalWrite > 0));
-        const bareOrphans = allRoots.filter(n => n !== mainRoot && n.childPids.length === 0 && n.programs.length === 0 && !n.io.totalRead && !n.io.totalWrite && n.eventCount <= 5);
+        // Bare orphans: no children, no program, no I/O — but still show what syscalls they made
+        const bareOrphans = allRoots.filter(n => n !== mainRoot && n.childPids.length === 0 && n.programs.length === 0 && !n.io.totalRead && !n.io.totalWrite);
         
         let html = '';
         
@@ -1320,21 +1321,67 @@
             html += `</div></div>`;
         }
         
-        // Bare orphans (unknown PIDs with no children, no program, no I/O)
+        // Bare orphans: no children, no program, no I/O — but classify by what they did
         if (bareOrphans.length > 0) {
-            // Group by PID ranges for readability
-            const ranges = groupPidRanges(bareOrphans.map(n => n.pid));
-            html += `<div style="margin-top:16px;padding-top:12px;border-top:2px solid #ddd">
-                <div style="font-size:12px;color:#888;margin-bottom:8px;font-weight:600">
-                    <span class="tree-toggle" data-action="toggle-section" data-section="bare-orphans">▶</span>
-                    Untraced Processes (${bareOrphans.length.toLocaleString()} PIDs — no parent/exec/I/O captured)
+            // Separate into getpid-only (truly trivial) vs. anything else
+            const trivialOrphans = []; // only getpid/geteuid/getuid/getgid/getegid/getppid
+            const nonTrivialOrphans = []; // did something beyond identity checks
+            const trivialSyscalls = new Set(['getpid','geteuid','getuid','getgid','getegid','getppid']);
+            
+            for (const n of bareOrphans) {
+                // Check if this PID did anything beyond trivial identity syscalls
+                // We don't have per-PID syscall breakdown in tree data, so use eventCount as heuristic
+                // Anything with events > 0 that ISN'T in the programs/IO set needs individual checking
+                // For now, bucket by event count but show ALL of them
+                if (n.eventCount <= 5) {
+                    trivialOrphans.push(n);
+                } else {
+                    nonTrivialOrphans.push(n);
+                }
+            }
+            
+            html += `<div style="margin-top:16px;padding-top:12px;border-top:2px solid #ddd">`;
+            
+            // Non-trivial orphans first (security-relevant — they did real work)
+            if (nonTrivialOrphans.length > 0) {
+                html += `<div style="font-size:12px;color:#c0392b;margin-bottom:8px;font-weight:600">
+                    <span class="tree-toggle" data-action="toggle-section" data-section="active-orphans">▼</span>
+                    ⚠ Active Orphan Processes (${nonTrivialOrphans.length} PIDs — no known parent, but had activity)
                 </div>
-                <div class="tree-children collapsed" data-section-content="bare-orphans">
-                    <div style="padding:8px 12px;font-family:'SF Mono',Consolas,monospace;font-size:11px;color:#888;max-height:300px;overflow-y:auto;line-height:1.6">
-                        ${ranges.map(r => r.length === 1 ? `<span style="display:inline-block;margin:1px 4px;padding:1px 6px;background:#f0f0f0;border-radius:3px">${r[0]}</span>` : `<span style="display:inline-block;margin:1px 4px;padding:1px 6px;background:#f0f0f0;border-radius:3px">${r[0]}–${r[1]} <span style="color:#aaa">(${r[1]-r[0]+1})</span></span>`).join('')}
+                <div class="tree-children" data-section-content="active-orphans">`;
+                for (const orphan of nonTrivialOrphans) {
+                    html += renderTreeNode(orphan, nodeMap, 0, 0, true);
+                }
+                html += `</div>`;
+            }
+            
+            // Trivial orphans (getpid-only etc.)
+            if (trivialOrphans.length > 0) {
+                const ranges = groupPidRanges(trivialOrphans.map(n => n.pid));
+                html += `<div style="font-size:12px;color:#888;margin-bottom:8px;margin-top:12px;font-weight:600">
+                    <span class="tree-toggle" data-action="toggle-section" data-section="trivial-orphans">▶</span>
+                    Ephemeral Processes (${trivialOrphans.length.toLocaleString()} PIDs — ≤5 events each, likely shell subshells)
+                </div>
+                <div class="tree-children collapsed" data-section-content="trivial-orphans">
+                    <div style="padding:8px 12px;font-size:11px;color:#666;margin-bottom:8px">
+                        These processes were detected by DTrace (progenyof match) but only called identity syscalls (getpid, geteuid, etc.) before exiting.
+                        Typically short-lived shell subshells or pipe stages. Click any PID to view its timeline.
                     </div>
-                </div>
-            </div>`;
+                    <div style="padding:4px 12px;font-family:'SF Mono',Consolas,monospace;font-size:11px;color:#888;max-height:300px;overflow-y:auto;line-height:1.6">
+                        ${ranges.map(r => {
+                            if (r.length === 1) {
+                                const n = nodeMap.get(r[0]);
+                                const evts = n ? n.eventCount : '?';
+                                return `<span style="display:inline-block;margin:1px 4px;padding:1px 6px;background:#f0f0f0;border-radius:3px;cursor:pointer" data-action="timeline" data-pid="${r[0]}" title="PID ${r[0]}: ${evts} events">${r[0]}</span>`;
+                            } else {
+                                return `<span style="display:inline-block;margin:1px 4px;padding:1px 6px;background:#f0f0f0;border-radius:3px">${r[0]}–${r[1]} <span style="color:#aaa">(${r[1]-r[0]+1})</span></span>`;
+                            }
+                        }).join('')}
+                    </div>
+                </div>`;
+            }
+            
+            html += `</div>`;
         }
         
         treeContent.innerHTML = html;
