@@ -2,11 +2,12 @@
 """
 mactrace - strace-like utility for macOS using DTrace
 
-Traces system calls for a command and all its children, outputting JSON
-suitable for timeline analysis.
+Traces system calls for a command (or a running process) and all its
+children, outputting JSON suitable for timeline analysis.
 
 Requires: sudo (DTrace needs root privileges)
 Usage: sudo ./mactrace [-o output.json] command [args...]
+       sudo ./mactrace -p PID [-o output.json]
 
 Author: Mox (for Dan's PhD research)
 """
@@ -15,15 +16,36 @@ import argparse
 import json
 import os
 import re
+import shutil
 import signal
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 from dataclasses import dataclass, field, asdict
 from datetime import datetime
 from pathlib import Path
 from typing import Optional, List, Dict, Any
+
+
+def parse_size(size_str: str) -> int:
+    """Parse a size string like '10M', '500k', '1G' into bytes."""
+    size_str = size_str.strip()
+    if not size_str:
+        raise ValueError("Empty size string")
+    
+    multipliers = {
+        'k': 1024,
+        'm': 1024 * 1024,
+        'g': 1024 * 1024 * 1024,
+    }
+    
+    suffix = size_str[-1].lower()
+    if suffix in multipliers:
+        return int(float(size_str[:-1]) * multipliers[suffix])
+    else:
+        return int(size_str)
 
 
 def render_terminal_lines(lines: List[str]) -> List[str]:
@@ -1650,7 +1672,7 @@ class MacTrace:
     
     def __init__(self, verbose: bool = False, capture_io: bool = False,
                  io_size: int = 1*1024*1024, strsize: int = 16384, bufsize: str = "256m", 
-                 dynvarsize: str = "128m"):
+                 dynvarsize: str = "128m", cache_size: int = 0, cache_dir: str = None):
         self.verbose = verbose
         self.capture_io = capture_io
         self.io_size = io_size
@@ -1671,6 +1693,14 @@ class MacTrace:
         self.exit_code: int = 0
         self.all_syscall_counts: Dict[str, int] = {}  # All syscalls seen (from catch-all probe)
         self._truncation_warnings: set = set()  # Track warned (pid, syscall, fd) to avoid spam
+        self._fd_info: Dict[tuple, str] = {}  # (pid, fd) -> description (path or address)
+        # File caching
+        self.cache_size = cache_size  # Max file size to cache (0 = disabled)
+        self.cache_dir = cache_dir
+        self._cache_threads: List[threading.Thread] = []
+        self._cached_files: set = set()  # Track files already queued for caching
+        self._cache_success: set = set()  # Files successfully cached
+        self._cache_errors: Dict[str, str] = {}  # path -> error message
     
     # Errno mapping (common ones)
     ERRNO_NAMES = {
@@ -2019,10 +2049,79 @@ class MacTrace:
                 args=args
             )
             self.events.append(event)
+            self._update_fd_info(event)
             
         except (ValueError, IndexError) as e:
             if self.verbose:
                 print(f"Warning: Failed to parse syscall: {full_line} ({e})", file=sys.stderr)
+    
+    def _update_fd_info(self, event: SyscallEvent) -> None:
+        """Track fd→description mappings from open/socket/connect events."""
+        pid = event.pid
+        syscall = event.syscall
+        args = event.args
+        retval = event.return_value
+        
+        # open/openat: return value is the fd, args has path
+        if syscall in ("open", "open_nocancel", "openat", "openat_nocancel"):
+            if retval >= 0 and "path" in args:
+                self._fd_info[(pid, retval)] = args["path"]
+        
+        # socket: return value is the fd, args has domain/type
+        elif syscall == "socket":
+            if retval >= 0:
+                domain = args.get("domain", "?")
+                stype = args.get("type", "?")
+                self._fd_info[(pid, retval)] = f"socket({domain}/{stype})"
+        
+        # connect: fd is in args, address info also in args
+        elif syscall in ("connect", "connect_nocancel"):
+            fd = args.get("fd")
+            if fd is not None:
+                addr = args.get("display") or args.get("address")
+                if addr:
+                    self._fd_info[(pid, fd)] = addr
+                elif args.get("path"):  # Unix socket
+                    self._fd_info[(pid, fd)] = args["path"]
+        
+        # accept: return value is new fd, address info in args
+        elif syscall in ("accept", "accept_nocancel"):
+            if retval >= 0:
+                addr = args.get("display") or args.get("address")
+                if addr:
+                    self._fd_info[(pid, retval)] = f"from {addr}"
+        
+        # close: remove fd tracking
+        elif syscall in ("close", "close_nocancel"):
+            fd = args.get("fd")
+            if fd is not None:
+                self._fd_info.pop((pid, fd), None)
+    
+    def _queue_cache_file(self, src_path: str) -> None:
+        """Queue a local file for async copying to cache dir."""
+        def copy_file():
+            try:
+                # Create a safe filename from the path
+                # Replace / with _ and prepend cache dir
+                safe_name = src_path.replace('/', '_').lstrip('_')
+                dst_path = os.path.join(self.cache_dir, safe_name)
+                shutil.copy2(src_path, dst_path)
+                self._cache_success.add(src_path)
+                if self.verbose:
+                    print(f"📁 Cached: {src_path} → {dst_path}", file=sys.stderr)
+            except Exception as e:
+                self._cache_errors[src_path] = str(e)
+                print(f"❌ Failed to cache {src_path}: {e}", file=sys.stderr)
+        
+        t = threading.Thread(target=copy_file, daemon=True)
+        t.start()
+        self._cache_threads.append(t)
+    
+    def wait_for_cache(self, timeout: float = 30.0) -> tuple:
+        """Wait for all cache operations to complete. Returns (success_count, error_count)."""
+        for t in self._cache_threads:
+            t.join(timeout=timeout)
+        return len(self._cache_success), len(self._cache_errors)
     
     def _merge_io_hexdumps(self, lines: List[str]) -> List[str]:
         """Pre-process dtrace output to merge MACTRACE_IO/MACTRACE_SOCKADDR with tracemem hexdumps.
@@ -2126,13 +2225,19 @@ class MacTrace:
                 warn_key = (pid, syscall, fd)
                 if warn_key not in self._truncation_warnings:
                     self._truncation_warnings.add(warn_key)
-                    # Try to get target info from the matched event
-                    target = "fd %d" % fd
+                    # Try to get target info: first from matched event, then from fd tracking
+                    target = None
                     if matched_event:
                         if 'path' in matched_event.args:
                             target = matched_event.args['path']
+                        elif 'display' in matched_event.args:
+                            target = matched_event.args['display']
                         elif 'address' in matched_event.args:
                             target = matched_event.args['address']
+                    
+                    # Fall back to fd tracking table
+                    if not target:
+                        target = self._fd_info.get((pid, fd), f"fd {fd}")
                     
                     def _fmt_size(n):
                         if n >= 1024*1024:
@@ -2141,10 +2246,31 @@ class MacTrace:
                             return "%.1fK" % (n / 1024)
                         return str(n)
                     
-                    print(f"⚠️  PID {pid} {syscall} {_fmt_size(nbytes)} from {target} — "
-                          f"exceeds capture limit of {_fmt_size(self.io_size)}. "
-                          f"Use --io-size={_fmt_size(nbytes)} to capture fully.",
-                          file=sys.stderr)
+                    # Check if this is a local file we can cache
+                    is_local_file = target and target.startswith('/') and os.path.isfile(target)
+                    cached = False
+                    
+                    if is_local_file and self.cache_size > 0 and self.cache_dir:
+                        try:
+                            file_size = os.path.getsize(target)
+                            if file_size <= self.cache_size and target not in self._cached_files:
+                                self._cached_files.add(target)
+                                self._queue_cache_file(target)
+                                cached = True
+                        except OSError:
+                            pass
+                    
+                    # Build warning message - always show "exceeds capture limit"
+                    msg = (f"⚠️  PID {pid} {syscall} {_fmt_size(nbytes)} from {target} — "
+                           f"exceeds capture limit of {_fmt_size(self.io_size)}. "
+                           f"Use --io-size={_fmt_size(nbytes)} to capture fully")
+                    if cached:
+                        msg += f". Copying file locally to {self.cache_dir}/"
+                    elif is_local_file:
+                        msg += ", or --cache=SIZE to cache local files."
+                    else:
+                        msg += "."
+                    print(msg, file=sys.stderr)
                     
         except (ValueError, IndexError) as e:
             if self.verbose:
@@ -2268,6 +2394,7 @@ class MacTrace:
                 args=args
             )
             self.events.append(event)
+            self._update_fd_info(event)
             
         except (ValueError, IndexError) as e:
             if self.verbose:
@@ -2847,6 +2974,334 @@ syscall::recvmsg_nocancel:return
         )
 
 
+    def trace_pid(self, target_pid: int, timeout: Optional[int] = None) -> TraceResult:
+        """
+        Attach to and trace an already-running process by PID.
+        
+        Similar to strace -p, this attaches DTrace to a running process
+        and traces its syscalls (and those of any children it spawns).
+        Tracing continues until the process exits, timeout expires, or Ctrl+C.
+        
+        Args:
+            target_pid: PID of the process to trace
+            timeout: Optional timeout in seconds
+            
+        Returns:
+            TraceResult with all collected data
+        """
+        import shlex
+        
+        # Verify the PID exists
+        try:
+            os.kill(target_pid, 0)
+        except ProcessLookupError:
+            print(f"Error: No process with PID {target_pid}", file=sys.stderr)
+            sys.exit(1)
+        except PermissionError:
+            pass  # Process exists but we can't signal it (that's fine, dtrace runs as root)
+        
+        # Try to get the process name for the result metadata
+        try:
+            proc_info = subprocess.run(
+                ["ps", "-p", str(target_pid), "-o", "comm="],
+                capture_output=True, text=True, timeout=5
+            )
+            proc_name = proc_info.stdout.strip() or f"pid={target_pid}"
+        except Exception:
+            proc_name = f"pid={target_pid}"
+        
+        start_time = datetime.now()
+        base_timestamp = int(time.time() * 1000000)
+        
+        # Prepare DTrace script - replace $target_pid with literal PID
+        # When using dtrace -p, $target is set to the attached PID
+        dtrace_script = DTRACE_SCRIPT.replace("$target_pid", "$target")
+        
+        # Substitute DTrace options
+        dtrace_script = dtrace_script.replace("$STRSIZE$", str(self.strsize))
+        dtrace_script = dtrace_script.replace("$BUFSIZE$", self.bufsize)
+        dtrace_script = dtrace_script.replace("$DYNVARSIZE$", self.dynvarsize)
+        
+        # Add rawio pragma and I/O buffer capture if requested
+        if self.capture_io:
+            dtrace_script = dtrace_script.replace("$RAWIO_PRAGMA$", "#pragma D option rawbytes")
+            io_size = self.io_size
+            io_capture_probes = f'''
+/* ============================================ */
+/* I/O DATA CAPTURE (--capture-io)              */
+/* ============================================ */
+syscall::read:entry,
+syscall::read_nocancel:entry
+/TRACED/
+{{
+    self->read_buf = arg1;
+}}
+
+syscall::pread:entry,
+syscall::pread_nocancel:entry
+/TRACED/
+{{
+    self->pread_buf = arg1;
+}}
+
+syscall::write:entry,
+syscall::write_nocancel:entry
+/TRACED/
+{{
+    self->write_buf = arg1;
+}}
+
+syscall::pwrite:entry,
+syscall::pwrite_nocancel:entry
+/TRACED/
+{{
+    self->pwrite_buf = arg1;
+}}
+
+syscall::sendto:entry,
+syscall::sendto_nocancel:entry
+/TRACED/
+{{
+    self->sendto_buf = arg1;
+}}
+
+syscall::recvfrom:entry,
+syscall::recvfrom_nocancel:entry
+/TRACED/
+{{
+    self->recvfrom_buf = arg1;
+}}
+
+syscall::read:return,
+syscall::read_nocancel:return
+/TRACED && arg1 > 0 && self->read_buf/
+{{
+    this->nbytes = arg1 < {io_size} ? arg1 : {io_size};
+    printf("MACTRACE_IO %d %d read %d %d ", pid, tid, self->read_fd, (int)arg1);
+    tracemem(copyin(self->read_buf, this->nbytes), {io_size}, this->nbytes);
+    printf("\\n");
+    self->read_buf = 0;
+}}
+
+syscall::pread:return,
+syscall::pread_nocancel:return
+/TRACED && arg1 > 0 && self->pread_buf/
+{{
+    this->nbytes = arg1 < {io_size} ? arg1 : {io_size};
+    printf("MACTRACE_IO %d %d pread %d %d ", pid, tid, self->pread_fd, (int)arg1);
+    tracemem(copyin(self->pread_buf, this->nbytes), {io_size}, this->nbytes);
+    printf("\\n");
+    self->pread_buf = 0;
+}}
+
+syscall::write:return,
+syscall::write_nocancel:return
+/TRACED && arg1 > 0 && self->write_buf/
+{{
+    this->nbytes = arg1 < {io_size} ? arg1 : {io_size};
+    printf("MACTRACE_IO %d %d write %d %d ", pid, tid, self->write_fd, (int)arg1);
+    tracemem(copyin(self->write_buf, this->nbytes), {io_size}, this->nbytes);
+    printf("\\n");
+    self->write_buf = 0;
+}}
+
+syscall::pwrite:return,
+syscall::pwrite_nocancel:return
+/TRACED && arg1 > 0 && self->pwrite_buf/
+{{
+    this->nbytes = arg1 < {io_size} ? arg1 : {io_size};
+    printf("MACTRACE_IO %d %d pwrite %d %d ", pid, tid, self->pwrite_fd, (int)arg1);
+    tracemem(copyin(self->pwrite_buf, this->nbytes), {io_size}, this->nbytes);
+    printf("\\n");
+    self->pwrite_buf = 0;
+}}
+
+syscall::sendto:return,
+syscall::sendto_nocancel:return
+/TRACED && arg1 > 0 && self->sendto_buf/
+{{
+    this->nbytes = arg1 < {io_size} ? arg1 : {io_size};
+    printf("MACTRACE_IO %d %d sendto %d %d ", pid, tid, self->sendto_fd, (int)arg1);
+    tracemem(copyin(self->sendto_buf, this->nbytes), {io_size}, this->nbytes);
+    printf("\\n");
+    self->sendto_buf = 0;
+}}
+
+syscall::recvfrom:return,
+syscall::recvfrom_nocancel:return
+/TRACED && arg1 > 0 && self->recvfrom_buf/
+{{
+    this->nbytes = arg1 < {io_size} ? arg1 : {io_size};
+    printf("MACTRACE_IO %d %d recvfrom %d %d ", pid, tid, self->recvfrom_fd, (int)arg1);
+    tracemem(copyin(self->recvfrom_buf, this->nbytes), {io_size}, this->nbytes);
+    printf("\\n");
+    self->recvfrom_buf = 0;
+}}
+
+syscall::sendmsg:return,
+syscall::sendmsg_nocancel:return
+/TRACED && arg1 > 0/
+{{
+    printf("MACTRACE_IO %d %d sendmsg %d %d\\n", pid, tid, self->sendmsg_fd, (int)arg1);
+}}
+
+syscall::recvmsg:return,
+syscall::recvmsg_nocancel:return
+/TRACED && arg1 > 0/
+{{
+    printf("MACTRACE_IO %d %d recvmsg %d %d\\n", pid, tid, self->recvmsg_fd, (int)arg1);
+}}
+'''
+            dtrace_script += io_capture_probes
+        else:
+            dtrace_script = dtrace_script.replace("$RAWIO_PRAGMA$", "")
+        
+        with tempfile.NamedTemporaryFile(mode='w', suffix='.d', delete=False) as f:
+            f.write(dtrace_script)
+            dtrace_path = f.name
+        
+        # Create temp file for dtrace output
+        dtrace_output_file = tempfile.NamedTemporaryFile(mode='w', suffix='.dtrace', delete=False)
+        dtrace_output_path = dtrace_output_file.name
+        dtrace_output_file.close()
+        
+        dtrace_output = []
+        dtrace_proc = None
+        
+        try:
+            # Start DTrace with -p to attach to the running process
+            dtrace_cmd = [
+                "/usr/sbin/dtrace",
+                "-C",  # Enable C preprocessor for #define macros
+                "-o", dtrace_output_path,  # Write dtrace output to file
+                "-s", dtrace_path,
+                "-p", str(target_pid)
+            ]
+            
+            if self.verbose:
+                print(f"Attaching DTrace to PID {target_pid} ({proc_name}): {' '.join(dtrace_cmd)}", file=sys.stderr)
+            
+            print(f"Tracing PID {target_pid} ({proc_name})... Ctrl+C to stop.", file=sys.stderr)
+            
+            dtrace_proc = subprocess.Popen(
+                dtrace_cmd,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE
+            )
+            
+            # Read dtrace stderr in background to capture/display dtrace messages
+            dtrace_stderr_lines = []
+            
+            def read_dtrace_stderr():
+                for line_bytes in dtrace_proc.stderr:
+                    line = line_bytes.decode(errors='replace').rstrip('\n')
+                    if line.lstrip().startswith('dtrace:'):
+                        if self.verbose:
+                            print(f"DTrace: {line.lstrip()}", file=sys.stderr)
+                    dtrace_stderr_lines.append(line)
+            
+            # Read dtrace stdout (shouldn't have much since -o sends to file)
+            def read_dtrace_stdout():
+                for line_bytes in dtrace_proc.stdout:
+                    pass  # Discard - output goes to -o file
+            
+            stderr_thread = threading.Thread(target=read_dtrace_stderr, daemon=True)
+            stdout_thread = threading.Thread(target=read_dtrace_stdout, daemon=True)
+            stderr_thread.start()
+            stdout_thread.start()
+            
+            # Wait for dtrace to complete (process exit, Ctrl+C, or timeout)
+            # Handle Ctrl+C gracefully - send SIGINT to dtrace so it flushes output
+            try:
+                dtrace_proc.wait(timeout=timeout)
+            except subprocess.TimeoutExpired:
+                print(f"\nTimeout ({timeout}s) expired, stopping trace...", file=sys.stderr)
+                dtrace_proc.send_signal(signal.SIGINT)
+                try:
+                    dtrace_proc.wait(timeout=5)
+                except subprocess.TimeoutExpired:
+                    dtrace_proc.kill()
+                    dtrace_proc.wait()
+            except KeyboardInterrupt:
+                print(f"\nStopping trace...", file=sys.stderr)
+                dtrace_proc.send_signal(signal.SIGINT)
+                try:
+                    dtrace_proc.wait(timeout=5)
+                except subprocess.TimeoutExpired:
+                    dtrace_proc.kill()
+                    dtrace_proc.wait()
+            
+            stderr_thread.join(timeout=2)
+            stdout_thread.join(timeout=2)
+            
+            # Read dtrace output from file
+            try:
+                with open(dtrace_output_path, 'r', errors='replace') as f:
+                    for line in f:
+                        line = line.rstrip('\n')
+                        if line:
+                            dtrace_output.append(line)
+            except Exception as e:
+                if self.verbose:
+                    print(f"Error reading dtrace output: {e}", file=sys.stderr)
+                    
+        finally:
+            if dtrace_proc and dtrace_proc.poll() is None:
+                dtrace_proc.kill()
+            try:
+                os.unlink(dtrace_path)
+            except:
+                pass
+            try:
+                os.unlink(dtrace_output_path)
+            except:
+                pass
+        
+        end_time = datetime.now()
+        
+        # No target stdout/stderr when attaching to running process
+        self.target_stdout = []
+        self.target_stderr = []
+        
+        # Pre-process: merge hexdump blocks
+        dtrace_output = self._merge_io_hexdumps(dtrace_output)
+        
+        # Parse DTrace output
+        for line in dtrace_output:
+            self._parse_line(line, base_timestamp)
+        
+        # Build summary
+        syscall_counts = {}
+        for event in self.events:
+            syscall_counts[event.syscall] = syscall_counts.get(event.syscall, 0) + 1
+        
+        # Try to get exit code from process_events
+        exit_code = -1  # -1 means process may still be running
+        for pe in reversed(self.process_events):
+            if pe.event_type == "exit" and pe.pid == target_pid:
+                exit_code = pe.details.get("exit_code", 0)
+                break
+        
+        self.pids_traced.add(target_pid)
+        
+        return TraceResult(
+            command=[f"[attached:{proc_name}]"],
+            start_time=start_time.isoformat(),
+            end_time=end_time.isoformat(),
+            duration_ms=(end_time - start_time).total_seconds() * 1000,
+            target_pid=target_pid,
+            exit_code=exit_code,
+            pids_traced=list(self.pids_traced),
+            process_tree=self.process_tree.copy(),
+            syscall_count=len(self.events),
+            events=[e.to_dict() for e in self.events],
+            process_events=[e.to_dict() for e in self.process_events],
+            summary=syscall_counts,
+            target_stdout=self.target_stdout,
+            target_stderr=self.target_stderr
+        )
+
+
 def get_mactrace_config() -> Dict[str, str]:
     """
     Load mactrace configuration, handling sudo environment stripping.
@@ -3162,7 +3617,10 @@ def main():
         description="mactrace - strace-like utility for macOS using DTrace",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
-Requires root privileges. Use: sudo ./mactrace ls -la
+Requires root privileges.
+
+Trace a command:    sudo ./mactrace ls -la
+Attach to a PID:   sudo ./mactrace -p 12345
 
 Configuration (in priority order):
   1. Command-line flags
@@ -3196,13 +3654,18 @@ Path resolution for -o:
                         help="Run traced program as this user (name or UID). Default: auto-detect from $SUDO_USER")
     parser.add_argument("-t", "--timeout", type=int, help="Timeout in seconds")
     parser.add_argument("-v", "--verbose", action="store_true", help="Verbose output to stderr")
-    parser.add_argument("-p", "--pretty", action="store_true", help="Pretty-print JSON output")
+    parser.add_argument("-jp", "--json-pretty", action="store_true", dest="json_pretty",
+                        help="Pretty-print JSON output")
+    parser.add_argument("-p", "--pid", type=int, default=None,
+                        help="Attach to and trace an already-running process by PID (like strace -p)")
     parser.add_argument("-e", "--untraced", action="store_true", 
                         help="Show untraced syscalls summary to stderr")
     parser.add_argument("-d", "--capture-io", action="store_true",
                         help="Capture actual I/O data via tracemem (attached to syscall events as hex)")
     parser.add_argument("--io-size", type=int, default=1*1024*1024,
                         help="Max bytes to capture per I/O op (default: 1M, max ~4M due to dtrace limits)")
+    parser.add_argument("--cache", type=str, default=None,
+                        help="Copy local files up to SIZE to cache dir (e.g., 10M, 500k, 1G)")
     parser.add_argument("--strsize", type=int, default=16384,
                         help="DTrace strsize - max string size for paths etc (default: 16K)")
     parser.add_argument("--bufsize", type=str, default="256m",
@@ -3215,14 +3678,26 @@ Path resolution for -o:
     
     args = parser.parse_args()
     
-    if not args.command:
+    if not args.command and args.pid is None:
         parser.print_help()
+        sys.exit(1)
+    
+    if args.command and args.pid is not None:
+        print("Error: Cannot use both -p PID and a command. Choose one.", file=sys.stderr)
         sys.exit(1)
         
     # Check if running as root
     if os.geteuid() != 0:
         print("Error: mactrace requires root privileges. Run with sudo.", file=sys.stderr)
         sys.exit(1)
+    
+    # Check output file doesn't exist (fail fast, before tracing)
+    if args.output:
+        output_path = resolve_path(args.output, 'MACTRACE_OUTPUT', check_exists=False)
+        if os.path.exists(output_path):
+            print(f"Error: Output file already exists: {output_path}", file=sys.stderr)
+            print(f"Will not overwrite. Remove the file or choose a different output path.", file=sys.stderr)
+            sys.exit(1)
     
     # Resolve user: -u/--user flag > MACTRACE_USER env var > SUDO_USER (auto-detect)
     user_spec = args.user or os.environ.get('MACTRACE_USER')
@@ -3249,22 +3724,31 @@ Path resolution for -o:
                 if args.verbose:
                     print(f"Warning: SUDO_USER={sudo_user} but user not found, running as root", file=sys.stderr)
     
-    # Workaround for macOS 15+ dtrace bug: scripts with #!/bin/sh shebang
-    # fail to execute properly when launched via dtrace -c. The script
-    # exits immediately after sh execs to bash. Fix by explicitly running
-    # such scripts via /bin/bash.
-    command = args.command
-    if command and os.path.isfile(command[0]):
+    # Parse cache option
+    cache_size = 0
+    cache_dir = None
+    if args.cache:
         try:
-            with open(command[0], 'rb') as f:
-                shebang = f.read(64)
-                # Check for #!/bin/sh (but not #!/bin/bash)
-                if shebang.startswith(b'#!') and b'/bin/sh' in shebang.split(b'\n')[0] and b'bash' not in shebang:
-                    if args.verbose:
-                        print(f"Detected #!/bin/sh script, wrapping with /bin/bash to work around macOS dtrace bug", file=sys.stderr)
-                    command = ['/bin/bash'] + command
-        except (IOError, OSError):
-            pass  # Not readable, let it fail naturally
+            cache_size = parse_size(args.cache)
+            # Create cache directory next to output file or in temp
+            if args.output:
+                output_path = resolve_path(args.output, 'MACTRACE_OUTPUT', check_exists=False)
+                cache_dir = output_path.rsplit('.', 1)[0] + '_cache'
+            else:
+                cache_dir = tempfile.mkdtemp(prefix='mactrace_cache_')
+            dir_existed = os.path.exists(cache_dir)
+            os.makedirs(cache_dir, exist_ok=True)
+            # Chown cache dir to the user we'll run as
+            if not dir_existed and run_as_user:
+                try:
+                    os.chown(cache_dir, run_as_user[0], run_as_user[1])
+                except OSError:
+                    pass
+            if args.verbose:
+                print(f"File cache enabled: up to {args.cache} per file → {cache_dir}/", file=sys.stderr)
+        except ValueError as e:
+            print(f"Error: Invalid --cache size '{args.cache}': {e}", file=sys.stderr)
+            sys.exit(1)
         
     tracer = MacTrace(
         verbose=args.verbose,
@@ -3272,14 +3756,38 @@ Path resolution for -o:
         io_size=args.io_size,
         strsize=args.strsize,
         bufsize=args.bufsize,
-        dynvarsize=args.dynvarsize
+        dynvarsize=args.dynvarsize,
+        cache_size=cache_size,
+        cache_dir=cache_dir
     )
-    result = tracer.trace(command, timeout=args.timeout, run_as_user=run_as_user)
     
-    # Filter out wrapper processes (sudo, sh, bash) when using -u
-    # This keeps only the real target command and its children
-    if run_as_user and not args.no_filter_wrapper:
-        result = filter_wrapper_processes(result, command, verbose=args.verbose)
+    if args.pid is not None:
+        # Attach to already-running process (like strace -p)
+        result = tracer.trace_pid(args.pid, timeout=args.timeout)
+    else:
+        # Workaround for macOS 15+ dtrace bug: scripts with #!/bin/sh shebang
+        # fail to execute properly when launched via dtrace -c. The script
+        # exits immediately after sh execs to bash. Fix by explicitly running
+        # such scripts via /bin/bash.
+        command = args.command
+        if command and os.path.isfile(command[0]):
+            try:
+                with open(command[0], 'rb') as f:
+                    shebang = f.read(64)
+                    # Check for #!/bin/sh (but not #!/bin/bash)
+                    if shebang.startswith(b'#!') and b'/bin/sh' in shebang.split(b'\n')[0] and b'bash' not in shebang:
+                        if args.verbose:
+                            print(f"Detected #!/bin/sh script, wrapping with /bin/bash to work around macOS dtrace bug", file=sys.stderr)
+                        command = ['/bin/bash'] + command
+            except (IOError, OSError):
+                pass  # Not readable, let it fail naturally
+        
+        result = tracer.trace(command, timeout=args.timeout, run_as_user=run_as_user)
+        
+        # Filter out wrapper processes (sudo, sh, bash) when using -u
+        # This keeps only the real target command and its children
+        if run_as_user and not args.no_filter_wrapper:
+            result = filter_wrapper_processes(result, command, verbose=args.verbose)
     
     # Target stdout/stderr is already echoed to TTY in real-time during tracing
     # No need to print again here
@@ -3306,19 +3814,20 @@ Path resolution for -o:
         else:
             print(f"--- All syscalls traced ---", file=sys.stderr)
     
+    # Wait for cache operations to complete
+    if cache_dir and tracer._cached_files:
+        success_count, error_count = tracer.wait_for_cache()
+        if success_count > 0:
+            print(f"Cached {success_count} file(s) to: {cache_dir}/", file=sys.stderr)
+        if error_count > 0:
+            print(f"Failed to cache {error_count} file(s)", file=sys.stderr)
+    
     # Output JSON
-    output_data = json.dumps(result.to_dict(), indent=2 if args.pretty else None)
+    output_data = json.dumps(result.to_dict(), indent=2 if args.json_pretty else None)
     
     if args.output:
-        # Use resolve_path for consistent path handling
-        # check_exists=False because this is an output file (doesn't exist yet)
+        # output_path was already resolved and validated at startup
         output_path = resolve_path(args.output, 'MACTRACE_OUTPUT', check_exists=False)
-        
-        # Refuse to overwrite existing files
-        if os.path.exists(output_path):
-            print(f"Error: Output file already exists: {output_path}", file=sys.stderr)
-            print(f"Will not overwrite. Remove the file or choose a different output path.", file=sys.stderr)
-            sys.exit(1)
         
         # Ensure output directory exists
         output_dir = os.path.dirname(output_path)

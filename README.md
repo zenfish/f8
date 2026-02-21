@@ -66,7 +66,11 @@ See [ENVIRONMENT.md](ENVIRONMENT.md) for full details.
 sudo ./mactrace ls -la
 
 # Write to file with pretty printing
-sudo ./mactrace -o trace.json -p ls -la
+sudo ./mactrace -o trace.json -jp ls -la
+
+# Attach to a running process by PID (like strace -p)
+sudo ./mactrace -p 12345
+sudo ./mactrace -p 12345 -o trace.json -t 30   # with output file and 30s timeout
 
 # Run traced program as a specific user (not root)
 sudo ./mactrace -u zen -o trace.json ./myapp
