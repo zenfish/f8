@@ -1261,7 +1261,9 @@ def main():
     parser.add_argument('--save-all-io', metavar='DIR',
                         help='Save ALL I/O data to files in DIR (includes startup files)')
     parser.add_argument('--hexdump', action='store_true',
-                        help='Create .hexdump versions of I/O files (output of hexdump -C)')
+                        help='Create .hexdump versions of I/O files (output of hexdump -C). '
+                             'Note: the timeline server generates these on the fly from .bin '
+                             'files, so this is only needed if you want them on disk')
     parser.add_argument('--render-terminal', action='store_true',
                         help='Create .rendered versions showing terminal output as user would see it')
     
