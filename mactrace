@@ -2126,7 +2126,7 @@ class MacTrace:
         """
         try:
             result = subprocess.run(
-                ["lsof", "-p", str(pid), "-F", "ftPn"],
+                ["lsof", "-n", "-P", "-p", str(pid), "-F", "ftPn"],
                 capture_output=True, text=True, timeout=10
             )
             if result.returncode != 0:
@@ -3321,16 +3321,19 @@ syscall::recvmsg_nocancel:return
             
             print(f"Tracing PID {target_pid} ({proc_name})... Ctrl+C to stop.", file=sys.stderr)
             
-            # Snapshot existing open fds before tracing starts.
-            # This lets us correctly categorize read/write on pre-existing
-            # sockets as network ops instead of file ops.
-            self._snapshot_fds_from_lsof(target_pid)
-            
             dtrace_proc = subprocess.Popen(
                 dtrace_cmd,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE
             )
+            
+            # Snapshot open fds async — runs in parallel with tracing.
+            # Only need this once: any new fds opened during tracing will be
+            # caught by the dtrace probes (socket/open/connect/etc.).
+            # Uses -n (no DNS) and -P (no port names) to avoid slow lookups.
+            lsof_thread = threading.Thread(
+                target=self._snapshot_fds_from_lsof, args=(target_pid,), daemon=True)
+            lsof_thread.start()
             
             # Read dtrace stderr in background to capture/display dtrace messages
             dtrace_stderr_lines = []
@@ -3405,6 +3408,10 @@ syscall::recvmsg_nocancel:return
         # No target stdout/stderr when attaching to running process
         self.target_stdout = []
         self.target_stderr = []
+        
+        # Wait for lsof snapshot to finish before parsing events
+        # (so fd type info is available for recategorization)
+        lsof_thread.join(timeout=10)
         
         # Pre-process: merge hexdump blocks
         dtrace_output = self._merge_io_hexdumps(dtrace_output)
