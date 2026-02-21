@@ -78,12 +78,15 @@ fi
 echo -e "\n... saving i/o\n"
 
 # Save I/O files
-mactrace_analyze "$base.json" --save-io "$base"
+mactrace_analyze "$base.json" --save-io "$base" --hexdump --render-terminal
 
 echo -e "\nimporting to sqlite\n"
 
 # Import to SQLite
 mactrace_import     "$base.json" --io-dir "$base"
+
+# so it doesn't die if it doesn't kill the server!
+set +e
 
 killall mactrace_server
 
