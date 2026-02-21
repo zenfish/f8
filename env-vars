@@ -1,0 +1,11 @@
+
+export MACTRACE_HOME="$HOME/src/me/mactrace"
+export MACTRACE_DB="$MACTRACE_HOME/mactrace.db"
+export MACTRACE_OUTPUT="$MACTRACE_HOME/traces"
+
+export PATH="$HOME/phd/src/mactrace:$PATH"
+
+mkdir -p "$MACTRACE_HOME" "$MACTRACE_OUTPUT"
+
+export PATH=$PATH:$MACTRACE_HOME
+

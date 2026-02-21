@@ -1,0 +1,932 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Objects Viewer - mactrace</title>
+    <style>
+        * { box-sizing: border-box; margin: 0; padding: 0; }
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Arial, sans-serif;
+            background: #1e1e1e;
+            color: #d4d4d4;
+            font-size: 13px;
+        }
+        
+        .header {
+            background: #2c3e50;
+            color: white;
+            padding: 12px 20px;
+            display: flex;
+            align-items: center;
+            gap: 20px;
+        }
+        .header h1 { font-size: 1.2em; font-weight: 500; }
+        .header a { color: #3498db; text-decoration: none; }
+        .header a:hover { text-decoration: underline; }
+        .header .type-badge {
+            background: #0e639c;
+            padding: 4px 10px;
+            border-radius: 4px;
+            font-size: 12px;
+        }
+        
+        .info-bar {
+            background: #252526;
+            padding: 10px 20px;
+            display: flex;
+            gap: 20px;
+            font-size: 12px;
+            border-bottom: 1px solid #3c3c3c;
+            align-items: center;
+        }
+        .info-item { color: #888; }
+        .info-item span { color: #d4d4d4; }
+        
+        .filter-btns {
+            display: flex;
+            gap: 6px;
+            margin-left: auto;
+        }
+        .filter-btn {
+            padding: 4px 10px;
+            border: 1px solid #3c3c3c;
+            border-radius: 4px;
+            background: transparent;
+            color: #888;
+            cursor: pointer;
+            font-size: 11px;
+            transition: all 0.15s;
+        }
+        .filter-btn:hover { border-color: #5c5c5c; color: #ccc; }
+        .filter-btn.active { background: #0e639c; border-color: #0e639c; color: white; }
+        
+        .container {
+            display: flex;
+            height: calc(100vh - 90px);
+        }
+        
+        .sidebar {
+            width: 50%;
+            max-width: 700px;
+            min-width: 400px;
+            background: #252526;
+            border-right: 1px solid #3c3c3c;
+            overflow-y: auto;
+            flex-shrink: 0;
+            display: flex;
+            flex-direction: column;
+        }
+        .sidebar h3 {
+            padding: 12px 16px;
+            font-size: 11px;
+            text-transform: uppercase;
+            color: #888;
+            border-bottom: 1px solid #3c3c3c;
+        }
+        
+        .object-header {
+            display: grid;
+            grid-template-columns: var(--obj-target-width, 1fr) var(--obj-pid-width, 60px) var(--obj-read-width, 70px) var(--obj-write-width, 70px);
+            gap: 8px;
+            padding: 6px 12px;
+            font-size: 10px;
+            color: #666;
+            border-bottom: 1px solid #3c3c3c;
+            text-transform: uppercase;
+            background: #252526;
+            position: sticky;
+            top: 0;
+            user-select: none;
+        }
+        .object-header span { cursor: pointer; position: relative; }
+        .object-header span:hover { color: #aaa; }
+        .object-header .sort-active { color: #3498db; }
+        .object-header .sort-asc::after { content: ' ▲'; }
+        .object-header .sort-desc::after { content: ' ▼'; }
+        .object-header span.resizable::before {
+            content: '';
+            position: absolute;
+            right: -4px;
+            top: 0;
+            bottom: 0;
+            width: 8px;
+            cursor: col-resize;
+        }
+        
+        .object-list {
+            list-style: none;
+            overflow-y: auto;
+            flex: 1;
+        }
+        .object-list li {
+            padding: 8px 12px;
+            cursor: pointer;
+            border-bottom: 1px solid #2d2d2d;
+            font-family: "SF Mono", Consolas, monospace;
+            font-size: 11px;
+            transition: background 0.1s;
+            display: grid;
+            grid-template-columns: var(--obj-target-width, 1fr) var(--obj-pid-width, 60px) var(--obj-read-width, 70px) var(--obj-write-width, 70px);
+            gap: 8px;
+            align-items: center;
+        }
+        .object-list li:hover { background: #2a2d2e; }
+        .object-list li.active { background: #094771; }
+        
+        .col-target {
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+            color: #4ec9b0;
+            max-width: 100%;
+        }
+        .col-pid { color: #dcdcaa; text-align: right; }
+        .col-read { color: #6a9955; text-align: right; }
+        .col-write { color: #ce9178; text-align: right; }
+        
+        .section-divider {
+            padding: 8px 12px;
+            font-size: 10px;
+            text-transform: uppercase;
+            color: #666;
+            background: #1e1e1e;
+            border-bottom: 1px solid #3c3c3c;
+            letter-spacing: 0.5px;
+        }
+        
+        .detail-panel {
+            flex: 1;
+            overflow: auto;
+            display: flex;
+            flex-direction: column;
+        }
+        
+        .detail-header {
+            background: #252526;
+            padding: 12px 20px;
+            border-bottom: 1px solid #3c3c3c;
+        }
+        .detail-header h2 {
+            font-size: 13px;
+            font-weight: 500;
+            color: #4ec9b0;
+            font-family: "SF Mono", Consolas, monospace;
+            word-break: break-all;
+            line-height: 1.4;
+        }
+        .detail-stats {
+            margin-top: 8px;
+            font-size: 12px;
+            color: #888;
+        }
+        .detail-stats span { margin-right: 16px; }
+        .detail-stats .val { color: #d4d4d4; }
+        
+        .event-list-header {
+            background: #1e1e1e;
+            padding: 8px 20px;
+            font-size: 10px;
+            color: #666;
+            text-transform: uppercase;
+            border-bottom: 1px solid #3c3c3c;
+            display: grid;
+            grid-template-columns: 60px 60px 100px 80px auto;
+            gap: 12px;
+            cursor: pointer;
+            user-select: none;
+        }
+        .event-list-header span:hover { color: #aaa; }
+        .event-list-header .sort-active { color: #3498db; }
+        
+        .event-list {
+            list-style: none;
+            max-height: 200px;
+            overflow-y: auto;
+            border-bottom: 1px solid #3c3c3c;
+        }
+        .event-list li {
+            padding: 6px 20px;
+            border-bottom: 1px solid #2d2d2d;
+            font-family: "SF Mono", Consolas, monospace;
+            font-size: 11px;
+            display: grid;
+            grid-template-columns: 60px 60px 100px 80px auto;
+            gap: 12px;
+            cursor: pointer;
+            transition: background 0.1s;
+        }
+        .event-list li:hover { background: #2a2d2e; }
+        .event-list li.active { background: #094771; }
+        
+        .ev-seq { color: #dcdcaa; }
+        .ev-pid { color: #c586c0; }
+        .ev-syscall { color: #569cd6; }
+        .ev-bytes { color: #b5cea8; text-align: right; }
+        .ev-preview { color: #888; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+        
+        .hex-panel {
+            flex: 1;
+            overflow: auto;
+            background: #1e1e1e;
+            display: flex;
+            flex-direction: column;
+        }
+        .hex-toolbar {
+            background: #252526;
+            padding: 8px 16px;
+            display: flex;
+            align-items: center;
+            gap: 16px;
+            border-bottom: 1px solid #3c3c3c;
+            font-size: 12px;
+            flex-shrink: 0;
+        }
+        .hex-toolbar .info { color: #888; }
+        .hex-toolbar .info span { color: #d4d4d4; margin-left: 4px; }
+        .hex-toolbar .direction { padding: 2px 8px; border-radius: 3px; font-weight: 500; font-size: 11px; }
+        .hex-toolbar .direction.read { background: #1e4620; color: #6a9955; }
+        .hex-toolbar .direction.write { background: #4a2a1a; color: #ce9178; }
+        .hex-toolbar button {
+            background: #0e639c;
+            color: white;
+            border: none;
+            padding: 4px 10px;
+            border-radius: 3px;
+            cursor: pointer;
+            font-size: 11px;
+            margin-left: auto;
+        }
+        .hex-toolbar button:hover { background: #1177bb; }
+        .hex-content {
+            font-family: "SF Mono", Consolas, "Courier New", monospace;
+            font-size: 12px;
+            line-height: 1.6;
+            white-space: pre;
+            padding: 16px 20px;
+            flex: 1;
+            overflow: auto;
+        }
+        .hex-line { display: flex; height: 19px; }
+        .hex-addr { color: #569cd6; width: 80px; flex-shrink: 0; }
+        .hex-bytes { width: 400px; flex-shrink: 0; }
+        .hex-ascii { color: #ce9178; padding-left: 16px; }
+        
+        /* Chunk highlighting - green for read, orange for write */
+        .highlight {
+            background: rgba(255, 68, 68, 0.15) !important;
+            border-left: 2px solid #ff4444;
+            border-right: 2px solid #ff4444;
+        }
+        .highlight.read-hl {
+            background: rgba(106, 153, 85, 0.2) !important;
+            border-left: 2px solid #6a9955;
+            border-right: 2px solid #6a9955;
+        }
+        .highlight.write-hl {
+            background: rgba(206, 145, 120, 0.2) !important;
+            border-left: 2px solid #ce9178;
+            border-right: 2px solid #ce9178;
+        }
+        .hl-top { border-top: 2px solid currentColor; }
+        .hl-bottom { border-bottom: 2px solid currentColor; }
+        .hl-top.read-hl { border-top-color: #6a9955; }
+        .hl-bottom.read-hl { border-bottom-color: #6a9955; }
+        .hl-top.write-hl { border-top-color: #ce9178; }
+        .hl-bottom.write-hl { border-bottom-color: #ce9178; }
+        
+        .empty-state {
+            padding: 40px;
+            text-align: center;
+            color: #666;
+        }
+        .empty-state h3 { margin-bottom: 8px; color: #888; }
+        
+        .loading {
+            padding: 40px;
+            text-align: center;
+            color: #888;
+        }
+        
+        .error { padding: 20px; color: #f48771; }
+    </style>
+</head>
+<body>
+    <div class="header">
+        <h1>📁 Objects Viewer</h1>
+        <span class="type-badge" id="type-badge">Files</span>
+        <a href="/" id="back-link">← Back to traces</a>
+    </div>
+    
+    <div class="info-bar">
+        <div class="info-item">Command: <span id="command">-</span></div>
+        <div class="info-item">Objects: <span id="object-count">-</span></div>
+        <div class="info-item">Total I/O: <span id="total-io">-</span></div>
+        <div class="filter-btns" id="filter-btns" style="display:none">
+            <button class="filter-btn active" data-filter="all">All</button>
+            <button class="filter-btn" data-filter="hosts">Hosts</button>
+            <button class="filter-btn" data-filter="sockets">Sockets</button>
+        </div>
+    </div>
+    
+    <div class="container">
+        <div class="sidebar">
+            <div class="object-header" id="object-header">
+                <span data-sort="target" class="resizable" data-resize="target">Target</span>
+                <span data-sort="pid" class="resizable" data-resize="pid" style="text-align:right">PID</span>
+                <span data-sort="read" class="resizable" data-resize="read" style="text-align:right">Read</span>
+                <span data-sort="write" data-resize="write" style="text-align:right">Write</span>
+            </div>
+            <ul class="object-list" id="object-list">
+                <li class="loading" style="display:block;grid-template-columns:1fr">Loading...</li>
+            </ul>
+        </div>
+        
+        <div class="detail-panel" id="detail-panel">
+            <div class="empty-state">
+                <h3>Select an object</h3>
+                <p>Click a file or network target on the left to view its I/O</p>
+            </div>
+        </div>
+    </div>
+
+<script>
+(function() {
+    const params = new URLSearchParams(window.location.search);
+    const traceId = params.get('trace') || '1';
+    const type = params.get('type') || 'files';
+    const filter = params.get('filter'); // 'hosts' or 'sockets' for network type
+    const targetParam = params.get('target'); // Direct navigation to a target
+    
+    let badgeText = type === 'network' ? 'Network' : 'Files';
+    if (filter === 'hosts') badgeText = 'Network Hosts';
+    else if (filter === 'sockets') badgeText = 'Sockets';
+    document.getElementById('type-badge').textContent = badgeText;
+    document.getElementById('back-link').href = `/?trace=${traceId}`;
+    
+    let allObjects = [];  // Original unfiltered
+    let objects = [];     // Currently displayed (may be filtered)
+    let selectedTarget = null;
+    let objectSortCol = 'total';
+    let objectSortAsc = false;
+    let eventSortCol = 'seq';
+    let eventSortAsc = true;
+    let currentFilter = filter || 'all';
+    
+    function formatBytes(bytes) {
+        if (bytes === 0) return '0 B';
+        if (bytes === null || bytes === undefined) return '—';
+        const k = 1024;
+        const sizes = ['B', 'KB', 'MB', 'GB'];
+        const i = Math.floor(Math.log(bytes) / Math.log(k));
+        return parseFloat((bytes / Math.pow(k, i)).toFixed(1)) + ' ' + sizes[i];
+    }
+    
+    function escapeHtml(str) {
+        if (!str) return '';
+        return str.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+    }
+    
+    // Determine if target is an IP/hostname vs socket
+    function isIPOrHost(target) {
+        if (!target) return false;
+        // IP:port pattern
+        if (/^\d+\.\d+\.\d+\.\d+:\d+$/.test(target)) return true;
+        // IPv6
+        if (/^\[.*\]:\d+$/.test(target)) return true;
+        // URLs
+        if (/^https?:\/\//.test(target)) return true;
+        if (/^ssh:\/\//.test(target)) return true;
+        return false;
+    }
+    
+    // Load objects
+    fetch(`/api/traces/${traceId}/objects?type=${type}`)
+        .then(r => r.json())
+        .then(data => {
+            if (data.error) {
+                document.getElementById('object-list').innerHTML = `<li class="error">${data.error}</li>`;
+                return;
+            }
+            
+            allObjects = data.objects;
+            document.getElementById('command').textContent = data.trace.command;
+            
+            // Show filter buttons for network type
+            if (type === 'network') {
+                document.getElementById('filter-btns').style.display = 'flex';
+                setupFilterButtons();
+                // Set initial active state from URL param
+                if (currentFilter) {
+                    document.querySelectorAll('.filter-btn').forEach(b => {
+                        b.classList.toggle('active', b.dataset.filter === currentFilter);
+                    });
+                }
+            }
+            
+            applyObjectFilter();
+            renderObjectList();
+            setupObjectHeaderSort();
+            
+            // Auto-select target if specified in URL
+            if (targetParam) {
+                const idx = objects.findIndex(o => o.target === targetParam);
+                if (idx >= 0) {
+                    selectObject(idx);
+                    const li = document.querySelector(`li[data-idx="${idx}"]`);
+                    if (li) {
+                        li.classList.add('active');
+                        li.scrollIntoView({ behavior: 'smooth', block: 'center' });
+                    }
+                }
+            }
+        })
+        .catch(err => {
+            document.getElementById('object-list').innerHTML = `<li class="error">Failed to load: ${err.message}</li>`;
+        });
+    
+    function applyObjectFilter() {
+        // Apply filter
+        if (currentFilter === 'hosts') {
+            objects = allObjects.filter(o => isIPOrHost(o.target));
+        } else if (currentFilter === 'sockets') {
+            objects = allObjects.filter(o => !isIPOrHost(o.target));
+        } else {
+            objects = [...allObjects];
+            // For "all", sort IPs first, then sockets
+            if (type === 'network') {
+                objects.sort((a, b) => {
+                    const aIsIP = isIPOrHost(a.target);
+                    const bIsIP = isIPOrHost(b.target);
+                    if (aIsIP && !bIsIP) return -1;
+                    if (!aIsIP && bIsIP) return 1;
+                    return (b.total || 0) - (a.total || 0);
+                });
+            }
+        }
+        
+        // Update counts
+        document.getElementById('object-count').textContent = objects.length;
+        const totalIO = objects.reduce((sum, o) => sum + (o.total || 0), 0);
+        document.getElementById('total-io').textContent = formatBytes(totalIO);
+    }
+    
+    function setupFilterButtons() {
+        document.getElementById('filter-btns').addEventListener('click', e => {
+            const btn = e.target.closest('.filter-btn');
+            if (!btn) return;
+            
+            currentFilter = btn.dataset.filter;
+            document.querySelectorAll('.filter-btn').forEach(b => b.classList.remove('active'));
+            btn.classList.add('active');
+            
+            applyObjectFilter();
+            renderObjectList();
+        });
+    }
+    
+    function setupObjectHeaderSort() {
+        document.getElementById('object-header').addEventListener('click', e => {
+            const col = e.target.dataset.sort;
+            if (!col) return;
+            
+            if (objectSortCol === col) {
+                objectSortAsc = !objectSortAsc;
+            } else {
+                objectSortCol = col;
+                objectSortAsc = col === 'target'; // Ascending for target, descending for numbers
+            }
+            
+            sortObjects();
+            renderObjectList();
+        });
+    }
+    
+    function sortObjects() {
+        const col = objectSortCol;
+        const asc = objectSortAsc ? 1 : -1;
+        
+        objects.sort((a, b) => {
+            let va, vb;
+            switch(col) {
+                case 'target': va = a.target || ''; vb = b.target || ''; break;
+                case 'pid': va = a.pid || 0; vb = b.pid || 0; break;
+                case 'read': va = a.read || 0; vb = b.read || 0; break;
+                case 'write': va = a.write || 0; vb = b.write || 0; break;
+                default: va = a.total || 0; vb = b.total || 0;
+            }
+            if (typeof va === 'string') return va.localeCompare(vb) * asc;
+            return (va - vb) * asc;
+        });
+    }
+    
+    function renderObjectList() {
+        const list = document.getElementById('object-list');
+        const header = document.getElementById('object-header');
+        
+        // Update header sort indicators
+        header.querySelectorAll('span').forEach(span => {
+            span.classList.remove('sort-active', 'sort-asc', 'sort-desc');
+            if (span.dataset.sort === objectSortCol) {
+                span.classList.add('sort-active', objectSortAsc ? 'sort-asc' : 'sort-desc');
+            }
+        });
+        
+        if (objects.length === 0) {
+            list.innerHTML = `<li style="grid-template-columns:1fr;color:#666">No ${type} found</li>`;
+            return;
+        }
+        
+        let html = '';
+        let lastWasIP = null;
+        
+        objects.forEach((o, i) => {
+            // For network type, add section dividers
+            if (type === 'network') {
+                const isIP = isIPOrHost(o.target);
+                if (lastWasIP === null || (lastWasIP && !isIP)) {
+                    if (lastWasIP === null && isIP) {
+                        html += '<li class="section-divider" style="grid-template-columns:1fr">Hosts & URLs</li>';
+                    } else if (lastWasIP && !isIP) {
+                        html += '<li class="section-divider" style="grid-template-columns:1fr">Sockets</li>';
+                    }
+                }
+                lastWasIP = isIP;
+            }
+            
+            // Display hostname with IP if available
+            let displayTarget = escapeHtml(o.target);
+            let titleTarget = o.target;
+            if (o.hostname) {
+                displayTarget = `<span style="color:#4ec9b0">${escapeHtml(o.hostname)}</span> <span style="color:#666;font-size:10px">${escapeHtml(o.target)}</span>`;
+                titleTarget = `${o.hostname} (${o.target})`;
+            }
+            
+            html += `<li data-idx="${i}" title="${escapeHtml(titleTarget)}">
+                <span class="col-target">${displayTarget}</span>
+                <span class="col-pid">${o.pid || '—'}</span>
+                <span class="col-read">${formatBytes(o.read)}</span>
+                <span class="col-write">${formatBytes(o.write)}</span>
+            </li>`;
+        });
+        
+        list.innerHTML = html;
+        
+        list.querySelectorAll('li[data-idx]').forEach(li => {
+            li.addEventListener('click', () => {
+                const idx = parseInt(li.dataset.idx, 10);
+                selectObject(idx);
+                
+                list.querySelectorAll('li').forEach(l => l.classList.remove('active'));
+                li.classList.add('active');
+            });
+        });
+    }
+    
+    function selectObject(idx) {
+        const obj = objects[idx];
+        if (!obj) return;
+        
+        selectedTarget = obj.target;
+        
+        // Fetch events for this target
+        fetch(`/api/traces/${traceId}/target-events?target=${encodeURIComponent(obj.target)}`)
+            .then(r => r.json())
+            .then(data => {
+                renderDetail(obj, data.events || [], data.ioDir);
+            })
+            .catch(err => {
+                document.getElementById('detail-panel').innerHTML = `<div class="error">Failed to load events: ${err.message}</div>`;
+            });
+    }
+    
+    let currentEvents = [];
+    let currentIoDir = '';
+    
+    function renderDetail(obj, events, ioDir) {
+        currentEvents = events;
+        currentIoDir = ioDir;
+        
+        const panel = document.getElementById('detail-panel');
+        
+        // Build header with hostname if available
+        let headerHtml = escapeHtml(obj.target);
+        if (obj.hostname) {
+            headerHtml = `${escapeHtml(obj.target)} <span style="color:#2980b9;font-weight:normal;font-size:12px">/ ${escapeHtml(obj.hostname)}</span>`;
+        }
+        
+        panel.innerHTML = `
+            <div class="detail-header">
+                <h2>${headerHtml}</h2>
+                <div class="detail-stats">
+                    <span>Read: <span class="val">${formatBytes(obj.read)}</span> (${obj.readCount || 0} ops)</span>
+                    <span>Write: <span class="val">${formatBytes(obj.write)}</span> (${obj.writeCount || 0} ops)</span>
+                </div>
+            </div>
+            <div class="event-list-header" id="event-header">
+                <span data-sort="seq">Seq</span>
+                <span data-sort="pid">PID</span>
+                <span data-sort="syscall">Syscall</span>
+                <span data-sort="bytes" style="text-align:right">Bytes</span>
+                <span>Data</span>
+            </div>
+            <ul class="event-list" id="event-list"></ul>
+            <div class="hex-panel" id="hex-panel">
+                <div class="empty-state" style="padding:20px">
+                    <p>Click an event to view hexdump</p>
+                </div>
+            </div>
+        `;
+        
+        renderEventList();
+        setupEventHeaderSort();
+    }
+    
+    function setupEventHeaderSort() {
+        document.getElementById('event-header').addEventListener('click', e => {
+            const col = e.target.dataset.sort;
+            if (!col) return;
+            
+            if (eventSortCol === col) {
+                eventSortAsc = !eventSortAsc;
+            } else {
+                eventSortCol = col;
+                eventSortAsc = col === 'syscall'; // Ascending for syscall, seq; descending for bytes
+            }
+            
+            sortEvents();
+            renderEventList();
+        });
+    }
+    
+    function sortEvents() {
+        const col = eventSortCol;
+        const asc = eventSortAsc ? 1 : -1;
+        
+        currentEvents.sort((a, b) => {
+            let va, vb;
+            switch(col) {
+                case 'seq': va = a.seq || 0; vb = b.seq || 0; break;
+                case 'pid': va = a.pid || 0; vb = b.pid || 0; break;
+                case 'syscall': va = a.syscall || ''; vb = b.syscall || ''; break;
+                case 'bytes': va = a.bytes || 0; vb = b.bytes || 0; break;
+                default: va = a.seq || 0; vb = b.seq || 0;
+            }
+            if (typeof va === 'string') return va.localeCompare(vb) * asc;
+            return (va - vb) * asc;
+        });
+    }
+    
+    function renderEventList() {
+        const eventList = document.getElementById('event-list');
+        const header = document.getElementById('event-header');
+        
+        // Update header sort indicators
+        header.querySelectorAll('span').forEach(span => {
+            span.classList.remove('sort-active', 'sort-asc', 'sort-desc');
+            if (span.dataset.sort === eventSortCol) {
+                span.classList.add('sort-active', eventSortAsc ? 'sort-asc' : 'sort-desc');
+            }
+        });
+        
+        if (currentEvents.length === 0) {
+            eventList.innerHTML = '<li style="grid-template-columns:1fr;color:#666">No I/O events with captured data</li>';
+            return;
+        }
+        
+        eventList.innerHTML = currentEvents.map((e, i) => {
+            const hasData = e.ioPath || e.dataRaw;
+            const isRead = e.syscall && (e.syscall.includes('read') || e.syscall.includes('recv'));
+            const rwIcon = isRead ? '↓' : '↑';
+            const rwColor = isRead ? '#6a9955' : '#ce9178';
+            return `<li data-idx="${i}" style="${hasData ? '' : 'opacity:0.5'}">
+                <span class="ev-seq">${e.seq}</span>
+                <span class="ev-pid">${e.pid || '—'}</span>
+                <span class="ev-syscall"><span style="color:${rwColor};margin-right:4px">${rwIcon}</span>${escapeHtml(e.syscall)}</span>
+                <span class="ev-bytes">${formatBytes(e.bytes)}</span>
+                <span class="ev-preview">${hasData ? '📄' : '—'}</span>
+            </li>`;
+        }).join('');
+        
+        eventList.querySelectorAll('li[data-idx]').forEach(li => {
+            li.addEventListener('click', () => {
+                const idx = parseInt(li.dataset.idx, 10);
+                const ev = currentEvents[idx];
+                
+                eventList.querySelectorAll('li').forEach(l => l.classList.remove('active'));
+                li.classList.add('active');
+                
+                loadHexdump(ev, idx);
+            });
+        });
+        
+        // Auto-select first event with data
+        const firstWithData = currentEvents.findIndex(e => e.ioPath || e.dataRaw);
+        if (firstWithData >= 0) {
+            const li = eventList.querySelector(`li[data-idx="${firstWithData}"]`);
+            if (li) {
+                li.classList.add('active');
+                loadHexdump(currentEvents[firstWithData], firstWithData);
+            }
+        }
+    }
+    
+    let parsedHexLines = [];
+    let chunkRanges = []; // [{startLine, endLine, startOffset, endOffset}]
+    let currentHexEvent = null;
+    
+    function loadHexdump(event, eventIdx) {
+        const panel = document.getElementById('hex-panel');
+        currentHexEvent = event;
+        
+        if (event.dataRaw) {
+            // Inline hex data
+            parsedHexLines = parseInlineHex(event.dataRaw);
+            chunkRanges = [{startLine: 0, endLine: parsedHexLines.length - 1, startOffset: 0, endOffset: event.dataRaw.length / 2}];
+            renderHexWithHighlight(0, event);
+            return;
+        }
+        
+        if (event.ioPath) {
+            // Fetch from file
+            const filename = event.ioPath.split('/').pop();
+            const hexFile = filename.endsWith('.bin') ? filename + '.hexdump' : filename.replace(/\.bin$/, '') + '.bin.hexdump';
+            const metaFile = filename.replace(/\.bin$/, '') + '.bin.meta.json';
+            
+            // Load meta and hex
+            Promise.all([
+                fetch(`/api/traces/${traceId}/io/${metaFile}`).then(r => r.ok ? r.json() : null).catch(() => null),
+                fetch(`/api/traces/${traceId}/io/${hexFile}`).then(r => r.ok ? r.text() : null).catch(() => null)
+            ]).then(([meta, hexText]) => {
+                if (!hexText) {
+                    panel.innerHTML = '<div class="error">Could not load hexdump</div>';
+                    return;
+                }
+                
+                parsedHexLines = parseHexdumpText(hexText);
+                
+                // Build chunk ranges from meta
+                if (meta && meta.offsets) {
+                    chunkRanges = meta.offsets.map(c => {
+                        const startLine = Math.floor(c.offset / 16);
+                        const endLine = Math.floor((c.offset + c.length - 1) / 16);
+                        return { startLine, endLine, ...c };
+                    });
+                } else {
+                    chunkRanges = [];
+                }
+                
+                // Find the chunk for this event
+                const chunkIdx = event.chunk !== undefined ? event.chunk : 
+                    chunkRanges.findIndex(c => c.seq === event.seq);
+                
+                renderHexWithHighlight(chunkIdx >= 0 ? chunkIdx : -1, event);
+            });
+            return;
+        }
+        
+        panel.innerHTML = '<div class="empty-state"><p>No captured data for this event</p></div>';
+    }
+    
+    function parseInlineHex(hexStr) {
+        const bytes = [];
+        for (let i = 0; i < hexStr.length; i += 2) {
+            bytes.push(parseInt(hexStr.substr(i, 2), 16));
+        }
+        
+        let lines = [];
+        for (let offset = 0; offset < bytes.length; offset += 16) {
+            const chunk = bytes.slice(offset, offset + 16);
+            const addr = offset.toString(16).padStart(8, '0');
+            const hex = chunk.map(b => b.toString(16).padStart(2, '0')).join(' ');
+            const ascii = chunk.map(b => (b >= 32 && b < 127) ? String.fromCharCode(b) : '.').join('');
+            lines.push({ addr, hex, ascii, offset });
+        }
+        return lines;
+    }
+    
+    function parseHexdumpText(text) {
+        const lines = text.split('\n').filter(l => l.trim());
+        return lines.map(line => {
+            const m = line.match(/^([0-9a-f]+)\s+(.+?)\s+\|(.+)\|$/i);
+            if (m) {
+                return { addr: m[1], hex: m[2], ascii: m[3], offset: parseInt(m[1], 16) };
+            }
+            return { addr: '', hex: line, ascii: '', offset: 0 };
+        });
+    }
+    
+    function renderHexWithHighlight(highlightChunkIdx, event) {
+        const panel = document.getElementById('hex-panel');
+        const ev = event || currentHexEvent;
+        
+        if (parsedHexLines.length === 0) {
+            panel.innerHTML = '<div class="empty-state"><p>No hex data</p></div>';
+            return;
+        }
+        
+        // Determine R/W direction
+        const isRead = ev && ev.syscall && (ev.syscall.includes('read') || ev.syscall.includes('recv'));
+        const rwClass = isRead ? 'read' : 'write';
+        const rwLabel = isRead ? '↓ Read' : '↑ Write';
+        const hlClass = isRead ? 'read-hl' : 'write-hl';
+        
+        // Determine which lines to highlight
+        let hlStart = -1, hlEnd = -1;
+        if (highlightChunkIdx >= 0 && chunkRanges[highlightChunkIdx]) {
+            hlStart = chunkRanges[highlightChunkIdx].startLine;
+            hlEnd = chunkRanges[highlightChunkIdx].endLine;
+        }
+        
+        const hexHtml = parsedHexLines.map((line, i) => {
+            let classes = 'hex-line';
+            if (i >= hlStart && i <= hlEnd) {
+                classes += ` highlight ${hlClass}`;
+                if (i === hlStart) classes += ' hl-top';
+                if (i === hlEnd) classes += ' hl-bottom';
+            }
+            return `<div class="${classes}" data-line="${i}"><span class="hex-addr">${escapeHtml(line.addr)}</span><span class="hex-bytes">${escapeHtml(line.hex.padEnd(48))}</span><span class="hex-ascii">|${escapeHtml(line.ascii)}|</span></div>`;
+        }).join('');
+        
+        // Toolbar with event info
+        const totalBytes = parsedHexLines.length * 16;
+        const toolbar = `
+            <div class="hex-toolbar">
+                <span class="direction ${rwClass}">${rwLabel}</span>
+                <span class="info">Seq:<span>${ev?.seq || '—'}</span></span>
+                <span class="info">Bytes:<span>${formatBytes(ev?.bytes || totalBytes)}</span></span>
+                <span class="info">Syscall:<span>${escapeHtml(ev?.syscall || '—')}</span></span>
+                <button onclick="copyHexToClipboard()">📋 Copy</button>
+            </div>`;
+        
+        panel.innerHTML = toolbar + `<div class="hex-content">${hexHtml}</div>`;
+        
+        // Scroll to highlighted section
+        if (hlStart >= 0) {
+            const hlLine = panel.querySelector(`[data-line="${hlStart}"]`);
+            if (hlLine) {
+                hlLine.scrollIntoView({ behavior: 'smooth', block: 'center' });
+            }
+        }
+    }
+    
+    // Copy hex content to clipboard
+    window.copyHexToClipboard = function() {
+        const content = parsedHexLines.map(l => 
+            `${l.addr}  ${l.hex.padEnd(48)}  |${l.ascii}|`
+        ).join('\n');
+        navigator.clipboard.writeText(content).then(() => {
+            const btn = document.querySelector('.hex-toolbar button');
+            if (btn) {
+                const orig = btn.textContent;
+                btn.textContent = '✓ Copied!';
+                setTimeout(() => btn.textContent = orig, 1500);
+            }
+        });
+    };
+    
+    // Column resizing for object list
+    (function setupColumnResize() {
+        const header = document.getElementById('object-header');
+        let resizing = null;
+        let startX = 0;
+        let startWidth = 0;
+        
+        header.addEventListener('mousedown', e => {
+            const span = e.target.closest('span.resizable');
+            if (!span) return;
+            
+            // Check if click is near the right edge
+            const rect = span.getBoundingClientRect();
+            if (e.clientX < rect.right - 10) return;
+            
+            e.preventDefault();
+            e.stopPropagation(); // Don't trigger sort
+            resizing = span.dataset.resize;
+            startX = e.clientX;
+            startWidth = span.offsetWidth;
+            
+            document.body.style.cursor = 'col-resize';
+            document.body.style.userSelect = 'none';
+        });
+        
+        document.addEventListener('mousemove', e => {
+            if (!resizing) return;
+            
+            const delta = e.clientX - startX;
+            const newWidth = Math.max(40, startWidth + delta);
+            document.documentElement.style.setProperty(`--obj-${resizing}-width`, newWidth + 'px');
+        });
+        
+        document.addEventListener('mouseup', () => {
+            if (resizing) {
+                resizing = null;
+                document.body.style.cursor = '';
+                document.body.style.userSelect = '';
+            }
+        });
+    })();
+})();
+</script>
+</body>
+</html>

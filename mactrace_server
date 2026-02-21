@@ -1,0 +1,196 @@
+#!/bin/bash
+#
+# mactrace-server - Start the mactrace timeline web server
+#
+# Serves an interactive web UI for viewing and analyzing imported traces.
+# Traces must first be imported with mactrace-import.
+#
+# USAGE:
+#   mactrace-server [options]
+#
+# OPTIONS:
+#   --db <path>    Database path (default: $MACTRACE_DB or $MACTRACE_HOME/mactrace.db)
+#   --port <port>  Server port (default: $MACTRACE_PORT or 3000)
+#   --help         Show this help
+#
+# ENVIRONMENT:
+#   MACTRACE_HOME  Base directory (default: ~/.mactrace)
+#   MACTRACE_DB    Database path
+#   MACTRACE_PORT  Server port
+#
+# PATH RESOLUTION:
+#   - Absolute paths (/path/to/file) used as-is
+#   - Explicit relative (./file, ../file) used as-is
+#   - Simple filenames (db.sqlite) prefixed with $MACTRACE_HOME
+#
+# EXAMPLES:
+#   mactrace-server                    # Start with defaults
+#   mactrace-server --port 8080        # Use custom port
+#   mactrace-server --db custom.db     # Use $MACTRACE_HOME/custom.db
+#
+
+set -e
+
+# Resolve symlinks to find actual script location
+SOURCE="$0"
+while [[ -L "$SOURCE" ]]; do
+    DIR="$(cd "$(dirname "$SOURCE")" && pwd)"
+    SOURCE="$(readlink "$SOURCE")"
+    [[ "$SOURCE" != /* ]] && SOURCE="$DIR/$SOURCE"
+done
+SCRIPT_DIR="$(cd "$(dirname "$SOURCE")" && pwd)"
+SERVER_DIR="$SCRIPT_DIR/server"
+
+# Read mactrace config file (same logic as mactrace Python script)
+# Config is at ~/.mactrace/config, using SUDO_USER's home if running as root
+read_config() {
+    local config_home="$HOME"
+    
+    # If running as root via sudo, use the original user's home
+    if [[ $EUID -eq 0 && -n "$SUDO_USER" ]]; then
+        config_home=$(eval echo "~$SUDO_USER")
+    fi
+    
+    local config_file="$config_home/.mactrace/config"
+    
+    if [[ ! -f "$config_file" ]]; then
+        return
+    fi
+    
+    # Read config file, only set vars that aren't already set in environment
+    while IFS='=' read -r key value || [[ -n "$key" ]]; do
+        # Skip comments and empty lines
+        [[ "$key" =~ ^[[:space:]]*# ]] && continue
+        [[ -z "$key" ]] && continue
+        
+        # Trim whitespace
+        key=$(echo "$key" | xargs)
+        value=$(echo "$value" | xargs)
+        
+        # Skip if already set in environment
+        if [[ -n "${!key}" ]]; then
+            continue
+        fi
+        
+        # Expand ~ to config_home
+        value="${value//\~/$config_home}"
+        
+        # Expand $VAR references (simple expansion)
+        while [[ "$value" =~ \$([A-Za-z_][A-Za-z0-9_]*) ]]; do
+            local var_name="${BASH_REMATCH[1]}"
+            local var_value="${!var_name}"
+            value="${value//\$$var_name/$var_value}"
+        done
+        
+        # Export the variable
+        export "$key=$value"
+    done < "$config_file"
+}
+
+# Load config before anything else
+read_config
+
+# Show help
+show_help() {
+    cat << 'EOF'
+mactrace-server - Start the mactrace timeline web server
+
+Serves an interactive web UI for viewing and analyzing imported traces.
+Traces must first be imported with mactrace-import.
+
+USAGE:
+  mactrace-server [options]
+
+OPTIONS:
+  --db <path>    Database path (default: $MACTRACE_DB or $MACTRACE_HOME/mactrace.db)
+  --port <port>  Server port (default: $MACTRACE_PORT or 3000)
+  --help         Show this help
+
+ENVIRONMENT:
+  MACTRACE_HOME  Base directory (default: ~/.mactrace)
+  MACTRACE_DB    Database path
+  MACTRACE_PORT  Server port
+
+PATH RESOLUTION:
+  - Absolute paths (/path/to/file) used as-is
+  - Explicit relative (./file, ../file) used as-is
+  - Simple filenames (db.sqlite) prefixed with $MACTRACE_HOME
+
+EXAMPLES:
+  mactrace-server                    # Start with defaults
+  mactrace-server --port 8080        # Use custom port
+  mactrace-server --db custom.db     # Use $MACTRACE_HOME/custom.db
+EOF
+}
+
+if [[ "$1" == "--help" || "$1" == "-h" ]]; then
+    show_help
+    exit 0
+fi
+
+# Resolve MACTRACE_HOME (use $HOME, not hardcoded ~)
+MACTRACE_HOME="${MACTRACE_HOME:-${HOME}/.mactrace}"
+
+# resolve_path: Apply env var prefix to relative paths
+resolve_path() {
+    local path="$1"
+    local env_var="$2"
+    local prefix="${!env_var}"
+    
+    # Absolute path - use as-is
+    if [[ "$path" == /* ]]; then
+        echo "$path"
+        return
+    fi
+    
+    # Explicit relative (./ or ../) - use as-is
+    if [[ "$path" == ./* || "$path" == ../* ]]; then
+        echo "$path"
+        return
+    fi
+    
+    # If env var is set, use it as prefix
+    if [[ -n "$prefix" ]]; then
+        echo "$prefix/$path"
+        return
+    fi
+    
+    # Fall back to original path
+    echo "$path"
+}
+
+# Build default args from environment
+env_args=()
+
+# Database: explicit arg > MACTRACE_DB > default
+if [[ ! " $* " =~ " --db " ]]; then
+    db="${MACTRACE_DB:-$MACTRACE_HOME/mactrace.db}"
+    if [[ -f "$db" ]]; then
+        env_args+=(--db "$db")
+    fi
+fi
+
+# Port: explicit arg > MACTRACE_PORT > default (3000)
+if [[ ! " $* " =~ " --port " ]] && [[ -n "$MACTRACE_PORT" ]]; then
+    env_args+=(--port "$MACTRACE_PORT")
+fi
+
+# Process user arguments, resolving --db path
+args=()
+prev_opt=""
+for arg in "$@"; do
+    if [[ "$prev_opt" == "--db" ]]; then
+        # Resolve db path with MACTRACE_HOME
+        resolved=$(resolve_path "$arg" "MACTRACE_HOME")
+        args+=("$resolved")
+        prev_opt=""
+    elif [[ "$arg" == "--db" ]]; then
+        args+=("$arg")
+        prev_opt="$arg"
+    else
+        args+=("$arg")
+    fi
+done
+
+cd "$SERVER_DIR"
+exec node server.js "${env_args[@]}" "${args[@]}"

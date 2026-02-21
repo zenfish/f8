@@ -1,0 +1,626 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Hexdump Viewer - mactrace</title>
+    <style>
+        * { box-sizing: border-box; margin: 0; padding: 0; }
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Arial, sans-serif;
+            background: #1e1e1e;
+            color: #d4d4d4;
+            font-size: 13px;
+        }
+        
+        .header {
+            background: #2c3e50;
+            color: white;
+            padding: 12px 20px;
+            display: flex;
+            align-items: center;
+            gap: 20px;
+        }
+        .header h1 { font-size: 1.2em; font-weight: 500; }
+        .header a { color: #3498db; text-decoration: none; }
+        .header a:hover { text-decoration: underline; }
+        
+        .info-bar {
+            background: #252526;
+            padding: 10px 20px;
+            display: flex;
+            gap: 20px;
+            font-size: 12px;
+            border-bottom: 1px solid #3c3c3c;
+            flex-wrap: wrap;
+        }
+        .info-item { color: #888; }
+        .info-item span { color: #d4d4d4; }
+        .info-item .hostname { color: #2980b9; }
+        
+        .container {
+            display: flex;
+            height: calc(100vh - 90px);
+        }
+        
+        .sidebar {
+            width: 340px;
+            background: #252526;
+            border-right: 1px solid #3c3c3c;
+            overflow-y: auto;
+            flex-shrink: 0;
+        }
+        .sidebar h3 {
+            padding: 12px 16px;
+            font-size: 11px;
+            text-transform: uppercase;
+            color: #888;
+            border-bottom: 1px solid #3c3c3c;
+        }
+        .chunk-list { list-style: none; }
+        .chunk-list li {
+            padding: 8px 12px;
+            cursor: pointer;
+            border-bottom: 1px solid #2d2d2d;
+            font-family: "SF Mono", Consolas, monospace;
+            font-size: 11px;
+            transition: background 0.1s;
+            display: grid;
+            grid-template-columns: 40px 24px 55px 75px 55px;
+            gap: 8px;
+            align-items: center;
+        }
+        .chunk-list li:hover { background: #2a2d2e; }
+        .chunk-list li.active { background: #094771; }
+        .chunk-list .col-chunk { color: #4ec9b0; }
+        .chunk-list .col-rw { 
+            text-align: center; 
+            font-weight: bold;
+            font-size: 10px;
+            padding: 2px 4px;
+            border-radius: 3px;
+        }
+        .chunk-list .col-rw.read { color: #fff; background: #27ae60; }
+        .chunk-list .col-rw.write { color: #fff; background: #e67e22; }
+        .chunk-list .col-seq { color: #dcdcaa; }
+        .chunk-list .col-offset { color: #569cd6; font-size: 10px; }
+        .chunk-list .col-size { color: #888; text-align: right; }
+        .chunk-header {
+            display: grid;
+            grid-template-columns: 40px 24px 55px 75px 55px;
+            gap: 8px;
+            padding: 6px 12px;
+            font-size: 10px;
+            color: #666;
+            border-bottom: 1px solid #3c3c3c;
+            text-transform: uppercase;
+        }
+        
+        .hex-container {
+            flex: 1;
+            overflow: auto;
+            position: relative;
+        }
+        .hex-content {
+            font-family: "SF Mono", Consolas, "Courier New", monospace;
+            font-size: 12px;
+            line-height: 1.6;
+            white-space: pre;
+            padding: 16px 20px;
+        }
+        .hex-line { display: flex; height: 19px; }
+        .hex-addr {
+            color: #569cd6;
+            width: 80px;
+            flex-shrink: 0;
+        }
+        .hex-bytes {
+            width: 400px;
+            flex-shrink: 0;
+        }
+        .hex-ascii {
+            color: #ce9178;
+            padding-left: 16px;
+        }
+        
+        /* Chunk separator in hex view */
+        .chunk-separator {
+            height: 28px;
+            display: flex;
+            align-items: center;
+            padding: 4px 0;
+            margin: 4px 0;
+            border-top: 1px dashed #444;
+            color: #888;
+            font-size: 11px;
+        }
+        .chunk-separator .badge {
+            padding: 2px 8px;
+            border-radius: 3px;
+            font-weight: bold;
+            margin-right: 10px;
+        }
+        .chunk-separator .badge.read { background: #27ae60; color: #fff; }
+        .chunk-separator .badge.write { background: #e67e22; color: #fff; }
+        .chunk-separator .syscall { color: #9cdcfe; margin-right: 10px; }
+        .chunk-separator .size { color: #4ec9b0; }
+        
+        /* Chunk highlighting - subtle background */
+        .chunk-read { background: rgba(39, 174, 96, 0.12); }
+        .chunk-write { background: rgba(230, 126, 34, 0.12); }
+        
+        /* Active chunk - connected red box across lines */
+        .highlight {
+            background: rgba(255, 68, 68, 0.2) !important;
+            border-left: 2px solid #ff4444;
+            border-right: 2px solid #ff4444;
+            margin-left: -2px;
+            padding-left: 2px;
+        }
+        .hl-top {
+            border-top: 2px solid #ff4444;
+        }
+        .hl-bottom {
+            border-bottom: 2px solid #ff4444;
+        }
+        
+        .loading {
+            padding: 40px;
+            text-align: center;
+            color: #888;
+        }
+        
+        .error {
+            padding: 20px;
+            color: #f48771;
+        }
+        
+        .btn {
+            padding: 6px 12px;
+            background: #0e639c;
+            color: white;
+            border: none;
+            border-radius: 4px;
+            cursor: pointer;
+            font-size: 12px;
+        }
+        .btn:hover { background: #1177bb; }
+        .btn-sm { padding: 4px 8px; font-size: 11px; }
+        
+        /* Virtual scroll */
+        .virtual-spacer { width: 100%; }
+        .virtual-viewport { position: absolute; left: 0; right: 0; }
+        
+        /* Conversation mode header */
+        .mode-badge {
+            background: #8e44ad;
+            color: white;
+            padding: 4px 10px;
+            border-radius: 4px;
+            font-size: 11px;
+            font-weight: 500;
+        }
+    </style>
+</head>
+<body>
+    <div class="header">
+        <h1>🔬 Hexdump Viewer</h1>
+        <span class="mode-badge" id="mode-badge" style="display:none">Conversation</span>
+        <div style="margin-left:auto">
+            <button class="btn btn-sm" id="download-btn" style="display:none">Download Raw</button>
+        </div>
+    </div>
+    
+    <div class="info-bar" id="info-bar">
+        <div class="info-item">Target: <span id="target-display">-</span></div>
+        <div class="info-item">Total I/O: <span id="total-io">-</span></div>
+        <div class="info-item">Chunks: <span id="chunkcount">-</span></div>
+    </div>
+    
+    <div class="container">
+        <div class="sidebar" id="sidebar">
+            <h3>I/O Chunks</h3>
+            <div class="chunk-header">
+                <span>#</span>
+                <span>R/W</span>
+                <span>Seq</span>
+                <span>Offset</span>
+                <span>Size</span>
+            </div>
+            <ul class="chunk-list" id="chunk-list">
+                <li class="loading" style="display:block;grid-template-columns:1fr">Loading...</li>
+            </ul>
+        </div>
+        <div class="hex-container" id="hex-container">
+            <div class="loading">Loading hexdump...</div>
+        </div>
+    </div>
+
+<script>
+(function() {
+    const ROW_HEIGHT = 19;
+    const BUFFER = 30;
+    
+    // Parse URL parameters
+    const params = new URLSearchParams(window.location.search);
+    const traceId = params.get('trace') || '1';
+    const file = params.get('file');
+    const targetParam = params.get('target');
+    let currentHighlight = parseInt(params.get('chunk'), 10);
+    if (isNaN(currentHighlight)) currentHighlight = 0;
+    
+    // Conversation mode (target) or single-file mode?
+    const isConversationMode = !!targetParam;
+    
+    if (isConversationMode) {
+        document.getElementById('mode-badge').style.display = '';
+        loadConversation(targetParam);
+    } else if (file) {
+        loadSingleFile(file);
+    } else {
+        document.getElementById('hex-container').innerHTML = '<div class="error">No file or target specified</div>';
+    }
+    
+    // ========== CONVERSATION MODE ==========
+    async function loadConversation(target) {
+        document.getElementById('target-display').textContent = target;
+        
+        try {
+            // Fetch DNS for hostname enrichment
+            const dnsRes = await fetch(`/api/traces/${traceId}/dns`);
+            const dnsLookups = dnsRes.ok ? await dnsRes.json() : [];
+            
+            // Enrich target display with hostname
+            const targetIp = target.split(':')[0];
+            const lookup = dnsLookups.find(d => d.ip === target || d.ip.split(':')[0] === targetIp);
+            if (lookup) {
+                document.getElementById('target-display').innerHTML = 
+                    `${escapeHtml(target)} <span class="hostname">/ ${escapeHtml(lookup.hostname)}</span>`;
+            }
+            
+            // Fetch all I/O events for this target
+            const eventsRes = await fetch(`/api/traces/${traceId}/target-events?target=${encodeURIComponent(target)}`);
+            if (!eventsRes.ok) throw new Error('Failed to fetch target events');
+            const data = await eventsRes.json();
+            
+            if (!data.events || data.events.length === 0) {
+                document.getElementById('hex-container').innerHTML = '<div class="error">No I/O data for this target</div>';
+                document.getElementById('sidebar').style.display = 'none';
+                return;
+            }
+            
+            // Build unified chunks list from all events
+            const chunks = [];
+            let totalBytes = 0;
+            let globalOffset = 0;
+            
+            for (const evt of data.events) {
+                const isRead = /read|recv/i.test(evt.syscall);
+                const isWrite = /write|send/i.test(evt.syscall);
+                
+                chunks.push({
+                    seq: evt.seq,
+                    syscall: evt.syscall,
+                    bytes: evt.bytes,
+                    isRead,
+                    isWrite,
+                    ioPath: evt.ioPath,
+                    chunk: evt.chunk,
+                    globalOffset,
+                    hexLines: null  // Will be populated when loaded
+                });
+                
+                totalBytes += evt.bytes;
+                globalOffset += evt.bytes;
+            }
+            
+            document.getElementById('chunkcount').textContent = chunks.length;
+            document.getElementById('total-io').textContent = formatBytes(totalBytes);
+            
+            // Render chunk list
+            renderConversationChunkList(chunks);
+            
+            // Load hexdumps for all chunks
+            await loadAllHexdumps(chunks, data.ioDir);
+            
+            // Render merged hex view
+            renderConversationHex(chunks);
+            
+            // Scroll to initial chunk
+            if (chunks[currentHighlight]) {
+                setTimeout(() => scrollToChunkConversation(currentHighlight, chunks), 100);
+            }
+            
+        } catch (err) {
+            console.error(err);
+            document.getElementById('hex-container').innerHTML = `<div class="error">${escapeHtml(err.message)}</div>`;
+        }
+    }
+    
+    function renderConversationChunkList(chunks) {
+        const chunkList = document.getElementById('chunk-list');
+        chunkList.innerHTML = chunks.map((c, i) => `
+            <li data-idx="${i}" class="${i === currentHighlight ? 'active' : ''}">
+                <span class="col-chunk">#${i + 1}</span>
+                <span class="col-rw ${c.isRead ? 'read' : 'write'}">${c.isRead ? '↓R' : '↑W'}</span>
+                <span class="col-seq">${c.seq}</span>
+                <span class="col-offset">+${formatBytes(c.globalOffset)}</span>
+                <span class="col-size">${formatBytes(c.bytes)}</span>
+            </li>
+        `).join('');
+        
+        chunkList.addEventListener('click', e => {
+            const li = e.target.closest('li[data-idx]');
+            if (li) {
+                const idx = parseInt(li.dataset.idx, 10);
+                setHighlightConversation(idx, chunks);
+                scrollToChunkConversation(idx, chunks);
+            }
+        });
+    }
+    
+    async function loadAllHexdumps(chunks, ioDir) {
+        // Load hexdumps in parallel
+        const promises = chunks.map(async (chunk) => {
+            if (!chunk.ioPath) {
+                chunk.hexLines = [];
+                return;
+            }
+            
+            const filename = chunk.ioPath.split('/').pop();
+            const hexFile = filename.replace(/\.bin$/, '.bin.hexdump');
+            
+            try {
+                const res = await fetch(`/api/traces/${traceId}/io/${hexFile}`);
+                if (res.ok) {
+                    const text = await res.text();
+                    chunk.hexLines = parseHexdumpText(text);
+                } else {
+                    chunk.hexLines = [];
+                }
+            } catch (e) {
+                chunk.hexLines = [];
+            }
+        });
+        
+        await Promise.all(promises);
+    }
+    
+    function parseHexdumpText(text) {
+        const lines = text.split('\n');
+        const parsed = [];
+        
+        for (const line of lines) {
+            if (!line.trim()) continue;
+            const match = line.match(/^([0-9a-f]+)\s+(.+?)\s+\|(.+)\|$/i);
+            if (match) {
+                parsed.push({
+                    addr: parseInt(match[1], 16),
+                    addrStr: match[1],
+                    bytes: match[2].split(/\s+/).filter(b => b),
+                    ascii: match[3]
+                });
+            }
+        }
+        return parsed;
+    }
+    
+    function renderConversationHex(chunks) {
+        const container = document.getElementById('hex-container');
+        let html = '<div class="hex-content">';
+        
+        for (let i = 0; i < chunks.length; i++) {
+            const chunk = chunks[i];
+            const isActive = i === currentHighlight;
+            const rwClass = chunk.isRead ? 'read' : 'write';
+            const bgClass = chunk.isRead ? 'chunk-read' : 'chunk-write';
+            
+            // Chunk separator header
+            html += `<div class="chunk-separator" data-chunk="${i}">`;
+            html += `<span class="badge ${rwClass}">${chunk.isRead ? '↓ READ' : '↑ WRITE'}</span>`;
+            html += `<span class="syscall">${chunk.syscall}()</span>`;
+            html += `<span class="size">${formatBytes(chunk.bytes)}</span>`;
+            html += `<span style="margin-left:auto;color:#666">seq ${chunk.seq}</span>`;
+            html += `</div>`;
+            
+            // Hex lines for this chunk
+            if (chunk.hexLines && chunk.hexLines.length > 0) {
+                for (let j = 0; j < chunk.hexLines.length; j++) {
+                    const line = chunk.hexLines[j];
+                    let lineClass = bgClass;
+                    if (isActive) {
+                        lineClass += ' highlight';
+                        if (j === 0) lineClass += ' hl-top';
+                        if (j === chunk.hexLines.length - 1) lineClass += ' hl-bottom';
+                    }
+                    
+                    html += `<div class="hex-line ${lineClass}" data-chunk="${i}">`;
+                    html += `<span class="hex-addr">${line.addrStr}</span>`;
+                    html += `<span class="hex-bytes">${line.bytes.join(' ')}</span>`;
+                    html += `<span class="hex-ascii">|${escapeHtml(line.ascii)}|</span>`;
+                    html += `</div>`;
+                }
+            } else {
+                html += `<div class="hex-line ${bgClass}" style="color:#666" data-chunk="${i}">  (no data captured)</div>`;
+            }
+        }
+        
+        html += '</div>';
+        container.innerHTML = html;
+    }
+    
+    function setHighlightConversation(idx, chunks) {
+        currentHighlight = idx;
+        
+        // Update sidebar
+        const chunkList = document.getElementById('chunk-list');
+        chunkList.querySelectorAll('li').forEach(l => l.classList.remove('active'));
+        const activeLi = chunkList.querySelector(`li[data-idx="${idx}"]`);
+        if (activeLi) activeLi.classList.add('active');
+        
+        // Re-render hex view with new highlight
+        renderConversationHex(chunks);
+    }
+    
+    function scrollToChunkConversation(idx, chunks) {
+        const separator = document.querySelector(`.chunk-separator[data-chunk="${idx}"]`);
+        if (separator) {
+            separator.scrollIntoView({ behavior: 'smooth', block: 'start' });
+        }
+    }
+    
+    // ========== SINGLE FILE MODE ==========
+    function loadSingleFile(file) {
+        document.getElementById('mode-badge').style.display = 'none';
+        document.getElementById('download-btn').style.display = '';
+        
+        const baseName = file.replace(/\.(hexdump|rendered)$/, '').replace(/\.bin$/, '');
+        const binFile = baseName + '.bin';
+        const hexFile = baseName + '.bin.hexdump';
+        const metaFile = baseName + '.bin.meta.json';
+        
+        // Detect R/W from filename
+        const isWrite = /-(write|send|sendto|sendmsg)-/i.test(file);
+        const isRead = /-(read|recv|recvfrom|recvmsg)-/i.test(file);
+        const rwLabel = isWrite ? '↑W' : (isRead ? '↓R' : '?');
+        const rwClass = isWrite ? 'write' : (isRead ? 'read' : '');
+        
+        // Parse target from filename
+        const filenameParts = file.replace(/\.bin$/, '').split('-');
+        let fileTarget = filenameParts.length >= 4 ? filenameParts.slice(3).join('-') : file;
+        document.getElementById('target-display').textContent = fileTarget;
+        
+        document.getElementById('download-btn').onclick = () => {
+            window.open(`/api/traces/${traceId}/io/${binFile}`, '_blank');
+        };
+        
+        // Fetch DNS for hostname
+        fetch(`/api/traces/${traceId}/dns`)
+            .then(r => r.ok ? r.json() : [])
+            .then(dnsLookups => {
+                const targetIp = fileTarget.split(':')[0];
+                const lookup = dnsLookups.find(d => d.ip === fileTarget || d.ip.split(':')[0] === targetIp);
+                if (lookup) {
+                    document.getElementById('target-display').innerHTML = 
+                        `${escapeHtml(fileTarget)} <span class="hostname">/ ${escapeHtml(lookup.hostname)}</span>`;
+                }
+            })
+            .catch(() => {});
+        
+        let chunks = [];
+        let parsedLines = [];
+        
+        Promise.all([
+            fetch(`/api/traces/${traceId}/io/${metaFile}`).then(r => r.ok ? r.json() : null).catch(() => null),
+            fetch(`/api/traces/${traceId}/io/${hexFile}`).then(r => r.ok ? r.text() : null).catch(() => null)
+        ]).then(([meta, hexText]) => {
+            if (!hexText) {
+                document.getElementById('hex-container').innerHTML = '<div class="error">Could not load hexdump</div>';
+                return;
+            }
+            
+            if (meta && meta.offsets) {
+                chunks = meta.offsets;
+                document.getElementById('total-io').textContent = formatBytes(meta.total_size);
+                document.getElementById('chunkcount').textContent = chunks.length;
+                renderSingleFileChunkList(chunks, rwLabel, rwClass);
+            } else {
+                document.getElementById('sidebar').style.display = 'none';
+                document.getElementById('chunkcount').textContent = 'N/A';
+            }
+            
+            parsedLines = parseHexdumpText(hexText);
+            renderSingleFileHex(parsedLines, chunks, rwClass);
+            
+            if (currentHighlight >= 0 && chunks[currentHighlight]) {
+                setTimeout(() => scrollToChunkSingleFile(currentHighlight, chunks, parsedLines), 100);
+            }
+        });
+        
+        function renderSingleFileChunkList(chunks, rwLabel, rwClass) {
+            const chunkList = document.getElementById('chunk-list');
+            chunkList.innerHTML = chunks.map((c, i) => `
+                <li data-idx="${i}" class="${i === currentHighlight ? 'active' : ''}">
+                    <span class="col-chunk">#${i + 1}</span>
+                    <span class="col-rw ${rwClass}">${rwLabel}</span>
+                    <span class="col-seq">${c.seq !== undefined ? c.seq : '—'}</span>
+                    <span class="col-offset">0x${c.offset.toString(16).padStart(6, '0')}</span>
+                    <span class="col-size">${formatBytes(c.length)}</span>
+                </li>
+            `).join('');
+            
+            chunkList.addEventListener('click', e => {
+                const li = e.target.closest('li[data-idx]');
+                if (li) {
+                    const idx = parseInt(li.dataset.idx, 10);
+                    currentHighlight = idx;
+                    chunkList.querySelectorAll('li').forEach(l => l.classList.remove('active'));
+                    li.classList.add('active');
+                    renderSingleFileHex(parsedLines, chunks, rwClass);
+                    scrollToChunkSingleFile(idx, chunks, parsedLines);
+                }
+            });
+        }
+        
+        function renderSingleFileHex(lines, chunks, rwClass) {
+            const container = document.getElementById('hex-container');
+            const hlChunk = chunks[currentHighlight];
+            const hlStart = hlChunk ? hlChunk.offset : -1;
+            const hlEnd = hlChunk ? hlChunk.offset + hlChunk.length : -1;
+            
+            let html = '<div class="hex-content">';
+            
+            for (let i = 0; i < lines.length; i++) {
+                const line = lines[i];
+                const lineStart = line.addr;
+                const lineEnd = lineStart + line.bytes.length;
+                
+                // Check if this line overlaps with highlight
+                const inHighlight = hlStart >= 0 && lineEnd > hlStart && lineStart < hlEnd;
+                const isFirst = inHighlight && lineStart <= hlStart && hlStart < lineEnd;
+                const isLast = inHighlight && lineStart < hlEnd && hlEnd <= lineEnd;
+                
+                let lineClass = rwClass === 'write' ? 'chunk-write' : 'chunk-read';
+                if (inHighlight) {
+                    lineClass += ' highlight';
+                    if (isFirst) lineClass += ' hl-top';
+                    if (isLast) lineClass += ' hl-bottom';
+                }
+                
+                html += `<div class="hex-line ${lineClass}" data-offset="${line.addr}">`;
+                html += `<span class="hex-addr">${line.addrStr}</span>`;
+                html += `<span class="hex-bytes">${line.bytes.join(' ')}</span>`;
+                html += `<span class="hex-ascii">|${escapeHtml(line.ascii)}|</span>`;
+                html += `</div>`;
+            }
+            
+            html += '</div>';
+            container.innerHTML = html;
+        }
+        
+        function scrollToChunkSingleFile(idx, chunks, lines) {
+            if (idx < 0 || idx >= chunks.length) return;
+            const offset = chunks[idx].offset;
+            const lineOffset = Math.floor(offset / 16) * 16;
+            const line = document.querySelector(`.hex-line[data-offset="${lineOffset}"]`);
+            if (line) {
+                line.scrollIntoView({ behavior: 'smooth', block: 'center' });
+            }
+        }
+    }
+    
+    // ========== UTILITIES ==========
+    function formatBytes(n) {
+        if (!n && n !== 0) return '-';
+        if (n < 1024) return n + 'B';
+        if (n < 1048576) return (n/1024).toFixed(1) + 'K';
+        return (n/1048576).toFixed(1) + 'M';
+    }
+    
+    function escapeHtml(s) {
+        return s ? String(s).replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c])) : '';
+    }
+})();
+</script>
+</body>
+</html>

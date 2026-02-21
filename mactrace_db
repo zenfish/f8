@@ -1,0 +1,400 @@
+#!/usr/bin/env python3
+"""
+mactrace-db - Manage traces in the mactrace database.
+
+Usage:
+    mactrace-db list [-j]         List all traces (-j for JSON output)
+    mactrace-db info <id>         Show details for a trace
+    mactrace-db delete <id>...    Delete trace(s) by ID
+    mactrace-db vacuum            Compact the database
+    mactrace-db stats             Show database statistics
+
+Options:
+    -d, --db PATH      Database file (default: from config or ./mactrace.db)
+    -f, --force        Don't prompt for confirmation on delete
+    -j, --json         Output as JSON (for list command)
+    -h, --help         Show this help
+"""
+
+import argparse
+import os
+import sys
+import sqlite3
+from datetime import datetime
+
+# Try to import config utilities from mactrace_analyze
+try:
+    from mactrace_analyze import get_mactrace_config, resolve_input_path
+except ImportError:
+    # Fallback if not in path
+    def get_mactrace_config():
+        """Read config from ~/.mactrace/config using SUDO_USER if available."""
+        config = {}
+        sudo_user = os.environ.get('SUDO_USER')
+        if sudo_user:
+            import pwd
+            try:
+                home = pwd.getpwnam(sudo_user).pw_dir
+            except KeyError:
+                home = os.path.expanduser('~')
+        else:
+            home = os.path.expanduser('~')
+        
+        config_path = os.path.join(home, '.mactrace', 'config')
+        if os.path.exists(config_path):
+            with open(config_path, 'r') as f:
+                for line in f:
+                    line = line.strip()
+                    if not line or line.startswith('#'):
+                        continue
+                    if '=' in line:
+                        key, value = line.split('=', 1)
+                        key = key.strip()
+                        value = value.strip()
+                        # Expand ~ and $VAR
+                        if value.startswith('~'):
+                            value = home + value[1:]
+                        # Expand $VAR references to already-loaded config values
+                        import re
+                        for match in re.findall(r'\$(\w+)|\$\{(\w+)\}', value):
+                            var = match[0] or match[1]
+                            if var in config:
+                                value = value.replace(f'${var}', config[var]).replace(f'${{{var}}}', config[var])
+                            elif var in os.environ:
+                                value = value.replace(f'${var}', os.environ[var]).replace(f'${{{var}}}', os.environ[var])
+                        config[key] = value
+        return config
+
+    def resolve_input_path(path):
+        if os.path.isabs(path) or path.startswith('./') or path.startswith('../'):
+            return path
+        config = get_mactrace_config()
+        output_dir = config.get('MACTRACE_OUTPUT', os.environ.get('MACTRACE_OUTPUT', '.'))
+        return os.path.join(output_dir, path)
+
+
+def get_db_path(args_db):
+    """Determine database path from args, config, or default."""
+    if args_db:
+        return args_db
+    
+    config = get_mactrace_config()
+    if 'MACTRACE_DB' in config:
+        return config['MACTRACE_DB']
+    if 'MACTRACE_DB' in os.environ:
+        return os.environ['MACTRACE_DB']
+    
+    # Default
+    return 'mactrace.db'
+
+
+def format_size(bytes_val):
+    """Format bytes as human-readable size."""
+    if bytes_val < 1024:
+        return f"{bytes_val} B"
+    elif bytes_val < 1024 * 1024:
+        return f"{bytes_val / 1024:.1f} KB"
+    elif bytes_val < 1024 * 1024 * 1024:
+        return f"{bytes_val / (1024*1024):.1f} MB"
+    else:
+        return f"{bytes_val / (1024*1024*1024):.2f} GB"
+
+
+def format_duration(ms):
+    """Format milliseconds as human-readable duration."""
+    if ms < 1000:
+        return f"{ms:.0f}ms"
+    elif ms < 60000:
+        return f"{ms/1000:.1f}s"
+    else:
+        mins = int(ms / 60000)
+        secs = (ms % 60000) / 1000
+        return f"{mins}m {secs:.0f}s"
+
+
+def cmd_list(db, args):
+    """List all traces."""
+    cursor = db.execute('''
+        SELECT id, name, command, event_count, duration_ms, start_time, imported_at, json_file, io_dir
+        FROM traces
+        ORDER BY id
+    ''')
+    
+    rows = cursor.fetchall()
+    if not rows:
+        if getattr(args, 'json', False):
+            print("[]")
+        else:
+            print("No traces in database.")
+        return
+    
+    if getattr(args, 'json', False):
+        import json
+        traces = []
+        for row in rows:
+            id_, name, command, events, duration_ms, start_time, imported, json_file, io_dir = row
+            traces.append({
+                'id': id_,
+                'name': name,
+                'command': command,
+                'event_count': events,
+                'duration_ms': duration_ms,
+                'start_time': start_time,
+                'imported_at': imported,
+                'json_file': json_file,
+                'io_dir': io_dir
+            })
+        print(json.dumps(traces, indent=2))
+        return
+    
+    # Header
+    print(f"{'ID':>4}  {'Name':<20}  {'Events':>10}  {'Duration':>10}  {'Started':<20}  Command")
+    print("-" * 100)
+    
+    for row in rows:
+        id_, name, command, events, duration_ms, start_time, imported, json_file, io_dir = row
+        name = (name[:18] + '..') if name and len(name) > 20 else (name or '-')
+        cmd_short = (command[:40] + '...') if command and len(command) > 43 else (command or '-')
+        duration = format_duration(duration_ms) if duration_ms else '-'
+        started = start_time[:19] if start_time else '-'
+        print(f"{id_:>4}  {name:<20}  {events:>10,}  {duration:>10}  {started:<20}  {cmd_short}")
+    
+    print(f"\n{len(rows)} trace(s)")
+
+
+def cmd_info(db, args):
+    """Show detailed info for a trace."""
+    trace_id = args.trace_id
+    
+    cursor = db.execute('''
+        SELECT id, name, command, json_file, io_dir, target_pid, exit_code,
+               duration_ms, event_count, start_time, imported_at
+        FROM traces WHERE id = ?
+    ''', (trace_id,))
+    
+    row = cursor.fetchone()
+    if not row:
+        print(f"Error: No trace with ID {trace_id}", file=sys.stderr)
+        sys.exit(1)
+    
+    id_, name, command, json_file, io_dir, target_pid, exit_code, duration_ms, event_count, start_time, imported_at = row
+    
+    print(f"Trace #{id_}: {name}")
+    print(f"  Command:     {command}")
+    print(f"  Target PID:  {target_pid}")
+    print(f"  Exit Code:   {exit_code}")
+    print(f"  Duration:    {format_duration(duration_ms) if duration_ms else 'N/A'}")
+    print(f"  Events:      {event_count:,}")
+    print(f"  Started:     {start_time or 'N/A'}")
+    print(f"  Imported:    {imported_at}")
+    print(f"  JSON File:   {json_file or 'N/A'}")
+    print(f"  I/O Dir:     {io_dir or 'N/A'}")
+    
+    # Category breakdown
+    cursor = db.execute('''
+        SELECT category, COUNT(*) as cnt
+        FROM events WHERE trace_id = ?
+        GROUP BY category ORDER BY cnt DESC
+    ''', (trace_id,))
+    
+    cats = cursor.fetchall()
+    if cats:
+        print(f"\n  Categories:")
+        for cat, cnt in cats:
+            print(f"    {cat or 'other':<12} {cnt:>8,}")
+    
+    # Top syscalls
+    cursor = db.execute('''
+        SELECT syscall, COUNT(*) as cnt
+        FROM events WHERE trace_id = ?
+        GROUP BY syscall ORDER BY cnt DESC LIMIT 10
+    ''', (trace_id,))
+    
+    syscalls = cursor.fetchall()
+    if syscalls:
+        print(f"\n  Top Syscalls:")
+        for syscall, cnt in syscalls:
+            print(f"    {syscall:<24} {cnt:>8,}")
+    
+    # Errors
+    cursor = db.execute('''
+        SELECT errno_name, COUNT(*) as cnt
+        FROM events WHERE trace_id = ? AND errno != 0
+        GROUP BY errno_name ORDER BY cnt DESC LIMIT 5
+    ''', (trace_id,))
+    
+    errs = cursor.fetchall()
+    if errs:
+        print(f"\n  Errors:")
+        for errno_name, cnt in errs:
+            print(f"    {errno_name or 'unknown':<16} {cnt:>8,}")
+
+
+def cmd_delete(db, args):
+    """Delete traces by ID."""
+    trace_ids = args.trace_ids
+    
+    # Verify traces exist
+    placeholders = ','.join('?' * len(trace_ids))
+    cursor = db.execute(f'''
+        SELECT id, name, event_count FROM traces WHERE id IN ({placeholders})
+    ''', trace_ids)
+    
+    found = cursor.fetchall()
+    found_ids = {row[0] for row in found}
+    missing = [tid for tid in trace_ids if tid not in found_ids]
+    
+    if missing:
+        print(f"Warning: Trace ID(s) not found: {', '.join(map(str, missing))}", file=sys.stderr)
+    
+    if not found:
+        print("No traces to delete.")
+        return
+    
+    # Show what will be deleted
+    print("Traces to delete:")
+    total_events = 0
+    for id_, name, events in found:
+        print(f"  #{id_}: {name} ({events:,} events)")
+        total_events += events
+    
+    if not args.force:
+        try:
+            confirm = input(f"\nDelete {len(found)} trace(s) with {total_events:,} events? [y/N] ")
+            if confirm.lower() not in ('y', 'yes'):
+                print("Cancelled.")
+                return
+        except (EOFError, KeyboardInterrupt):
+            print("\nCancelled.")
+            return
+    
+    # Delete (CASCADE handles events)
+    for id_, name, _ in found:
+        db.execute('DELETE FROM traces WHERE id = ?', (id_,))
+        print(f"Deleted trace #{id_}: {name}")
+    
+    db.commit()
+    print(f"\nDeleted {len(found)} trace(s).")
+
+
+def cmd_vacuum(db, args):
+    """Compact the database."""
+    db_path = get_db_path(args.db)
+    
+    # Get size before
+    size_before = os.path.getsize(db_path)
+    
+    print(f"Vacuuming {db_path}...")
+    db.execute('VACUUM')
+    db.commit()
+    
+    # Get size after
+    size_after = os.path.getsize(db_path)
+    
+    saved = size_before - size_after
+    print(f"Done. {format_size(size_before)} → {format_size(size_after)} (saved {format_size(saved)})")
+
+
+def cmd_stats(db, args):
+    """Show database statistics."""
+    db_path = get_db_path(args.db)
+    
+    # File size
+    size = os.path.getsize(db_path) if os.path.exists(db_path) else 0
+    print(f"Database: {db_path}")
+    print(f"Size:     {format_size(size)}")
+    
+    # Trace count
+    cursor = db.execute('SELECT COUNT(*), SUM(event_count), SUM(duration_ms) FROM traces')
+    trace_count, total_events, total_duration = cursor.fetchone()
+    
+    print(f"\nTraces:   {trace_count or 0}")
+    print(f"Events:   {(total_events or 0):,}")
+    if total_duration:
+        print(f"Total traced time: {format_duration(total_duration)}")
+    
+    # Events by category
+    cursor = db.execute('''
+        SELECT category, COUNT(*) as cnt FROM events
+        GROUP BY category ORDER BY cnt DESC
+    ''')
+    cats = cursor.fetchall()
+    if cats:
+        print(f"\nEvents by category:")
+        for cat, cnt in cats:
+            print(f"  {cat or 'other':<12} {cnt:>10,}")
+
+
+def main():
+    parser = argparse.ArgumentParser(
+        description='Manage traces in the mactrace database.',
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog='''
+Examples:
+    mactrace-db list                  # List all traces
+    mactrace-db list --json           # List all traces as JSON
+    mactrace-db info 3                # Show details for trace #3
+    mactrace-db delete 1 2 3          # Delete traces 1, 2, and 3
+    mactrace-db delete 5 -f           # Delete trace 5 without confirmation
+    mactrace-db vacuum                # Compact the database
+    mactrace-db stats                 # Show database statistics
+'''
+    )
+    parser.add_argument('-d', '--db', help='Database file path')
+    parser.add_argument('-f', '--force', action='store_true', help="Don't prompt for confirmation")
+    
+    subparsers = parser.add_subparsers(dest='command', help='Command')
+    
+    # list
+    list_parser = subparsers.add_parser('list', aliases=['ls'], help='List all traces')
+    list_parser.add_argument('-j', '--json', action='store_true', help='Output as JSON')
+    
+    # info
+    info_parser = subparsers.add_parser('info', aliases=['show'], help='Show trace details')
+    info_parser.add_argument('trace_id', type=int, help='Trace ID')
+    
+    # delete
+    del_parser = subparsers.add_parser('delete', aliases=['rm', 'del'], help='Delete trace(s)')
+    del_parser.add_argument('trace_ids', type=int, nargs='+', help='Trace ID(s) to delete')
+    
+    # vacuum
+    subparsers.add_parser('vacuum', help='Compact the database')
+    
+    # stats
+    subparsers.add_parser('stats', help='Show database statistics')
+    
+    args = parser.parse_args()
+    
+    if not args.command:
+        parser.print_help()
+        sys.exit(1)
+    
+    # Resolve database path
+    db_path = get_db_path(args.db)
+    
+    if not os.path.exists(db_path):
+        print(f"Error: Database not found: {db_path}", file=sys.stderr)
+        print("Tip: Import a trace first with: mactrace-import trace.json", file=sys.stderr)
+        sys.exit(1)
+    
+    # Enable foreign keys for CASCADE
+    db = sqlite3.connect(db_path)
+    db.execute('PRAGMA foreign_keys = ON')
+    
+    try:
+        if args.command in ('list', 'ls'):
+            cmd_list(db, args)
+        elif args.command in ('info', 'show'):
+            cmd_info(db, args)
+        elif args.command in ('delete', 'rm', 'del'):
+            cmd_delete(db, args)
+        elif args.command == 'vacuum':
+            cmd_vacuum(db, args)
+        elif args.command == 'stats':
+            cmd_stats(db, args)
+    finally:
+        db.close()
+
+
+if __name__ == '__main__':
+    main()

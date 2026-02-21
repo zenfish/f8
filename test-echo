@@ -1,0 +1,4 @@
+#!/bin/bash
+
+for i in AAAA BBBB CCCC DDDD EEEEE; do echo -ne "$i"'\r'; sleep .1; done; echo 
+

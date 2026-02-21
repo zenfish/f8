@@ -1,0 +1,226 @@
+#!/bin/bash
+#
+# mactrace-import - Import trace JSON files into the mactrace SQLite database
+#
+# Imports trace data for timeline viewing and analysis with mactrace-server.
+#
+# USAGE:
+#   mactrace-import <trace.json> [options]
+#
+# OPTIONS:
+#   --db <path>      Database path (default: $MACTRACE_DB or $MACTRACE_HOME/mactrace.db)
+#   --io-dir <path>  Directory containing I/O capture files
+#   --help           Show this help
+#
+# ENVIRONMENT:
+#   MACTRACE_HOME    Base directory (default: ~/.mactrace)
+#   MACTRACE_DB      Database path
+#   MACTRACE_OUTPUT  Trace file directory (prepended to relative paths)
+#
+# PATH RESOLUTION:
+#   - Absolute paths (/path/to/file) used as-is
+#   - Explicit relative (./file, ../file) used as-is
+#   - Simple filenames (trace.json) prefixed with $MACTRACE_OUTPUT
+#
+# EXAMPLES:
+#   mactrace-import myapp.json              # Import from $MACTRACE_OUTPUT/myapp.json
+#   mactrace-import ./myapp.json            # Import from current directory
+#   mactrace-import myapp.json --io-dir io/ # Include I/O files
+#
+
+set -e
+
+# Resolve symlinks to find actual script location
+SOURCE="$0"
+while [[ -L "$SOURCE" ]]; do
+    DIR="$(cd "$(dirname "$SOURCE")" && pwd)"
+    SOURCE="$(readlink "$SOURCE")"
+    [[ "$SOURCE" != /* ]] && SOURCE="$DIR/$SOURCE"
+done
+SCRIPT_DIR="$(cd "$(dirname "$SOURCE")" && pwd)"
+SERVER_DIR="$SCRIPT_DIR/server"
+
+# Read mactrace config file (same logic as mactrace Python script)
+# Config is at ~/.mactrace/config, using SUDO_USER's home if running as root
+read_config() {
+    local config_home="$HOME"
+    
+    # If running as root via sudo, use the original user's home
+    if [[ $EUID -eq 0 && -n "$SUDO_USER" ]]; then
+        config_home=$(eval echo "~$SUDO_USER")
+    fi
+    
+    local config_file="$config_home/.mactrace/config"
+    
+    if [[ ! -f "$config_file" ]]; then
+        return
+    fi
+    
+    # Read config file, only set vars that aren't already set in environment
+    while IFS='=' read -r key value || [[ -n "$key" ]]; do
+        # Skip comments and empty lines
+        [[ "$key" =~ ^[[:space:]]*# ]] && continue
+        [[ -z "$key" ]] && continue
+        
+        # Trim whitespace
+        key=$(echo "$key" | xargs)
+        value=$(echo "$value" | xargs)
+        
+        # Skip if already set in environment
+        if [[ -n "${!key}" ]]; then
+            continue
+        fi
+        
+        # Expand ~ to config_home
+        value="${value//\~/$config_home}"
+        
+        # Expand $VAR references (simple expansion)
+        while [[ "$value" =~ \$([A-Za-z_][A-Za-z0-9_]*) ]]; do
+            local var_name="${BASH_REMATCH[1]}"
+            local var_value="${!var_name}"
+            value="${value//\$$var_name/$var_value}"
+        done
+        
+        # Export the variable
+        export "$key=$value"
+    done < "$config_file"
+}
+
+# Load config before anything else
+read_config
+
+# Show help
+show_help() {
+    cat << 'EOF'
+mactrace-import - Import trace JSON files into the mactrace SQLite database
+
+Imports trace data for timeline viewing and analysis with mactrace-server.
+
+USAGE:
+  mactrace-import <trace.json> [options]
+
+OPTIONS:
+  --db <path>      Database path (default: $MACTRACE_DB or $MACTRACE_HOME/mactrace.db)
+  --io-dir <path>  Directory containing I/O capture files
+  --help           Show this help
+
+ENVIRONMENT:
+  MACTRACE_HOME    Base directory (default: ~/.mactrace)
+  MACTRACE_DB      Database path
+  MACTRACE_OUTPUT  Trace file directory (prepended to relative paths)
+
+PATH RESOLUTION:
+  - Absolute paths (/path/to/file) used as-is
+  - Explicit relative (./file, ../file) used as-is
+  - Simple filenames (trace.json) prefixed with $MACTRACE_OUTPUT
+
+EXAMPLES:
+  mactrace-import myapp.json              # Import from $MACTRACE_OUTPUT/myapp.json
+  mactrace-import ./myapp.json            # Import from current directory
+  mactrace-import myapp.json --io-dir io/ # Include I/O files
+EOF
+}
+
+if [[ "$1" == "--help" || "$1" == "-h" || -z "$1" ]]; then
+    show_help
+    exit 0
+fi
+
+# Resolve MACTRACE_HOME (use $HOME, not hardcoded ~)
+MACTRACE_HOME="${MACTRACE_HOME:-${HOME}/.mactrace}"
+mkdir -p "$MACTRACE_HOME"
+
+# resolve_path: Apply env var prefix to relative paths
+resolve_path() {
+    local path="$1"
+    local env_var="$2"
+    local prefix="${!env_var}"
+    
+    # Absolute path - use as-is
+    if [[ "$path" == /* ]]; then
+        echo "$path"
+        return
+    fi
+    
+    # Explicit relative (./ or ../) - use as-is
+    if [[ "$path" == ./* || "$path" == ../* ]]; then
+        echo "$path"
+        return
+    fi
+    
+    # If env var is set and file exists at that location, use it
+    if [[ -n "$prefix" ]]; then
+        local candidate="$prefix/$path"
+        if [[ -e "$candidate" ]]; then
+            echo "$candidate"
+            return
+        fi
+    fi
+    
+    # Fall back to original path
+    echo "$path"
+}
+
+# Build default args from environment
+env_args=()
+
+# Database: explicit arg > MACTRACE_DB > default
+if [[ ! " $* " =~ " --db " ]]; then
+    db="${MACTRACE_DB:-$MACTRACE_HOME/mactrace.db}"
+    env_args+=(--db "$db")
+fi
+
+# Process arguments, resolving paths appropriately
+args=()
+prev_opt=""
+for arg in "$@"; do
+    case "$prev_opt" in
+        --io-dir)
+            # I/O directory - resolve with MACTRACE_OUTPUT
+            resolved=$(resolve_path "$arg" "MACTRACE_OUTPUT")
+            # Make absolute for cd later
+            if [[ -d "$resolved" ]]; then
+                args+=("$(cd "$resolved" && pwd)")
+            else
+                args+=("$resolved")
+            fi
+            prev_opt=""
+            ;;
+        --db)
+            # Database path - resolve with MACTRACE_HOME
+            resolved=$(resolve_path "$arg" "MACTRACE_HOME")
+            if [[ -e "$resolved" ]] || [[ "$arg" == /* ]] || [[ "$arg" == ./* ]] || [[ "$arg" == ../* ]]; then
+                # Make absolute if it exists or is explicitly relative/absolute
+                if [[ -e "$(dirname "$resolved")" ]]; then
+                    args+=("$(cd "$(dirname "$resolved")" && pwd)/$(basename "$resolved")")
+                else
+                    args+=("$resolved")
+                fi
+            else
+                args+=("$resolved")
+            fi
+            prev_opt=""
+            ;;
+        "")
+            if [[ "$arg" == --io-dir || "$arg" == --db ]]; then
+                args+=("$arg")
+                prev_opt="$arg"
+            elif [[ "$arg" == -* ]]; then
+                # Other flags pass through
+                args+=("$arg")
+            else
+                # Positional argument (trace file) - resolve with MACTRACE_OUTPUT
+                resolved=$(resolve_path "$arg" "MACTRACE_OUTPUT")
+                # Make absolute for cd later
+                if [[ -e "$resolved" ]]; then
+                    args+=("$(cd "$(dirname "$resolved")" && pwd)/$(basename "$resolved")")
+                else
+                    args+=("$resolved")
+                fi
+            fi
+            ;;
+    esac
+done
+
+cd "$SERVER_DIR"
+exec node import.js "${env_args[@]}" "${args[@]}"

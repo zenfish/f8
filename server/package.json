@@ -1,0 +1,15 @@
+{
+  "name": "mactrace-server",
+  "version": "1.0.0",
+  "description": "Web server for mactrace timeline viewing",
+  "type": "module",
+  "scripts": {
+    "start": "node server.js",
+    "import": "node import.js"
+  },
+  "dependencies": {
+    "express": "^4.18.2",
+    "sql.js": "^1.10.0",
+    "stream-json": "^1.9.1"
+  }
+}

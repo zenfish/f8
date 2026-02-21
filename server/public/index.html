@@ -1,0 +1,1052 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>mactrace</title>
+    <style>
+        * { box-sizing: border-box; margin: 0; padding: 0; }
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Arial, sans-serif;
+            background: #f5f5f5;
+            color: #333;
+            font-size: 13px;
+        }
+        
+        /* Header */
+        .header {
+            background: #2c3e50;
+            color: white;
+            padding: 12px 20px;
+            display: flex;
+            align-items: center;
+            gap: 20px;
+        }
+        .header h1 { font-size: 1.3em; font-weight: 500; }
+        .header select {
+            padding: 6px 12px;
+            border-radius: 4px;
+            border: none;
+            font-size: 14px;
+        }
+        
+        .container { padding: 20px; max-width: 1900px; margin: 0 auto; }
+        
+        /* Summary Section - Detailed */
+        .summary {
+            background: white;
+            border-radius: 8px;
+            padding: 16px 20px;
+            margin-bottom: 16px;
+            box-shadow: 0 1px 3px rgba(0,0,0,0.1);
+        }
+        .summary h2 {
+            font-size: 1.1em;
+            color: #2c3e50;
+            margin-bottom: 16px;
+            padding-bottom: 8px;
+            border-bottom: 2px solid #8073ac;
+        }
+        .summary-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
+            gap: 20px;
+        }
+        .summary-card {
+            background: #f8f9fa;
+            border-radius: 6px;
+            padding: 12px 16px;
+        }
+        .summary-card h3 {
+            font-size: 12px;
+            text-transform: uppercase;
+            color: #666;
+            margin-bottom: 10px;
+            letter-spacing: 0.5px;
+        }
+        .summary-card .stat-row {
+            display: flex;
+            justify-content: space-between;
+            padding: 4px 0;
+            font-family: "SF Mono", Consolas, monospace;
+            font-size: 12px;
+        }
+        .summary-card .stat-row .label { color: #555; }
+        .summary-card .stat-row .value { font-weight: 600; color: #2c3e50; }
+        .summary-card .stat-row.highlight { background: #e8f4fd; margin: 0 -8px; padding: 4px 8px; border-radius: 3px; }
+        .summary-card ul {
+            list-style: none;
+            font-family: "SF Mono", Consolas, monospace;
+            font-size: 11px;
+            max-height: 120px;
+            overflow-y: auto;
+        }
+        .summary-card li {
+            padding: 3px 0;
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+        }
+        .summary-card li.error { color: #c0392b; }
+        .tag { 
+            display: inline-block;
+            padding: 2px 6px;
+            border-radius: 3px;
+            font-size: 11px;
+            margin-right: 4px;
+        }
+        
+        /* Filters */
+        .filters {
+            background: white;
+            border-radius: 8px;
+            padding: 12px 16px;
+            margin-bottom: 16px;
+            box-shadow: 0 1px 3px rgba(0,0,0,0.1);
+            display: flex;
+            gap: 8px;
+            flex-wrap: wrap;
+            align-items: center;
+        }
+        .filter-btn {
+            padding: 5px 12px;
+            border: 2px solid transparent;
+            border-radius: 4px;
+            cursor: pointer;
+            font-size: 12px;
+            font-weight: 500;
+            transition: all 0.15s;
+        }
+        .filter-btn:hover { opacity: 0.85; }
+        .filter-btn.active { border-color: #000; }
+        .search-box {
+            margin-left: auto;
+            padding: 6px 12px;
+            border: 1px solid #ddd;
+            border-radius: 4px;
+            font-size: 14px;
+            width: 280px;
+        }
+        .status {
+            font-size: 12px;
+            color: #666;
+            min-width: 120px;
+            text-align: right;
+        }
+        
+        /* Table - Original strace color scheme */
+        .table-container {
+            background: white;
+            border-radius: 8px;
+            box-shadow: 0 1px 3px rgba(0,0,0,0.1);
+            overflow: hidden;
+        }
+        .table-header {
+            display: flex;
+            font-weight: 600;
+            font-size: 12px;
+            position: sticky;
+            top: 0;
+            z-index: 10;
+            cursor: pointer;
+            user-select: none;
+        }
+        .table-header .cell:hover { filter: brightness(0.95); }
+        .table-header .cell.sorted::after { content: ' ▼'; font-size: 10px; }
+        .table-header .cell.sorted.asc::after { content: ' ▲'; }
+        
+        .table-scroll {
+            height: calc(100vh - 380px);
+            overflow-y: auto;
+            position: relative;
+        }
+        .virtual-spacer { width: 100%; }
+        .virtual-viewport { position: absolute; left: 0; right: 0; }
+        
+        .row {
+            display: flex;
+            border-bottom: 1px solid #eee;
+            font-size: 12px;
+            font-family: "SF Mono", Consolas, monospace;
+        }
+        .row:hover { filter: brightness(0.97); }
+        .row.error .cell { background-color: #ffebee !important; }
+        
+        .cell {
+            padding: 5px 8px;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+        }
+        
+        /* Column widths via CSS variables for synchronized resizing */
+        :root {
+            --col-seq-width: 60px;
+            --col-time-width: 110px;
+            --col-pid-width: 55px;
+            --col-read-width: 70px;
+            --col-write-width: 70px;
+            --col-target-width: 400px;
+        }
+        
+        /* Column colors - strace palette */
+        .col-seq { width: var(--col-seq-width); text-align: right; flex-shrink: 0; }
+        .col-time { width: var(--col-time-width); text-align: right; flex-shrink: 0; }
+        .col-pid { width: var(--col-pid-width); text-align: right; flex-shrink: 0; }
+        .col-read { width: var(--col-read-width); text-align: right; flex-shrink: 0; }
+        .col-write { width: var(--col-write-width); text-align: right; flex-shrink: 0; }
+        .col-target { width: var(--col-target-width); min-width: 100px; flex-shrink: 0; overflow: hidden; }
+        .col-syscall { flex: 1; min-width: 200px; }
+        
+        /* Resize handle on header cells */
+        .table-header .cell {
+            position: relative;
+        }
+        .table-header .cell.resizable::after {
+            content: '';
+            position: absolute;
+            right: 0;
+            top: 0;
+            bottom: 0;
+            width: 5px;
+            cursor: col-resize;
+            background: transparent;
+        }
+        .table-header .cell.resizable:hover::after {
+            background: rgba(255,255,255,0.3);
+        }
+        
+        /* Header colors - # first */
+        .table-header .col-seq { background: #e08214; color: white; }
+        .table-header .col-time { background: #fdb863; color: #333; }
+        .table-header .col-pid { background: #fcd4a4; color: #333; }
+        .table-header .col-read { background: #fee0b6; color: #333; }
+        .table-header .col-write { background: #f7f7f7; color: #333; }
+        .table-header .col-target { background: #d8daeb; color: #333; }
+        .table-header .col-syscall { background: #8073ac; color: white; }
+        
+        /* Data row colors (lightened) */
+        .row .col-seq { background: #f6e0c5; }
+        .row .col-time { background: #fef0dc; }
+        .row .col-pid { background: #fef5e7; }
+        .row .col-read { background: #fff8ef; }
+        .row .col-write { background: #fcfcfc; }
+        .row .col-target { background: #f0eff6; }
+        .row .col-syscall { background: #e8e6f0; }
+        
+        .syscall-badge {
+            display: inline-block;
+            padding: 1px 6px;
+            border-radius: 3px;
+            font-weight: 500;
+            margin-right: 6px;
+        }
+        .error-text { color: #c0392b; font-weight: 600; }
+        .highlight { background: #fff59d !important; padding: 1px 2px; border-radius: 2px; }
+        
+        /* DNS lookup highlight */
+        .row.dns-lookup { border-left: 3px solid #3498db; }
+        .row.dns-lookup .col-seq { background: #d4edfa; }
+        .dns-badge { 
+            background: #3498db; 
+            color: white; 
+            padding: 1px 4px; 
+            border-radius: 2px; 
+            font-size: 9px; 
+            margin-left: 6px; 
+            vertical-align: middle;
+        }
+        
+        .io-link {
+            color: #3498db;
+            cursor: pointer;
+            font-weight: bold;
+            margin-right: 4px;
+        }
+        .io-link:hover { text-decoration: underline; }
+        
+        .data-preview {
+            color: #666;
+            font-style: italic;
+            cursor: help;
+            max-width: 400px;
+            display: inline-block;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+            vertical-align: bottom;
+        }
+        .data-preview:hover {
+            color: #333;
+        }
+        
+        /* Loading & home */
+        .loading {
+            text-align: center;
+            padding: 40px;
+            color: #666;
+        }
+        .loading::before {
+            content: '';
+            display: inline-block;
+            width: 20px;
+            height: 20px;
+            border: 2px solid #ddd;
+            border-top-color: #3498db;
+            border-radius: 50%;
+            animation: spin 0.8s linear infinite;
+            margin-right: 10px;
+            vertical-align: middle;
+        }
+        @keyframes spin { to { transform: rotate(360deg); } }
+        
+        .trace-list { list-style: none; }
+        .trace-list li {
+            background: white;
+            border-radius: 8px;
+            padding: 16px 20px;
+            margin-bottom: 12px;
+            box-shadow: 0 1px 3px rgba(0,0,0,0.1);
+            cursor: pointer;
+            transition: transform 0.1s;
+        }
+        .trace-list li:hover { transform: translateX(4px); }
+        .trace-list .name { font-weight: 600; color: #2c3e50; }
+        .trace-list .command { font-family: monospace; font-size: 13px; color: #666; margin-top: 4px; }
+        .trace-list .meta { font-size: 12px; color: #888; margin-top: 8px; }
+        
+        /* I/O popup */
+        .io-popup {
+            display: none;
+            position: fixed;
+            background: white;
+            border: 1px solid #ccc;
+            border-radius: 6px;
+            box-shadow: 0 4px 12px rgba(0,0,0,0.2);
+            z-index: 1000;
+            min-width: 140px;
+        }
+        .io-popup.show { display: block; }
+        .io-popup a {
+            display: block;
+            padding: 10px 14px;
+            color: #333;
+            text-decoration: none;
+            font-size: 13px;
+        }
+        .io-popup a:hover { background: #f0f0f0; }
+    </style>
+</head>
+<body>
+    <div class="header">
+        <h1>🔬 mactrace</h1>
+        <select id="trace-select">
+            <option value="">Select a trace...</option>
+        </select>
+    </div>
+    
+    <div class="container">
+        <div id="home-view">
+            <div class="loading" id="loading">Loading traces...</div>
+            <ul class="trace-list" id="trace-list"></ul>
+        </div>
+        
+        <div id="trace-view" style="display:none">
+            <div class="summary" id="summary"></div>
+            
+            <div class="filters" id="filters">
+                <button class="filter-btn active" data-filter="all" style="background:#666;color:#fff">All</button>
+            </div>
+            
+            <div class="table-container">
+                <div class="table-header" id="table-header">
+                    <div class="cell col-seq resizable" data-col="seq" data-resize="seq">#</div>
+                    <div class="cell col-time resizable" data-col="time" data-resize="time">Time</div>
+                    <div class="cell col-pid resizable" data-col="pid" data-resize="pid">PID</div>
+                    <div class="cell col-read resizable" data-col="read" data-resize="read">Read</div>
+                    <div class="cell col-write resizable" data-col="write" data-resize="write">Write</div>
+                    <div class="cell col-target resizable" data-col="target" data-resize="target">Target</div>
+                    <div class="cell col-syscall" data-col="syscall">Syscall Details</div>
+                </div>
+                <div class="table-scroll" id="table-scroll">
+                    <div class="virtual-spacer" id="spacer"></div>
+                    <div class="virtual-viewport" id="viewport"></div>
+                </div>
+            </div>
+        </div>
+    </div>
+    
+    <div class="io-popup" id="io-popup"></div>
+
+<script>
+(function() {
+    const ROW_HEIGHT = 26;
+    const BUFFER = 20;
+    const SMALL_TRACE_THRESHOLD = 50000;
+    
+    let traces = [];
+    let currentTrace = null;
+    let allEvents = [];
+    let filteredEvents = [];
+    let ipToHostname = new Map();  // IP → hostname for DNS enrichment
+    let dnsLookupSeqs = new Set(); // Seq numbers where DNS lookups happened
+    let catColors = {};
+    let currentFilter = 'all';
+    let searchTerm = '';
+    let sortCol = 'seq';
+    let sortAsc = true;
+    let traceStartTime = null; // Date object for absolute time display
+    
+    const $ = id => document.getElementById(id);
+    const traceSelect = $('trace-select');
+    const homeView = $('home-view');
+    const traceView = $('trace-view');
+    const traceList = $('trace-list');
+    const loading = $('loading');
+    const summary = $('summary');
+    const filters = $('filters');
+    const tableHeader = $('table-header');
+    const tableScroll = $('table-scroll');
+    const spacer = $('spacer');
+    const viewport = $('viewport');
+    const ioPopup = $('io-popup');
+    
+    // Utilities
+    const escapeHtml = s => s ? String(s).replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c])) : '';
+    const formatBytes = n => !n ? '' : n < 1024 ? n+'' : n < 1048576 ? (n/1024).toFixed(1)+'K' : (n/1048576).toFixed(1)+'M';
+    const formatDuration = ms => ms < 1000 ? ms.toFixed(1)+'ms' : (ms/1000).toFixed(2)+'s';
+    
+    // Decode hex to display string - printable chars as-is, others as \xNN
+    function hexToDisplay(hex, maxLen = 60) {
+        if (!hex) return '';
+        let result = '';
+        let hasUnprintable = false;
+        for (let i = 0; i < hex.length && result.length < maxLen; i += 2) {
+            const byte = parseInt(hex.substr(i, 2), 16);
+            if (byte >= 32 && byte < 127) {
+                result += String.fromCharCode(byte);
+            } else {
+                hasUnprintable = true;
+                if (byte === 10) result += '\\n';
+                else if (byte === 13) result += '\\r';
+                else if (byte === 9) result += '\\t';
+                else if (byte === 0) result += '\\0';
+                else result += '\\x' + byte.toString(16).padStart(2, '0');
+            }
+        }
+        if (hex.length > maxLen * 2) result += '...';
+        return result;
+    }
+    
+    // Format absolute time from start_time + offset_us
+    const formatTime = us => {
+        if (!traceStartTime) return '';
+        const absTime = new Date(traceStartTime.getTime() + (us / 1000));
+        const h = absTime.getHours();
+        const m = absTime.getMinutes();
+        const s = absTime.getSeconds();
+        const ms = absTime.getMilliseconds();
+        return `${h}:${m.toString().padStart(2,'0')}:${s.toString().padStart(2,'0')}.${ms.toString().padStart(3,'0')}`;
+    };
+    
+    function highlightText(text, term) {
+        if (!term || !text) return escapeHtml(text);
+        const escaped = escapeHtml(text);
+        const regex = new RegExp(`(${term.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')})`, 'gi');
+        return escaped.replace(regex, '<span class="highlight">$1</span>');
+    }
+    
+    async function fetchJson(url) {
+        const res = await fetch(url);
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        return res.json();
+    }
+    
+    // Format timestamp for display
+    function formatTimestamp(isoStr) {
+        if (!isoStr) return '';
+        const d = new Date(isoStr + 'Z'); // SQLite stores UTC without Z
+        const now = new Date();
+        const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+        const yesterday = new Date(today - 86400000);
+        const traceDay = new Date(d.getFullYear(), d.getMonth(), d.getDate());
+        
+        const time = d.toLocaleTimeString([], {hour: '2-digit', minute: '2-digit'});
+        
+        if (traceDay.getTime() === today.getTime()) {
+            return `Today ${time}`;
+        } else if (traceDay.getTime() === yesterday.getTime()) {
+            return `Yesterday ${time}`;
+        } else {
+            const date = d.toLocaleDateString([], {month: 'short', day: 'numeric'});
+            return `${date} ${time}`;
+        }
+    }
+    
+    // Load traces list
+    async function loadTraces() {
+        try {
+            [traces, catColors] = await Promise.all([
+                fetchJson('/api/traces'),
+                fetchJson('/api/categories')
+            ]);
+            
+            loading.style.display = 'none';
+            
+            if (traces.length === 0) {
+                traceList.innerHTML = '<li style="cursor:default">No traces imported yet.<br><br>Run: <code>mactrace-import trace.json</code></li>';
+                return;
+            }
+            
+            // Sort by imported_at descending (newest first)
+            traces.sort((a, b) => (b.imported_at || '').localeCompare(a.imported_at || ''));
+            
+            traces.forEach(t => {
+                const opt = document.createElement('option');
+                opt.value = t.id;
+                opt.textContent = `${t.name} (${t.event_count.toLocaleString()} events)`;
+                traceSelect.appendChild(opt);
+            });
+            
+            traceList.innerHTML = traces.map(t => `
+                <li data-id="${t.id}">
+                    <div class="name">${escapeHtml(t.name)} <span style="font-weight:normal;color:#888;font-size:12px">${formatTimestamp(t.imported_at)}</span></div>
+                    <div class="command">${escapeHtml(t.command)}</div>
+                    <div class="meta">
+                        ${t.event_count.toLocaleString()} events · 
+                        ${formatDuration(t.duration_ms)} · 
+                        PID ${t.target_pid} → exit ${t.exit_code}
+                    </div>
+                </li>
+            `).join('');
+            
+        } catch (e) {
+            loading.textContent = 'Error loading traces: ' + e.message;
+        }
+    }
+    
+    // Load single trace
+    async function loadTrace(id) {
+        homeView.style.display = 'none';
+        traceView.style.display = 'block';
+        summary.innerHTML = '<div class="loading">Loading trace...</div>';
+        
+        try {
+            currentTrace = await fetchJson(`/api/traces/${id}`);
+            
+            // Build IP → hostname map for target enrichment
+            ipToHostname.clear();
+            dnsLookupSeqs.clear();
+            if (currentTrace.dnsLookups) {
+                currentTrace.dnsLookups.forEach(d => {
+                    if (d.ip && d.hostname) {
+                        // Store both with and without port for flexible lookup
+                        const ip = d.ip.split(':')[0];
+                        ipToHostname.set(ip, d.hostname);
+                        ipToHostname.set(d.ip, d.hostname);  // Also with port
+                    }
+                    // Track DNS lookup seq numbers for highlighting
+                    if (d.lookup_seq) dnsLookupSeqs.add(d.lookup_seq);
+                });
+            }
+            
+            // Render detailed summary
+            renderSummary(currentTrace);
+            
+            // Render filter buttons
+            let btns = '<button class="filter-btn active" data-filter="all" style="background:#666;color:#fff">All</button>';
+            currentTrace.categories.forEach(c => {
+                const col = catColors[c.category] || {bg:'#999',text:'#fff'};
+                btns += `<button class="filter-btn" data-filter="${c.category}" style="background:${col.bg};color:${col.text}">${c.category} (${c.count.toLocaleString()})</button>`;
+            });
+            if (currentTrace.errorCount > 0) {
+                btns += `<button class="filter-btn" data-filter="error" style="background:#e74c3c;color:#fff">Errors (${currentTrace.errorCount.toLocaleString()})</button>`;
+            }
+            btns += '<input type="text" class="search-box" id="search" placeholder="Search syscall, target, details...">';
+            btns += '<span class="status" id="status"></span>';
+            filters.innerHTML = btns;
+            
+            // Load events (cap at 500k for browser performance)
+            const eventLimit = 500000;
+            const data = await fetchJson(`/api/traces/${id}/events?all=true&limit=${eventLimit}`);
+            allEvents = data.events;
+            
+            // Warn if we hit the limit
+            if (data.filtered > eventLimit) {
+                console.warn(`Loaded ${eventLimit} of ${data.filtered} events (capped for performance)`);
+            }
+            
+            // Set start time for absolute timestamp display
+            traceStartTime = currentTrace.start_time ? new Date(currentTrace.start_time) : null;
+            
+            // Precompute read/write values
+            allEvents.forEach(e => {
+                const isRead = e.syscall && (e.syscall.includes('read') || e.syscall.includes('recv'));
+                const isWrite = e.syscall && (e.syscall.includes('write') || e.syscall.includes('send'));
+                e._read = isRead && e.return_value > 0 ? e.return_value : 0;
+                e._write = isWrite && e.return_value > 0 ? e.return_value : 0;
+                e._time = e.timestamp_us; // Keep original for sorting
+            });
+            
+            filteredEvents = allEvents;
+            sortData();
+            updateStatus();
+            render();
+            
+        } catch (e) {
+            summary.innerHTML = '<div style="color:red">Error: ' + e.message + '</div>';
+        }
+    }
+    
+    function renderSummary(t) {
+        // Compute I/O stats
+        let totalRead = 0, totalWrite = 0;
+        let fileReads = new Map(), fileWrites = new Map();
+        let netRecv = 0, netSend = 0;
+        let netConnections = new Set();
+        
+        allEvents = []; // Will be populated after, but we have topSyscalls from API
+        
+        const catCounts = {};
+        t.categories.forEach(c => catCounts[c.category] = c.count);
+        
+        summary.innerHTML = `
+            <h2>${escapeHtml(t.command)}</h2>
+            <div class="summary-grid">
+                <div class="summary-card">
+                    <h3>Overview</h3>
+                    <div class="stat-row"><span class="label">Total Syscalls</span><span class="value">${t.event_count.toLocaleString()}</span></div>
+                    <div class="stat-row"><span class="label">Started</span><span class="value">${t.start_time ? new Date(t.start_time).toLocaleString() : '—'}</span></div>
+                    <div class="stat-row"><span class="label">Duration</span><span class="value">${formatDuration(t.duration_ms)}</span></div>
+                    <div class="stat-row"><span class="label">Target PID</span><span class="value">${t.target_pid}</span></div>
+                    <div class="stat-row"><span class="label">Exit Code</span><span class="value">${t.exit_code}</span></div>
+                    <div class="stat-row ${t.errorCount > 0 ? 'highlight' : ''}"><span class="label">Errors</span><span class="value" style="color:${t.errorCount > 0 ? '#c0392b' : 'inherit'}">${t.errorCount.toLocaleString()}</span></div>
+                </div>
+                
+                <div class="summary-card">
+                    <h3>Top Syscalls</h3>
+                    ${t.topSyscalls.slice(0,8).map(s => `
+                        <div class="stat-row">
+                            <span class="label">${escapeHtml(s.syscall)}</span>
+                            <span class="value">${s.count.toLocaleString()}</span>
+                        </div>
+                    `).join('')}
+                </div>
+                
+                <div class="summary-card">
+                    <h3>Categories</h3>
+                    ${Object.entries(catCounts).sort((a,b) => b[1]-a[1]).slice(0,8).map(([cat, count]) => {
+                        const col = catColors[cat] || {bg:'#999'};
+                        return `<div class="stat-row">
+                            <span class="label"><span class="tag" style="background:${col.bg};color:${col.text || '#fff'}">${cat}</span></span>
+                            <span class="value">${count.toLocaleString()}</span>
+                        </div>`;
+                    }).join('')}
+                </div>
+                
+                <div class="summary-card" id="io-summary">
+                    <h3>I/O Summary</h3>
+                    <div class="stat-row"><span class="label">Loading...</span></div>
+                </div>
+                
+                ${t.dnsLookups && t.dnsLookups.length > 0 ? `
+                <div class="summary-card">
+                    <h3>🌐 DNS Lookups</h3>
+                    <ul style="list-style:none;font-family:'SF Mono',Consolas,monospace;font-size:11px">
+                        ${t.dnsLookups.map(d => {
+                            const ip = d.ip ? d.ip.split(':')[0] : '—';
+                            const seqLink = d.lookup_seq ? `<a href="#" class="dns-jump" data-seq="${d.lookup_seq}" style="color:#888;font-size:10px;margin-left:6px" title="Jump to line #${d.lookup_seq}">#${d.lookup_seq}</a>` : '';
+                            return `
+                            <li style="padding:4px 0;border-bottom:1px solid #eee">
+                                <span style="color:#2980b9;font-weight:500">${escapeHtml(d.hostname)}</span>
+                                <span style="color:#888;margin:0 6px">→</span>
+                                <span style="color:#666">${escapeHtml(ip)}</span>
+                                ${seqLink}
+                            </li>
+                        `}).join('')}
+                    </ul>
+                </div>
+                ` : ''}
+            </div>
+        `;
+    }
+    
+    // Detect network target by IP:port pattern or socket family
+    function isNetworkTarget(target) {
+        if (!target) return false;
+        // IP:port patterns (IPv4 and IPv6)
+        if (/^\d+\.\d+\.\d+\.\d+:\d+$/.test(target)) return true;
+        if (/^\[.*\]:\d+$/.test(target)) return true;
+        // Socket family patterns
+        if (/^AF_INET/.test(target)) return true;
+        if (target.includes('/SOCK_')) return true;
+        return false;
+    }
+    
+    function updateIOSummary() {
+        let totalRead = 0, totalWrite = 0;
+        let netRecv = 0, netSend = 0;
+        let fileRead = 0, fileWrite = 0;
+        let fileTargets = new Set();
+        let hostTargets = new Set();  // IPs, URLs
+        let socketTargets = new Set(); // AF_* sockets
+        
+        allEvents.forEach(e => {
+            totalRead += e._read || 0;
+            totalWrite += e._write || 0;
+            
+            const target = e.target || '';
+            const isNet = isNetworkTarget(target);
+            
+            if (isNet) {
+                netRecv += e._read || 0;
+                netSend += e._write || 0;
+                if (target && !target.startsWith('fd=')) {
+                    // Separate hosts from sockets
+                    if (target.startsWith('AF_')) {
+                        socketTargets.add(target);
+                    } else {
+                        hostTargets.add(target);
+                    }
+                }
+            } else if (target.startsWith('/')) {
+                fileRead += e._read || 0;
+                fileWrite += e._write || 0;
+                fileTargets.add(target);
+            }
+        });
+        
+        const ioCard = document.getElementById('io-summary');
+        if (ioCard) {
+            const traceId = currentTrace?.id || '1';
+            const totalNetTargets = hostTargets.size + socketTargets.size;
+            
+            ioCard.innerHTML = `
+                <h3>I/O Summary</h3>
+                <div class="stat-row highlight"><span class="label">Total Read</span><span class="value">${formatBytes(totalRead)}</span></div>
+                <div class="stat-row highlight"><span class="label">Total Write</span><span class="value">${formatBytes(totalWrite)}</span></div>
+                <div class="stat-row"><span class="label">Network</span><span class="value">↓${formatBytes(netRecv)} ↑${formatBytes(netSend)}</span></div>
+                <div class="stat-row"><span class="label">Files</span><span class="value">↓${formatBytes(fileRead)} ↑${formatBytes(fileWrite)}</span></div>
+                
+                <div style="margin-top:12px;padding-top:10px;border-top:1px solid #ddd">
+                    <div style="font-size:11px;color:#666;margin-bottom:6px;text-transform:uppercase;letter-spacing:0.5px">Objects Accessed</div>
+                    <div class="stat-row">
+                        <span class="label">Files</span>
+                        <span class="value"><a href="/objects.html?trace=${traceId}&type=files" target="_blank" style="color:#3498db;text-decoration:none">${fileTargets.size}</a></span>
+                    </div>
+                    <div class="stat-row">
+                        <span class="label">Network</span>
+                        <span class="value"><a href="/objects.html?trace=${traceId}&type=network" target="_blank" style="color:#3498db;text-decoration:none">${totalNetTargets}</a></span>
+                    </div>
+                    ${hostTargets.size > 0 ? `<div class="stat-row" style="font-size:11px;padding-left:10px">
+                        <span class="label" style="color:#888">↳ Hosts</span>
+                        <span class="value"><a href="/objects.html?trace=${traceId}&type=network&filter=hosts" target="_blank" style="color:#5dade2;text-decoration:none;font-size:11px">${hostTargets.size}</a></span>
+                    </div>` : ''}
+                    ${socketTargets.size > 0 ? `<div class="stat-row" style="font-size:11px;padding-left:10px">
+                        <span class="label" style="color:#888">↳ Sockets</span>
+                        <span class="value"><a href="/objects.html?trace=${traceId}&type=network&filter=sockets" target="_blank" style="color:#5dade2;text-decoration:none;font-size:11px">${socketTargets.size}</a></span>
+                    </div>` : ''}
+                </div>
+            `;
+        }
+    }
+    
+    function applyFilter() {
+        filteredEvents = allEvents.filter(e => {
+            if (currentFilter !== 'all') {
+                if (currentFilter === 'error' && e.errno === 0) return false;
+                if (currentFilter !== 'error' && e.category !== currentFilter) return false;
+            }
+            if (searchTerm) {
+                const text = `${e.syscall} ${e.target} ${e.details} ${e.errno_name}`.toLowerCase();
+                if (!text.includes(searchTerm)) return false;
+            }
+            return true;
+        });
+        sortData();
+        updateStatus();
+        render();
+    }
+    
+    function sortData() {
+        const col = sortCol;
+        const asc = sortAsc ? 1 : -1;
+        
+        filteredEvents.sort((a, b) => {
+            let va, vb;
+            switch(col) {
+                case 'time': va = a._time; vb = b._time; break;
+                case 'pid': va = a.pid; vb = b.pid; break;
+                case 'seq': va = a.seq; vb = b.seq; break;
+                case 'read': va = a._read; vb = b._read; break;
+                case 'write': va = a._write; vb = b._write; break;
+                case 'target': va = a.target || ''; vb = b.target || ''; break;
+                case 'syscall': va = a.syscall || ''; vb = b.syscall || ''; break;
+                default: va = a.seq; vb = b.seq;
+            }
+            if (typeof va === 'string') return va.localeCompare(vb) * asc;
+            return (va - vb) * asc;
+        });
+        
+        // Update header UI
+        tableHeader.querySelectorAll('.cell').forEach(c => {
+            c.classList.remove('sorted', 'asc');
+            if (c.dataset.col === sortCol) {
+                c.classList.add('sorted');
+                if (sortAsc) c.classList.add('asc');
+            }
+        });
+    }
+    
+    function updateStatus() {
+        const status = document.getElementById('status');
+        if (status) {
+            let text = `${filteredEvents.length.toLocaleString()} / ${allEvents.length.toLocaleString()}`;
+            // Show total if we have more events than loaded
+            if (currentTrace && currentTrace.event_count > allEvents.length) {
+                text += ` (of ${currentTrace.event_count.toLocaleString()} total)`;
+            }
+            status.textContent = text;
+        }
+        updateIOSummary();
+    }
+    
+    function renderRow(e) {
+        const col = catColors[e.category] || {bg:'#999',text:'#fff'};
+        const errClass = e.errno !== 0 ? ' error' : '';
+        const dnsClass = dnsLookupSeqs.has(e.seq) ? ' dns-lookup' : '';
+        
+        const timeStr = formatTime(e._time);
+        const readStr = e._read > 0 ? formatBytes(e._read) : '';
+        const writeStr = e._write > 0 ? formatBytes(e._write) : '';
+        
+        let resultStr = '';
+        if (e.errno !== 0) {
+            resultStr = `<span class="error-text">= ${e.return_value} (${e.errno_name || 'E'+e.errno})</span>`;
+        } else if (e.return_value !== undefined) {
+            resultStr = `= ${e.return_value}`;
+        }
+        
+        let io = '';
+        if (e.has_io && e.io_path) {
+            const chunkAttr = e.io_chunk !== null && e.io_chunk !== undefined ? ` data-chunk="${e.io_chunk}"` : '';
+            io = `<span class="io-link" data-io="${escapeHtml(e.io_path)}"${chunkAttr}>[+]</span>`;
+        }
+        
+        // Data preview - decode hex on the fly
+        let dataStr = '';
+        if (e.data_raw) {
+            const decoded = hexToDisplay(e.data_raw, 50);
+            const fullDecoded = hexToDisplay(e.data_raw, 200);
+            const display = searchTerm ? highlightText(decoded, searchTerm) : escapeHtml(decoded);
+            dataStr = ` <span class="data-preview" title="${escapeHtml(fullDecoded)}">"${display}"</span>`;
+        }
+        
+        // Enrich target with hostname if we have DNS mapping
+        let targetDisplay = searchTerm ? highlightText(e.target, searchTerm) : escapeHtml(e.target);
+        let targetTitle = e.target;
+        if (e.target && ipToHostname.size > 0) {
+            // Check if target is IP:port or just IP
+            const hostname = ipToHostname.get(e.target) || ipToHostname.get(e.target.split(':')[0]);
+            if (hostname) {
+                targetDisplay += ` <span style="color:#2980b9">/ ${escapeHtml(hostname)}</span>`;
+                targetTitle = `${e.target} (${hostname})`;
+            }
+        }
+        const syscallDisplay = searchTerm ? highlightText(e.syscall, searchTerm) : escapeHtml(e.syscall);
+        const dnsBadge = dnsLookupSeqs.has(e.seq) ? '<span class="dns-badge">DNS</span>' : '';
+        
+        return `<div class="row${errClass}${dnsClass}" data-seq="${e.seq}">
+            <div class="cell col-seq">${e.seq}</div>
+            <div class="cell col-time">${timeStr}</div>
+            <div class="cell col-pid">${e.pid}</div>
+            <div class="cell col-read">${readStr}</div>
+            <div class="cell col-write">${writeStr}</div>
+            <div class="cell col-target" title="${escapeHtml(targetTitle)}" data-target="${escapeHtml(e.target)}">${targetDisplay}</div>
+            <div class="cell col-syscall">${io}<span class="syscall-badge" style="background:${col.bg};color:${col.text}">${syscallDisplay}</span>${dnsBadge}${dataStr} ${resultStr}</div>
+        </div>`;
+    }
+    
+    function render() {
+        const scrollTop = tableScroll.scrollTop;
+        const viewHeight = tableScroll.clientHeight;
+        
+        spacer.style.height = (filteredEvents.length * ROW_HEIGHT) + 'px';
+        
+        const startIdx = Math.max(0, Math.floor(scrollTop / ROW_HEIGHT) - BUFFER);
+        const endIdx = Math.min(filteredEvents.length, Math.ceil((scrollTop + viewHeight) / ROW_HEIGHT) + BUFFER);
+        
+        viewport.style.top = (startIdx * ROW_HEIGHT) + 'px';
+        viewport.innerHTML = filteredEvents.slice(startIdx, endIdx).map(renderRow).join('');
+    }
+    
+    // Event handlers
+    traceSelect.addEventListener('change', e => {
+        if (e.target.value) loadTrace(e.target.value);
+    });
+    
+    traceList.addEventListener('click', e => {
+        const li = e.target.closest('li[data-id]');
+        if (li) {
+            traceSelect.value = li.dataset.id;
+            loadTrace(li.dataset.id);
+        }
+    });
+    
+    filters.addEventListener('click', e => {
+        const btn = e.target.closest('.filter-btn');
+        if (btn) {
+            filters.querySelectorAll('.filter-btn').forEach(b => b.classList.remove('active'));
+            btn.classList.add('active');
+            currentFilter = btn.dataset.filter;
+            applyFilter();
+        }
+    });
+    
+    filters.addEventListener('input', e => {
+        if (e.target.id === 'search') {
+            searchTerm = e.target.value.toLowerCase();
+            applyFilter();
+        }
+    });
+    
+    tableHeader.addEventListener('click', e => {
+        const cell = e.target.closest('.cell[data-col]');
+        if (cell) {
+            const col = cell.dataset.col;
+            if (sortCol === col) {
+                sortAsc = !sortAsc;
+            } else {
+                sortCol = col;
+                sortAsc = true;
+            }
+            sortData();
+            render();
+        }
+    });
+    
+    tableScroll.addEventListener('scroll', render);
+    window.addEventListener('resize', render);
+    
+    // I/O popup
+    document.addEventListener('click', e => {
+        const link = e.target.closest('.io-link');
+        if (link) {
+            e.stopPropagation();
+            const filename = link.dataset.io;
+            const base = filename.replace(/\.(hexdump|rendered)$/, '').replace(/\.bin$/, '');
+            const chunkIdx = link.dataset.chunk;
+            
+            // Get target from data attribute (raw target, not display text)
+            const row = link.closest('.row');
+            const targetCell = row?.querySelector('.col-target');
+            const target = targetCell?.dataset?.target;
+            
+            let html = '';
+            
+            // PRIMARY: Conversation view (all R/W for target) - this is what you usually want
+            if (target && target !== '—') {
+                html += `<a href="/hexdump.html?trace=${currentTrace.id}&target=${encodeURIComponent(target)}" target="_blank"><strong>💬 View I/O</strong> (all R+W)</a>`;
+            }
+            
+            // Secondary: single-file options
+            let singleFileUrl = `/hexdump.html?trace=${currentTrace.id}&file=${encodeURIComponent(base)}.bin`;
+            if (chunkIdx !== undefined) singleFileUrl += `&chunk=${chunkIdx}`;
+            
+            html += `<a href="${singleFileUrl}" target="_blank" style="color:#888">This chunk only</a>`;
+            html += `<a href="/api/traces/${currentTrace.id}/io/${base}.bin" target="_blank" style="color:#888">Download .bin</a>`;
+            
+            ioPopup.innerHTML = html;
+            const rect = link.getBoundingClientRect();
+            ioPopup.style.left = rect.left + 'px';
+            ioPopup.style.top = (rect.bottom + 4) + 'px';
+            ioPopup.classList.add('show');
+        } else {
+            ioPopup.classList.remove('show');
+        }
+        
+        // DNS jump links
+        const dnsJump = e.target.closest('.dns-jump');
+        if (dnsJump) {
+            e.preventDefault();
+            const seq = parseInt(dnsJump.dataset.seq, 10);
+            scrollToSeq(seq);
+        }
+    });
+    
+    // Scroll to a specific seq number
+    function scrollToSeq(seq) {
+        // Find the index of this seq in filteredEvents
+        const idx = filteredEvents.findIndex(e => e.seq === seq);
+        if (idx >= 0) {
+            // Scroll to that position
+            const scrollTop = idx * ROW_HEIGHT - (tableScroll.clientHeight / 2) + ROW_HEIGHT;
+            tableScroll.scrollTop = Math.max(0, scrollTop);
+            render();
+            // Briefly highlight the row
+            setTimeout(() => {
+                const row = viewport.querySelector(`[data-seq="${seq}"]`);
+                if (row) {
+                    row.style.outline = '2px solid #3498db';
+                    row.style.outlineOffset = '-2px';
+                    setTimeout(() => {
+                        row.style.outline = '';
+                        row.style.outlineOffset = '';
+                    }, 2000);
+                }
+            }, 100);
+        } else {
+            // Event not in current filter, try resetting filter
+            currentFilter = 'all';
+            searchTerm = '';
+            applyFilter();
+            setTimeout(() => scrollToSeq(seq), 100);
+        }
+    }
+    
+    // Column resizing
+    (function setupColumnResize() {
+        let resizing = null;
+        let startX = 0;
+        let startWidth = 0;
+        
+        tableHeader.addEventListener('mousedown', e => {
+            const cell = e.target.closest('.cell.resizable');
+            if (!cell) return;
+            
+            // Check if click is near the right edge (resize handle area)
+            const rect = cell.getBoundingClientRect();
+            if (e.clientX < rect.right - 8) return; // Not in resize zone
+            
+            e.preventDefault();
+            resizing = cell.dataset.resize;
+            startX = e.clientX;
+            startWidth = cell.offsetWidth;
+            
+            document.body.style.cursor = 'col-resize';
+            document.body.style.userSelect = 'none';
+        });
+        
+        document.addEventListener('mousemove', e => {
+            if (!resizing) return;
+            
+            const delta = e.clientX - startX;
+            const newWidth = Math.max(40, startWidth + delta);
+            document.documentElement.style.setProperty(`--col-${resizing}-width`, newWidth + 'px');
+        });
+        
+        document.addEventListener('mouseup', () => {
+            if (resizing) {
+                resizing = null;
+                document.body.style.cursor = '';
+                document.body.style.userSelect = '';
+            }
+        });
+    })();
+    
+    // Init
+    loadTraces();
+})();
+</script>
+</body>
+</html>
