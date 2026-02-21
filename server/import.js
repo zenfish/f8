@@ -307,6 +307,24 @@ db.run('CREATE INDEX IF NOT EXISTS idx_events_category ON events(trace_id, categ
 db.run('CREATE INDEX IF NOT EXISTS idx_events_syscall ON events(trace_id, syscall)');
 db.run('CREATE INDEX IF NOT EXISTS idx_events_errno ON events(trace_id, errno)');
 
+// Process lifecycle table (from process_tree + process_events)
+db.run(`
+    CREATE TABLE IF NOT EXISTS processes (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        trace_id INTEGER NOT NULL,
+        pid INTEGER NOT NULL,
+        parent_pid INTEGER,
+        exec_path TEXT,
+        fork_time_us INTEGER,
+        exec_time_us INTEGER,
+        exit_time_us INTEGER,
+        exit_code INTEGER,
+        FOREIGN KEY (trace_id) REFERENCES traces(id) ON DELETE CASCADE
+    )
+`);
+db.run('CREATE INDEX IF NOT EXISTS idx_processes_trace ON processes(trace_id)');
+db.run('CREATE INDEX IF NOT EXISTS idx_processes_pid ON processes(trace_id, pid)');
+
 // DNS lookups table for hostname → IP correlation
 db.run(`
     CREATE TABLE IF NOT EXISTS dns_lookups (
@@ -561,6 +579,76 @@ console.log(`\n  ${imported.toLocaleString()} events imported`);
 
 // Write metadata for any generated I/O files
 writeIoMetadata();
+
+// Import process tree and process events
+const processTree = trace.process_tree || {};
+const processEvents = trace.process_events || [];
+
+if (Object.keys(processTree).length > 0 || processEvents.length > 0) {
+    console.log('Importing process lifecycle data...');
+    
+    // Build per-PID info from process_tree (parent links) and process_events (exec, fork, exit)
+    const procInfo = new Map(); // pid → {parent_pid, exec_path, fork_time, exec_time, exit_time, exit_code}
+    
+    // process_tree gives us child→parent mappings
+    for (const [childStr, parent] of Object.entries(processTree)) {
+        const child = parseInt(childStr, 10);
+        if (!procInfo.has(child)) procInfo.set(child, {});
+        procInfo.get(child).parent_pid = parent;
+    }
+    
+    // process_events give us exec paths, fork/exit times
+    for (const pe of processEvents) {
+        const pid = pe.pid || 0;
+        if (!procInfo.has(pid)) procInfo.set(pid, {});
+        const info = procInfo.get(pid);
+        
+        const details = pe.details || {};
+        const ts = pe.timestamp_us || 0;
+        
+        switch (pe.event_type) {
+            case 'fork':
+            case 'child_detected':
+                if (details.parent_pid) info.parent_pid = details.parent_pid;
+                if (!info.fork_time) info.fork_time = ts;
+                break;
+            case 'exec':
+                if (details.path) info.exec_path = details.path;
+                if (!info.exec_time) info.exec_time = ts;
+                break;
+            case 'exit':
+                info.exit_time = ts;
+                if (details.exit_code !== undefined) info.exit_code = details.exit_code;
+                break;
+        }
+    }
+    
+    // Also ensure target PID is in the map
+    if (targetPid && !procInfo.has(targetPid)) {
+        procInfo.set(targetPid, { exec_path: (trace.command || [])[0] || null });
+    }
+    
+    const procStmt = db.prepare(`
+        INSERT INTO processes (trace_id, pid, parent_pid, exec_path, fork_time_us, exec_time_us, exit_time_us, exit_code)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+    `);
+    
+    let procCount = 0;
+    for (const [pid, info] of procInfo) {
+        procStmt.run([
+            traceId, pid,
+            info.parent_pid ?? null,
+            info.exec_path ?? null,
+            info.fork_time ?? null,
+            info.exec_time ?? null,
+            info.exit_time ?? null,
+            info.exit_code ?? null
+        ]);
+        procCount++;
+    }
+    procStmt.free();
+    console.log(`  ${procCount.toLocaleString()} processes imported`);
+}
 
 // Extract DNS hostname → IP correlations from mDNSResponder traffic
 function extractDnsLookups() {

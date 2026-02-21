@@ -422,59 +422,96 @@ app.get('/api/traces/:id/process-tree', (req, res) => {
             GROUP BY pid
         `, [traceId]);
 
-        // Build parent→child map from fork/vfork events
-        const forkEvents = query(`
-            SELECT pid, return_value, seq FROM events
-            WHERE trace_id = ? AND syscall IN ('fork', 'vfork') AND return_value > 0 AND errno = 0
-            ORDER BY seq
-        `, [traceId]);
-
         const allPids = new Set(pidStats.map(p => p.pid));
         const parentMap = new Map(); // childPid → parentPid
+        
+        // Try the processes table first (has authoritative parent links from mactrace)
+        let hasProcessesTable = false;
+        try {
+            hasProcessesTable = queryOne(
+                "SELECT COUNT(*) as count FROM processes WHERE trace_id = ?",
+                [traceId]
+            )?.count > 0;
+        } catch (e) {
+            // Table doesn't exist yet (old DB) — fall back to event-based reconstruction
+        }
+        
+        if (hasProcessesTable) {
+            // Use authoritative process tree from mactrace's DTrace probes
+            const procRows = query(
+                'SELECT pid, parent_pid, exec_path FROM processes WHERE trace_id = ? AND parent_pid IS NOT NULL',
+                [traceId]
+            );
+            for (const pr of procRows) {
+                if (allPids.has(pr.pid)) {
+                    parentMap.set(pr.pid, pr.parent_pid);
+                }
+            }
+        } else {
+            // Fallback: reconstruct from fork/vfork syscall return values
+            const forkEvents = query(`
+                SELECT pid, return_value, seq FROM events
+                WHERE trace_id = ? AND syscall IN ('fork', 'vfork') AND return_value > 0 AND errno = 0
+                ORDER BY seq
+            `, [traceId]);
 
-        for (const fe of forkEvents) {
-            const childPid = fe.return_value;
-            if (allPids.has(childPid) && !parentMap.has(childPid)) {
-                parentMap.set(childPid, fe.pid);
+            for (const fe of forkEvents) {
+                const childPid = fe.return_value;
+                if (allPids.has(childPid) && !parentMap.has(childPid)) {
+                    parentMap.set(childPid, fe.pid);
+                }
+            }
+
+            // Handle posix_spawn: find child PIDs by looking at next new PID after spawn event
+            const spawnEvents = query(`
+                SELECT pid, seq, target FROM events
+                WHERE trace_id = ? AND syscall = 'posix_spawn' AND errno = 0
+                ORDER BY seq
+            `, [traceId]);
+
+            for (const se of spawnEvents) {
+                const nextPidRow = queryOne(`
+                    SELECT DISTINCT pid FROM events
+                    WHERE trace_id = ? AND seq > ? AND seq < ? + 50
+                    AND pid != ?
+                    ORDER BY seq LIMIT 1
+                `, [traceId, se.seq, se.seq, se.pid]);
+                if (nextPidRow && !parentMap.has(nextPidRow.pid)) {
+                    parentMap.set(nextPidRow.pid, se.pid);
+                }
             }
         }
 
-        // Handle posix_spawn: find child PIDs by looking at next new PID after spawn event
-        const spawnEvents = query(`
-            SELECT pid, seq, target FROM events
-            WHERE trace_id = ? AND syscall = 'posix_spawn' AND errno = 0
-            ORDER BY seq
-        `, [traceId]);
-
-        for (const se of spawnEvents) {
-            // Find the next PID that appears right after this spawn that has no fork parent
-            const nextPidRow = queryOne(`
-                SELECT DISTINCT pid FROM events
-                WHERE trace_id = ? AND seq > ? AND seq < ? + 50
-                AND pid != ?
-                ORDER BY seq LIMIT 1
-            `, [traceId, se.seq, se.seq, se.pid]);
-            if (nextPidRow && !parentMap.has(nextPidRow.pid)) {
-                parentMap.set(nextPidRow.pid, se.pid);
+        // Get program names per PID
+        const pidPrograms = new Map(); // pid → [program paths]
+        const pidProgramSource = new Map(); // pid → 'exec' | 'spawn' | 'inferred'
+        
+        // Use processes table if available (has authoritative exec_path from MACTRACE_EXEC)
+        if (hasProcessesTable) {
+            const procExecs = query(
+                "SELECT pid, exec_path FROM processes WHERE trace_id = ? AND exec_path IS NOT NULL AND exec_path != ''",
+                [traceId]
+            );
+            for (const pe of procExecs) {
+                pidPrograms.set(pe.pid, [pe.exec_path]);
+                pidProgramSource.set(pe.pid, 'exec');
             }
         }
-
-        // Get execve/posix_spawn targets per PID (program names)
+        
+        // Supplement from execve/posix_spawn syscall events (covers cases processes table may miss)
         const execEvents = query(`
             SELECT pid, target, syscall, seq FROM events
             WHERE trace_id = ? AND syscall IN ('execve', 'posix_spawn') AND errno = 0 AND target != ''
             ORDER BY seq
         `, [traceId]);
 
-        const pidPrograms = new Map(); // pid → [program paths]
-        const pidProgramSource = new Map(); // pid → 'exec' | 'spawn' | 'inferred'
-        
         for (const ee of execEvents) {
             if (ee.syscall === 'execve') {
-                // execve fires in the child
-                if (!pidPrograms.has(ee.pid)) pidPrograms.set(ee.pid, []);
+                if (!pidPrograms.has(ee.pid)) {
+                    pidPrograms.set(ee.pid, []);
+                    pidProgramSource.set(ee.pid, 'exec');
+                }
                 pidPrograms.get(ee.pid).push(ee.target);
-                pidProgramSource.set(ee.pid, 'exec');
             } else {
                 // posix_spawn fires in the parent — find the child PID
                 const childRow = queryOne(`
@@ -483,22 +520,19 @@ app.get('/api/traces/:id/process-tree', (req, res) => {
                     AND pid != ?
                     ORDER BY seq LIMIT 1
                 `, [traceId, ee.seq, ee.seq, ee.pid]);
-                if (childRow) {
-                    if (!pidPrograms.has(childRow.pid)) pidPrograms.set(childRow.pid, []);
-                    pidPrograms.get(childRow.pid).push(ee.target);
-                    if (!pidProgramSource.has(childRow.pid)) pidProgramSource.set(childRow.pid, 'spawn');
+                if (childRow && !pidPrograms.has(childRow.pid)) {
+                    pidPrograms.set(childRow.pid, [ee.target]);
+                    pidProgramSource.set(childRow.pid, 'spawn');
                 }
             }
         }
         
         // For PIDs still without a program name, infer from first binary open()
-        // (the dynamic linker opens the executable as its first file op)
         const orphanPids = pidStats
             .filter(p => !pidPrograms.has(p.pid) && p.event_count > 5)
             .map(p => p.pid);
         
         if (orphanPids.length > 0) {
-            // Batch query: for each orphan PID, find first open of a binary path
             for (const opid of orphanPids) {
                 const firstBin = queryOne(`
                     SELECT target FROM events
