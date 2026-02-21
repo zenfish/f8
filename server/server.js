@@ -625,9 +625,19 @@ app.get('/api/categories', (req, res) => {
     });
 });
 
-app.listen(port, () => {
+const server = app.listen(port, () => {
     console.log(`mactrace server running at http://localhost:${port}`);
     console.log(`Database: ${dbFile}`);
     const traces = queryOne('SELECT COUNT(*) as count FROM traces');
     console.log(`Traces in database: ${traces?.count || 0}`);
+});
+
+server.on('error', (err) => {
+    if (err.code === 'EADDRINUSE') {
+        console.error(`Error: Port ${port} is already in use.`);
+        console.error(`Either stop the other process or use: mactrace-server --port ${port + 1}`);
+    } else {
+        console.error(`Error starting server: ${err.message}`);
+    }
+    process.exit(1);
 });
