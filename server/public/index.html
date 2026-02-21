@@ -1273,23 +1273,138 @@
         const nodeMap = new Map();
         data.nodes.forEach(n => nodeMap.set(n.pid, n));
         
-        // Find root
-        const rootNode = nodeMap.get(data.rootPid);
-        if (!rootNode) {
-            treeContent.innerHTML = '<div style="padding:20px;color:#c0392b">Root PID not found in tree data</div>';
-            return;
-        }
-        
         // Determine initial expansion depth based on tree size
         const totalNodes = data.nodes.length;
         let defaultDepth = 3;
         if (totalNodes > 500) defaultDepth = 2;
         if (totalNodes > 5000) defaultDepth = 1;
         
-        treeContent.innerHTML = renderTreeNode(rootNode, nodeMap, 0, defaultDepth, true);
+        // Separate root tree from orphan trees
+        const rootNode = nodeMap.get(data.rootPid);
         
-        // Attach tree event handlers
+        // Find all root-level nodes (no parent)
+        const allRoots = data.nodes.filter(n => n.parentPid === null);
+        // Separate: the main root, other roots with subtrees, and bare orphans
+        const mainRoot = rootNode || allRoots[0];
+        const otherRoots = allRoots.filter(n => n !== mainRoot && (n.childPids.length > 0 || n.programs.length > 0 || n.io.totalRead > 0 || n.io.totalWrite > 0));
+        const bareOrphans = allRoots.filter(n => n !== mainRoot && n.childPids.length === 0 && n.programs.length === 0 && !n.io.totalRead && !n.io.totalWrite);
+        
+        let html = '';
+        
+        // Summary bar
+        const rootTreeSize = mainRoot ? countDescendants(mainRoot, nodeMap) + 1 : 0;
+        const orphanCount = allRoots.length - 1;
+        html += `<div style="font-size:12px;color:#666;margin-bottom:12px;padding:8px 12px;background:#f0f0f0;border-radius:4px">
+            <strong>${totalNodes.toLocaleString()}</strong> processes · 
+            <strong>${data.totalExecCount}</strong> programs exec'd · 
+            <strong>${rootTreeSize.toLocaleString()}</strong> in root tree` +
+            (orphanCount > 0 ? ` · <strong>${orphanCount.toLocaleString()}</strong> orphan${orphanCount !== 1 ? 's' : ''} (no traced parent)` : '') +
+        `</div>`;
+        
+        // Main root tree
+        if (mainRoot) {
+            html += renderTreeNode(mainRoot, nodeMap, 0, defaultDepth, true);
+        }
+        
+        // Other roots with subtrees (non-trivial orphans)
+        if (otherRoots.length > 0) {
+            html += `<div style="margin-top:16px;padding-top:12px;border-top:2px solid #ddd">
+                <div style="font-size:12px;color:#888;margin-bottom:8px;font-weight:600">
+                    <span class="tree-toggle" data-action="toggle-section" data-section="other-roots">▼</span>
+                    Other Process Trees (${otherRoots.length})
+                </div>
+                <div class="tree-children" data-section-content="other-roots">`;
+            for (const orphanRoot of otherRoots) {
+                html += renderTreeNode(orphanRoot, nodeMap, 0, Math.min(defaultDepth, 1), true);
+            }
+            html += `</div></div>`;
+        }
+        
+        // Bare orphans (unknown PIDs with no children, no program, no I/O)
+        if (bareOrphans.length > 0) {
+            // Group by PID ranges for readability
+            const ranges = groupPidRanges(bareOrphans.map(n => n.pid));
+            html += `<div style="margin-top:16px;padding-top:12px;border-top:2px solid #ddd">
+                <div style="font-size:12px;color:#888;margin-bottom:8px;font-weight:600">
+                    <span class="tree-toggle" data-action="toggle-section" data-section="bare-orphans">▶</span>
+                    Untraced Processes (${bareOrphans.length.toLocaleString()} PIDs — no parent/exec/I/O captured)
+                </div>
+                <div class="tree-children collapsed" data-section-content="bare-orphans">
+                    <div style="padding:8px 12px;font-family:'SF Mono',Consolas,monospace;font-size:11px;color:#888;max-height:300px;overflow-y:auto;line-height:1.6">
+                        ${ranges.map(r => r.length === 1 ? `<span style="display:inline-block;margin:1px 4px;padding:1px 6px;background:#f0f0f0;border-radius:3px">${r[0]}</span>` : `<span style="display:inline-block;margin:1px 4px;padding:1px 6px;background:#f0f0f0;border-radius:3px">${r[0]}–${r[1]} <span style="color:#aaa">(${r[1]-r[0]+1})</span></span>`).join('')}
+                    </div>
+                </div>
+            </div>`;
+        }
+        
+        treeContent.innerHTML = html;
+        
+        // Attach tree event handlers (re-bind since we replaced innerHTML)
         treeContent.addEventListener('click', handleTreeClick);
+    }
+    
+    function countDescendants(node, nodeMap) {
+        let count = 0;
+        if (!node.childPids) return 0;
+        for (const cpid of node.childPids) {
+            count++;
+            const child = nodeMap.get(cpid);
+            if (child) count += countDescendants(child, nodeMap);
+        }
+        return count;
+    }
+    
+    // Group consecutive PIDs into ranges: [[start, end], [single], ...]
+    function groupPidRanges(pids) {
+        if (pids.length === 0) return [];
+        const sorted = [...pids].sort((a, b) => a - b);
+        const ranges = [];
+        let start = sorted[0], end = sorted[0];
+        for (let i = 1; i < sorted.length; i++) {
+            if (sorted[i] <= end + 2) { // Allow gaps of 1 (e.g. 100,102 = range)
+                end = sorted[i];
+            } else {
+                ranges.push(start === end ? [start] : [start, end]);
+                start = end = sorted[i];
+            }
+        }
+        ranges.push(start === end ? [start] : [start, end]);
+        return ranges;
+    }
+    
+    // Build a one-line children summary: "3 children: 2× bash, 1× git"
+    function buildChildrenSummary(node, nodeMap) {
+        if (!node.childPids || node.childPids.length === 0) return '';
+        
+        const progCounts = new Map();
+        let totalChildren = 0;
+        
+        function countAll(pid) {
+            const child = nodeMap.get(pid);
+            if (!child) return;
+            totalChildren++;
+            const prog = child.programs.length > 0 ? child.programs[child.programs.length - 1].split('/').pop() : '(fork)';
+            progCounts.set(prog, (progCounts.get(prog) || 0) + 1);
+            if (child.childPids) child.childPids.forEach(countAll);
+        }
+        node.childPids.forEach(countAll);
+        
+        if (totalChildren === 0) return '';
+        
+        // Sort by count descending, show top 4
+        const sorted = [...progCounts.entries()].sort((a, b) => b[1] - a[1]);
+        const shown = sorted.slice(0, 4);
+        const rest = sorted.slice(4).reduce((s, e) => s + e[1], 0);
+        
+        let desc = shown.map(([prog, count]) => count > 1 ? `${count}× ${escapeHtml(prog)}` : escapeHtml(prog)).join(', ');
+        if (rest > 0) desc += `, +${rest} more`;
+        
+        const directCount = node.childPids.length;
+        const label = directCount === totalChildren
+            ? `${totalChildren} child${totalChildren !== 1 ? 'ren' : ''}`
+            : `${directCount} direct, ${totalChildren} total`;
+        
+        return `<div class="tree-children-summary" style="font-size:10px;color:#888;margin-top:2px">↳ ${label}: ${desc}</div>`;
     }
     
     function renderTreeNode(node, nodeMap, depth, expandDepth, isRoot) {
@@ -1303,9 +1418,12 @@
         const io = node.io;
         const statsHtml = buildTreeStats(io, node.execCount);
         
+        // Build children summary (line 2)
+        const childrenSummary = buildChildrenSummary(node, nodeMap);
+        
         // Group children by program if there are many similar leaf children
         let childrenHtml = '';
-        if (hasChildren) {
+        if (hasChildren && isExpanded) {
             childrenHtml = renderTreeChildren(node, nodeMap, depth + 1, expandDepth);
         }
         
@@ -1322,12 +1440,12 @@
                         <div class="tree-card-body">
                             <div class="tree-program" title="${escapeHtml(programFull)}">${escapeHtml(programShort || '(shell)')}</div>
                             <div class="tree-stats">${statsHtml}</div>
+                            ${childrenSummary}
                         </div>
                         <div class="tree-actions">
                             <button data-action="timeline" data-pid="${node.pid}" title="View timeline for PID ${node.pid} and children">📊 Timeline</button>
                         </div>
                     </div>
-                    ${hasChildren ? `<span style="color:#888;font-size:10px;margin-left:6px">${node.childPids.length} child${node.childPids.length !== 1 ? 'ren' : ''}</span>` : ''}
                 </div>
                 ${hasChildren ? `<div class="tree-children${isExpanded ? '' : ' collapsed'}" data-parent="${node.pid}">${childrenHtml}</div>` : ''}
             </div>
@@ -1448,6 +1566,15 @@
                     childrenEl.innerHTML = renderTreeChildren(node, nodeMap, 0, 0);
                 }
             }
+        }
+        
+        if (action === 'toggle-section') {
+            const section = target.dataset.section;
+            const contentEl = treeContent.querySelector(`[data-section-content="${section}"]`);
+            if (!contentEl) return;
+            const isCollapsed = contentEl.classList.contains('collapsed');
+            contentEl.classList.toggle('collapsed');
+            target.textContent = isCollapsed ? '▼' : '▶';
         }
         
         if (action === 'expand-group') {
