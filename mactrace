@@ -1694,6 +1694,7 @@ class MacTrace:
         self.all_syscall_counts: Dict[str, int] = {}  # All syscalls seen (from catch-all probe)
         self._truncation_warnings: set = set()  # Track warned (pid, syscall, fd) to avoid spam
         self._fd_info: Dict[tuple, str] = {}  # (pid, fd) -> description (path or address)
+        self._fd_is_socket: Dict[tuple, bool] = {}  # (pid, fd) -> True if socket
         # File caching
         self.cache_size = cache_size  # Max file size to cache (0 = disabled)
         self.cache_dir = cache_dir
@@ -2050,6 +2051,7 @@ class MacTrace:
             )
             self.events.append(event)
             self._update_fd_info(event)
+            self._recategorize_by_fd(event)
             
         except (ValueError, IndexError) as e:
             if self.verbose:
@@ -2066,6 +2068,7 @@ class MacTrace:
         if syscall in ("open", "open_nocancel", "openat", "openat_nocancel"):
             if retval >= 0 and "path" in args:
                 self._fd_info[(pid, retval)] = args["path"]
+                self._fd_is_socket[(pid, retval)] = False
         
         # socket: return value is the fd, args has domain/type
         elif syscall == "socket":
@@ -2073,11 +2076,13 @@ class MacTrace:
                 domain = args.get("domain", "?")
                 stype = args.get("type", "?")
                 self._fd_info[(pid, retval)] = f"socket({domain}/{stype})"
+                self._fd_is_socket[(pid, retval)] = True
         
         # connect: fd is in args, address info also in args
         elif syscall in ("connect", "connect_nocancel"):
             fd = args.get("fd")
             if fd is not None:
+                self._fd_is_socket[(pid, fd)] = True
                 addr = args.get("display") or args.get("address")
                 if addr:
                     self._fd_info[(pid, fd)] = addr
@@ -2087,16 +2092,148 @@ class MacTrace:
         # accept: return value is new fd, address info in args
         elif syscall in ("accept", "accept_nocancel"):
             if retval >= 0:
+                self._fd_is_socket[(pid, retval)] = True
                 addr = args.get("display") or args.get("address")
                 if addr:
                     self._fd_info[(pid, retval)] = f"from {addr}"
+        
+        # bind/listen/sendto/recvfrom: mark fd as socket
+        elif syscall in ("bind", "listen", "sendto", "sendto_nocancel",
+                         "recvfrom", "recvfrom_nocancel", "sendmsg", "sendmsg_nocancel",
+                         "recvmsg", "recvmsg_nocancel", "shutdown",
+                         "setsockopt", "getsockopt", "getpeername", "getsockname"):
+            fd = args.get("fd")
+            if fd is not None:
+                self._fd_is_socket[(pid, fd)] = True
         
         # close: remove fd tracking
         elif syscall in ("close", "close_nocancel"):
             fd = args.get("fd")
             if fd is not None:
                 self._fd_info.pop((pid, fd), None)
+                self._fd_is_socket.pop((pid, fd), None)
     
+    def _snapshot_fds_from_lsof(self, pid: int) -> None:
+        """
+        Pre-populate _fd_info and _fd_is_socket from lsof for a running process.
+        
+        This is essential for -p PID mode: file descriptors opened before we
+        attach have no open()/socket() events, so we'd otherwise have no idea
+        what they are. lsof reads the kernel's fd tables and tells us.
+        
+        Uses lsof -F (machine-readable output) for reliable parsing.
+        Field prefixes: p=pid, f=fd, t=type, n=name, P=protocol, T=TCP info
+        """
+        try:
+            result = subprocess.run(
+                ["lsof", "-p", str(pid), "-F", "ftPn"],
+                capture_output=True, text=True, timeout=10
+            )
+            if result.returncode != 0:
+                if self.verbose:
+                    print(f"Warning: lsof -p {pid} failed: {result.stderr.strip()}", file=sys.stderr)
+                return
+        except (subprocess.TimeoutExpired, FileNotFoundError) as e:
+            if self.verbose:
+                print(f"Warning: lsof failed: {e}", file=sys.stderr)
+            return
+        
+        # Parse lsof -F output (one field per line, prefix char = field type)
+        current_fd = None
+        current_type = None
+        current_protocol = None
+        current_name = None
+        count_file = 0
+        count_socket = 0
+        
+        for line in result.stdout.splitlines():
+            if not line:
+                continue
+            prefix = line[0]
+            value = line[1:]
+            
+            if prefix == 'p':
+                # PID line — start of a process
+                pass
+            elif prefix == 'f':
+                # New fd — flush previous one
+                if current_fd is not None:
+                    self._store_lsof_fd(pid, current_fd, current_type, current_protocol, current_name)
+                    if self._fd_is_socket.get((pid, current_fd)):
+                        count_socket += 1
+                    else:
+                        count_file += 1
+                # Parse fd number (skip non-numeric like 'cwd', 'txt', 'mem', etc.)
+                try:
+                    current_fd = int(value)
+                except ValueError:
+                    current_fd = None
+                current_type = None
+                current_protocol = None
+                current_name = None
+            elif prefix == 't':
+                current_type = value  # IPv4, IPv6, unix, REG, DIR, PIPE, CHR, etc.
+            elif prefix == 'P':
+                current_protocol = value  # TCP, UDP, etc.
+            elif prefix == 'n':
+                current_name = value  # path or address
+        
+        # Flush last fd
+        if current_fd is not None:
+            self._store_lsof_fd(pid, current_fd, current_type, current_protocol, current_name)
+            if self._fd_is_socket.get((pid, current_fd)):
+                count_socket += 1
+            else:
+                count_file += 1
+        
+        if self.verbose:
+            print(f"Pre-loaded {count_file} file + {count_socket} socket fds from lsof", file=sys.stderr)
+    
+    def _store_lsof_fd(self, pid: int, fd: int, fd_type: Optional[str],
+                       protocol: Optional[str], name: Optional[str]) -> None:
+        """Store a single fd entry from lsof output into _fd_info/_fd_is_socket."""
+        if fd_type in ("IPv4", "IPv6", "unix"):
+            # Network socket
+            self._fd_is_socket[(pid, fd)] = True
+            desc_parts = []
+            if protocol:
+                desc_parts.append(protocol)
+            if name:
+                desc_parts.append(name)
+            self._fd_info[(pid, fd)] = " ".join(desc_parts) if desc_parts else f"socket(fd={fd})"
+        elif fd_type == "PIPE":
+            self._fd_is_socket[(pid, fd)] = False
+            self._fd_info[(pid, fd)] = name or f"pipe(fd={fd})"
+        else:
+            # REG, DIR, CHR, or unknown — treat as file
+            self._fd_is_socket[(pid, fd)] = False
+            if name:
+                self._fd_info[(pid, fd)] = name
+    
+    def _recategorize_by_fd(self, event: SyscallEvent) -> None:
+        """
+        Re-categorize read/write/close events based on actual fd type.
+        
+        By default, read/write/close are categorized as 'file' because the
+        syscall name is the same for files and sockets. If we know (from lsof
+        or earlier socket()/connect() calls) that the fd is a socket, we
+        reclassify the event as 'network'.
+        """
+        syscall = event.syscall
+        if syscall in ("read", "read_nocancel", "pread", "pread_nocancel",
+                        "write", "write_nocancel", "pwrite", "pwrite_nocancel",
+                        "close", "close_nocancel",
+                        "ioctl", "fcntl", "fcntl_nocancel",
+                        "fsync", "fsync_nocancel",
+                        "fstat64", "ftruncate", "fchmod"):
+            fd = event.args.get("fd")
+            if fd is not None and self._fd_is_socket.get((event.pid, fd)):
+                event.category = "network"
+                # Also annotate with the connection info if available
+                fd_desc = self._fd_info.get((event.pid, fd))
+                if fd_desc and "fd_description" not in event.args:
+                    event.args["fd_description"] = fd_desc
+
     def _queue_cache_file(self, src_path: str) -> None:
         """Queue a local file for async copying to cache dir."""
         def copy_file():
@@ -2395,6 +2532,7 @@ class MacTrace:
             )
             self.events.append(event)
             self._update_fd_info(event)
+            self._recategorize_by_fd(event)
             
         except (ValueError, IndexError) as e:
             if self.verbose:
@@ -3182,6 +3320,11 @@ syscall::recvmsg_nocancel:return
                 print(f"Attaching DTrace to PID {target_pid} ({proc_name}): {' '.join(dtrace_cmd)}", file=sys.stderr)
             
             print(f"Tracing PID {target_pid} ({proc_name})... Ctrl+C to stop.", file=sys.stderr)
+            
+            # Snapshot existing open fds before tracing starts.
+            # This lets us correctly categorize read/write on pre-existing
+            # sockets as network ops instead of file ops.
+            self._snapshot_fds_from_lsof(target_pid)
             
             dtrace_proc = subprocess.Popen(
                 dtrace_cmd,
