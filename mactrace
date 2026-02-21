@@ -2990,6 +2990,7 @@ syscall::recvmsg_nocancel:return
                     env_wrapper_path = ef.name
                 
                 os.chmod(env_wrapper_path, 0o700)
+                os.chown(env_wrapper_path, uid, gid)
                 cmd_str = f'sudo -u {shlex.quote(username)} {env_wrapper_path}'
                 
                 if self.verbose:
