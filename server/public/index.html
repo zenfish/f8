@@ -1766,8 +1766,9 @@
                     updateStatus();
                     render();
                     
-                    // Rebuild summary from the filtered subset
+                    // Rebuild summary and filters from the filtered subset
                     renderSubsetSummary(rootPid, progName, pidSet, totalPids);
+                    rebuildFilterButtons();
                     
                     // Update title
                     const label = progName || `PID ${rootPid}`;
@@ -1780,6 +1781,30 @@
             return true;
         }
         return false;
+    }
+    
+    function rebuildFilterButtons() {
+        // Recount categories from the current allEvents (subset-aware)
+        const cats = {};
+        let errors = 0;
+        for (const e of allEvents) {
+            cats[e.category] = (cats[e.category] || 0) + 1;
+            if (e.errno !== 0) errors++;
+        }
+        
+        let btns = `<button class="filter-btn active" data-filter="all" style="background:#666;color:#fff">All (${allEvents.length.toLocaleString()})</button>`;
+        const sorted = Object.entries(cats).sort((a, b) => b[1] - a[1]);
+        for (const [cat, count] of sorted) {
+            const col = catColors[cat] || {bg:'#999', text:'#fff'};
+            btns += `<button class="filter-btn" data-filter="${cat}" style="background:${col.bg};color:${col.text}">${cat} (${count.toLocaleString()})</button>`;
+        }
+        if (errors > 0) {
+            btns += `<button class="filter-btn" data-filter="error" style="background:#e74c3c;color:#fff">Errors (${errors.toLocaleString()})</button>`;
+        }
+        btns += '<input type="text" class="search-box" id="search" placeholder="Search syscall, target, details...">';
+        btns += '<span class="status" id="status"></span>';
+        filters.innerHTML = btns;
+        updateStatus();
     }
     
     function renderSubsetSummary(rootPid, progName, pidSet, totalPids) {
