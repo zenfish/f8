@@ -1894,7 +1894,7 @@
                     <div class="stat-row"><span class="label">Programs exec'd</span><span class="value">${execCount.toLocaleString()}</span></div>
                     <div class="stat-row"><span class="label">Total Syscalls</span><span class="value">${eventCount.toLocaleString()}</span></div>
                     <div class="stat-row ${errorCount > 0 ? 'highlight' : ''}"><span class="label">Errors</span><span class="value" style="color:${errorCount > 0 ? 'var(--c-error)' : 'inherit'}">${errorCount.toLocaleString()}</span></div>
-                    <div class="stat-row"><span class="label">PIDs</span><span class="value" style="font-size:10px">${[...uniquePids].sort((a,b)=>a-b).join(', ')}</span></div>
+                    <div class="stat-row" style="align-items:flex-start"><span class="label" style="flex:0 0 45%">PIDs</span><span class="value" style="flex:0 0 50%;font-size:10px;text-align:right;word-break:break-all">${[...uniquePids].sort((a,b)=>a-b).join(', ')}</span></div>
                 </div>
                 
                 <div class="summary-card">
