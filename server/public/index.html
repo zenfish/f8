@@ -1053,7 +1053,7 @@
                 if (currentFilter !== 'error' && e.category !== currentFilter) return false;
             }
             if (searchTerm) {
-                const text = `${e.syscall} ${e.target} ${e.details} ${e.errno_name}`.toLowerCase();
+                const text = `${e.seq} ${e.pid} ${e.syscall} ${e.target} ${e.details} ${e.errno_name} ${e._read || ''} ${e._write || ''} ${e.data_raw ? hexToDisplay(e.data_raw, 200) : ''}`.toLowerCase();
                 if (!text.includes(searchTerm)) return false;
             }
             return true;
