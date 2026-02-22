@@ -1741,11 +1741,7 @@
         const node = nodeMap.get(pid);
         const progName = node?.programs?.length ? node.programs[node.programs.length - 1].split('/').pop() : '';
         const url = `/index.html?trace=${currentTrace.id}&pids=${pidList}&root=${pid}&prog=${encodeURIComponent(progName)}&total=${pids.size}`;
-        const w = window.outerWidth;
-        const h = window.outerHeight;
-        const x = window.screenX + 40;
-        const y = window.screenY + 40;
-        window.open(url, `timeline-${pid}`, `width=${w},height=${h},left=${x},top=${y}`);
+        window.open(url, '_blank');
     }
     
     // Check URL params for PID-filtered timeline mode
