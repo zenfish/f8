@@ -1736,10 +1736,14 @@
         }
         collectPids(pid);
         
-        // Open a new window with the timeline filtered to these PIDs
+        // Open a new window matching the current window size
         const pidList = Array.from(pids).join(',');
-        const url = `/index.html?trace=${currentTrace.id}&pids=${pidList}&root=${pid}`;
-        window.open(url, `timeline-${pid}`, 'width=1400,height=800');
+        const node = nodeMap.get(pid);
+        const progName = node?.programs?.length ? node.programs[node.programs.length - 1].split('/').pop() : '';
+        const url = `/index.html?trace=${currentTrace.id}&pids=${pidList}&root=${pid}&prog=${encodeURIComponent(progName)}&total=${pids.size}`;
+        const w = window.innerWidth;
+        const h = window.innerHeight;
+        window.open(url, `timeline-${pid}`, `width=${w},height=${h}`);
     }
     
     // Check URL params for PID-filtered timeline mode
@@ -1748,13 +1752,13 @@
         const traceId = params.get('trace');
         const pids = params.get('pids');
         const rootPid = params.get('root');
+        const progName = params.get('prog') || '';
+        const totalPids = params.get('total') || '?';
         
         if (traceId) {
-            // Auto-load the trace
             traceSelect.value = traceId;
             loadTrace(traceId).then(() => {
                 if (pids) {
-                    // Filter to specific PIDs
                     const pidSet = new Set(pids.split(',').map(Number));
                     allEvents = allEvents.filter(e => pidSet.has(e.pid));
                     filteredEvents = allEvents;
@@ -1762,8 +1766,12 @@
                     updateStatus();
                     render();
                     
+                    // Rebuild summary from the filtered subset
+                    renderSubsetSummary(rootPid, progName, pidSet, totalPids);
+                    
                     // Update title
-                    document.title = `mactrace — PID ${rootPid} subtree`;
+                    const label = progName || `PID ${rootPid}`;
+                    document.title = `mactrace — ${label} (${pidSet.size} processes)`;
                     
                     // Hide the view toggle in sub-windows
                     viewToggle.style.display = 'none';
@@ -1772,6 +1780,121 @@
             return true;
         }
         return false;
+    }
+    
+    function renderSubsetSummary(rootPid, progName, pidSet, totalPids) {
+        // Compute stats from the filtered events
+        const events = allEvents;
+        const eventCount = events.length;
+        const uniquePids = new Set(events.map(e => e.pid));
+        const errorCount = events.filter(e => e.errno !== 0).length;
+        
+        // Syscall counts
+        const syscallCounts = {};
+        const catCounts = {};
+        let totalRead = 0, totalWrite = 0;
+        let netRecv = 0, netSend = 0;
+        const netConnections = new Set();
+        const fileReads = new Map(), fileWrites = new Map();
+        
+        for (const e of events) {
+            syscallCounts[e.syscall] = (syscallCounts[e.syscall] || 0) + 1;
+            catCounts[e.category] = (catCounts[e.category] || 0) + 1;
+            
+            if (e._read > 0) {
+                totalRead += e._read;
+                if (e.target?.match(/^\d+\.\d+\.\d+\.\d+:/) || e.target?.startsWith('AF_')) {
+                    netRecv += e._read;
+                    netConnections.add(e.target);
+                } else if (e.target?.startsWith('/')) {
+                    fileReads.set(e.target, (fileReads.get(e.target) || 0) + e._read);
+                }
+            }
+            if (e._write > 0) {
+                totalWrite += e._write;
+                if (e.target?.match(/^\d+\.\d+\.\d+\.\d+:/) || e.target?.startsWith('AF_')) {
+                    netSend += e._write;
+                    netConnections.add(e.target);
+                } else if (e.target?.startsWith('/')) {
+                    fileWrites.set(e.target, (fileWrites.get(e.target) || 0) + e._write);
+                }
+            }
+        }
+        
+        const topSyscalls = Object.entries(syscallCounts)
+            .sort((a, b) => b[1] - a[1])
+            .slice(0, 8)
+            .map(([syscall, count]) => ({syscall, count}));
+        
+        const execCount = events.filter(e => (e.syscall === 'execve' || e.syscall === 'posix_spawn') && e.errno === 0).length;
+        
+        const label = progName ? `${progName} (PID ${rootPid})` : `PID ${rootPid}`;
+        
+        // I/O summary
+        const topFiles = [...fileReads.entries(), ...fileWrites.entries()]
+            .reduce((map, [path, bytes]) => { map.set(path, (map.get(path) || 0) + bytes); return map; }, new Map());
+        const topFilesSorted = [...topFiles.entries()].sort((a, b) => b[1] - a[1]).slice(0, 5);
+        
+        summary.innerHTML = `
+            <h2 style="display:flex;align-items:center;gap:10px">
+                <span style="background:var(--c-primary);color:white;padding:3px 10px;border-radius:4px;font-size:12px;font-weight:600">SUBTREE</span>
+                ${escapeHtml(label)}
+                <span style="font-size:13px;font-weight:400;color:var(--c-text-muted)">
+                    — ${uniquePids.size} process${uniquePids.size !== 1 ? 'es' : ''} from <em>${escapeHtml(currentTrace?.command || '')}</em>
+                </span>
+            </h2>
+            <div class="summary-grid">
+                <div class="summary-card">
+                    <h3>Subtree Overview</h3>
+                    <div class="stat-row"><span class="label">Root PID</span><span class="value">${rootPid}</span></div>
+                    ${progName ? `<div class="stat-row"><span class="label">Program</span><span class="value">${escapeHtml(progName)}</span></div>` : ''}
+                    <div class="stat-row"><span class="label">Processes</span><span class="value">${uniquePids.size.toLocaleString()}</span></div>
+                    <div class="stat-row"><span class="label">Programs exec'd</span><span class="value">${execCount.toLocaleString()}</span></div>
+                    <div class="stat-row"><span class="label">Total Syscalls</span><span class="value">${eventCount.toLocaleString()}</span></div>
+                    <div class="stat-row ${errorCount > 0 ? 'highlight' : ''}"><span class="label">Errors</span><span class="value" style="color:${errorCount > 0 ? 'var(--c-error)' : 'inherit'}">${errorCount.toLocaleString()}</span></div>
+                    <div class="stat-row"><span class="label">PIDs</span><span class="value" style="font-size:10px">${[...uniquePids].sort((a,b)=>a-b).join(', ')}</span></div>
+                </div>
+                
+                <div class="summary-card">
+                    <h3>Top Syscalls</h3>
+                    ${topSyscalls.map(s => `
+                        <div class="stat-row">
+                            <span class="label">${escapeHtml(s.syscall)}</span>
+                            <span class="value">${s.count.toLocaleString()}</span>
+                        </div>
+                    `).join('')}
+                </div>
+                
+                <div class="summary-card">
+                    <h3>Categories</h3>
+                    ${Object.entries(catCounts).sort((a,b) => b[1]-a[1]).slice(0,8).map(([cat, count]) => {
+                        const col = catColors[cat] || {bg:'#999'};
+                        return `<div class="stat-row">
+                            <span class="label"><span class="tag" style="background:${col.bg};color:${col.text || '#fff'}">${cat}</span></span>
+                            <span class="value">${count.toLocaleString()}</span>
+                        </div>`;
+                    }).join('')}
+                </div>
+                
+                <div class="summary-card">
+                    <h3>I/O Summary</h3>
+                    <div class="stat-row"><span class="label">Total Read</span><span class="value">${formatBytes(totalRead)}</span></div>
+                    <div class="stat-row"><span class="label">Total Written</span><span class="value">${formatBytes(totalWrite)}</span></div>
+                    ${netConnections.size > 0 ? `
+                        <div class="stat-row"><span class="label">Network ↓</span><span class="value">${formatBytes(netRecv)}</span></div>
+                        <div class="stat-row"><span class="label">Network ↑</span><span class="value">${formatBytes(netSend)}</span></div>
+                        <div class="stat-row"><span class="label">Connections</span><span class="value">${netConnections.size}</span></div>
+                    ` : ''}
+                    ${topFilesSorted.length > 0 ? `<h3 style="margin-top:8px">Top Files</h3>` +
+                        topFilesSorted.map(([path, bytes]) => `
+                            <div class="stat-row">
+                                <span class="label" title="${escapeHtml(path)}">${escapeHtml(path.split('/').pop())}</span>
+                                <span class="value">${formatBytes(bytes)}</span>
+                            </div>
+                        `).join('') : '<div class="stat-row"><span class="label" style="color:var(--c-text-dim)">No file I/O</span></div>'}
+                </div>
+            </div>
+        `;
     }
     
     // Column resizing
