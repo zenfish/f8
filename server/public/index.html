@@ -5,18 +5,89 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>mactrace</title>
     <style>
+        /* ── Color Palette ─────────────────────────────────────
+         * All theme colors as CSS custom properties.
+         * Change these to restyle the entire UI.
+         */
+        :root {
+            /* Base */
+            --c-bg:             #f5f5f5;
+            --c-text:           #333;
+            --c-text-muted:     #666;
+            --c-text-faint:     #888;
+            --c-text-dim:       #999;
+            --c-text-label:     #555;
+            
+            /* Brand / accent */
+            --c-primary:        #3498db;
+            --c-primary-bg:     #e8f4fd;
+            --c-primary-dark:   #2980b9;
+            --c-accent:         #8073ac;
+            --c-accent-bg:      #f0eff6;
+            --c-accent-hover:   #e8e6f0;
+            
+            /* Semantic */
+            --c-error:          #c0392b;
+            --c-error-bg:       #ffebee;
+            --c-highlight:      #fff59d;
+            --c-inferred:       #8e44ad;
+            
+            /* Header / nav */
+            --c-header-bg:      #2c3e50;
+            --c-header-text:    white;
+            
+            /* Cards / panels */
+            --c-card-bg:        white;
+            --c-card-border:    #ddd;
+            --c-card-title:     #2c3e50;
+            
+            /* Tree view */
+            --c-tree-pid:       #87cefa;
+            --c-tree-pid-text:  #1a1a2e;
+            --c-tree-line:      #ccc;
+            --c-tree-card-bg:   #f8f9fa;
+            --c-tree-group-bg:  #f0eff6;
+            --c-tree-group-badge: #8073ac;
+            
+            /* View toggle */
+            --c-toggle-bg:      #1a252f;
+            --c-toggle-text:    #8899aa;
+            
+            /* Table column headers (diverging orange→purple) */
+            --c-col-seq:        #e08214;
+            --c-col-time:       #fdb863;
+            --c-col-pid:        #fcd4a4;
+            --c-col-read:       #fee0b6;
+            --c-col-write:      #f7f7f7;
+            --c-col-target:     #d8daeb;
+            --c-col-syscall:    #8073ac;
+            
+            /* Table column cells (lighter) */
+            --c-cell-seq:       #f6e0c5;
+            --c-cell-time:      #fef0dc;
+            --c-cell-pid:       #fef5e7;
+            --c-cell-read:      #fff8ef;
+            --c-cell-write:     #fcfcfc;
+            --c-cell-target:    #f0eff6;
+            --c-cell-syscall:   #e8e6f0;
+            
+            /* DNS */
+            --c-dns-border:     #3498db;
+            --c-dns-cell:       #d4edfa;
+        }
+        
         * { box-sizing: border-box; margin: 0; padding: 0; }
         body {
             font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Arial, sans-serif;
-            background: #f5f5f5;
-            color: #333;
+            background: var(--c-bg);
+            color: var(--c-text);
             font-size: 13px;
         }
         
         /* Header */
         .header {
-            background: #2c3e50;
-            color: white;
+            background: var(--c-header-bg);
+            color: var(--c-header-text);
             padding: 12px 20px;
             display: flex;
             align-items: center;
@@ -42,10 +113,10 @@
         }
         .summary h2 {
             font-size: 1.1em;
-            color: #2c3e50;
+            color: var(--c-card-title);
             margin-bottom: 16px;
             padding-bottom: 8px;
-            border-bottom: 2px solid #8073ac;
+            border-bottom: 2px solid var(--c-accent);
         }
         .summary-grid {
             display: grid;
@@ -53,14 +124,14 @@
             gap: 20px;
         }
         .summary-card {
-            background: #f8f9fa;
+            background: var(--c-tree-card-bg);
             border-radius: 6px;
             padding: 12px 16px;
         }
         .summary-card h3 {
             font-size: 12px;
             text-transform: uppercase;
-            color: #666;
+            color: var(--c-text-muted);
             margin-bottom: 10px;
             letter-spacing: 0.5px;
         }
@@ -71,9 +142,9 @@
             font-family: "SF Mono", Consolas, monospace;
             font-size: 12px;
         }
-        .summary-card .stat-row .label { color: #555; }
-        .summary-card .stat-row .value { font-weight: 600; color: #2c3e50; }
-        .summary-card .stat-row.highlight { background: #e8f4fd; margin: 0 -8px; padding: 4px 8px; border-radius: 3px; }
+        .summary-card .stat-row .label { color: var(--c-text-label); }
+        .summary-card .stat-row .value { font-weight: 600; color: var(--c-card-title); }
+        .summary-card .stat-row.highlight { background: var(--c-primary-bg); margin: 0 -8px; padding: 4px 8px; border-radius: 3px; }
         .summary-card ul {
             list-style: none;
             font-family: "SF Mono", Consolas, monospace;
@@ -87,7 +158,7 @@
             overflow: hidden;
             text-overflow: ellipsis;
         }
-        .summary-card li.error { color: #c0392b; }
+        .summary-card li.error { color: var(--c-error); }
         .tag { 
             display: inline-block;
             padding: 2px 6px;
@@ -122,14 +193,14 @@
         .search-box {
             margin-left: auto;
             padding: 6px 12px;
-            border: 1px solid #ddd;
+            border: 1px solid var(--c-card-border);
             border-radius: 4px;
             font-size: 14px;
             width: 280px;
         }
         .status {
             font-size: 12px;
-            color: #666;
+            color: var(--c-text-muted);
             min-width: 120px;
             text-align: right;
         }
@@ -165,12 +236,12 @@
         
         .row {
             display: flex;
-            border-bottom: 1px solid #eee;
+            border-bottom: 1px solid var(--c-card-border);
             font-size: 12px;
             font-family: "SF Mono", Consolas, monospace;
         }
         .row:hover { filter: brightness(0.97); }
-        .row.error .cell { background-color: #ffebee !important; }
+        .row.error .cell { background-color: var(--c-error-bg) !important; }
         
         .cell {
             padding: 5px 8px;
@@ -217,22 +288,22 @@
         }
         
         /* Header colors - # first */
-        .table-header .col-seq { background: #e08214; color: white; }
-        .table-header .col-time { background: #fdb863; color: #333; }
-        .table-header .col-pid { background: #fcd4a4; color: #333; }
-        .table-header .col-read { background: #fee0b6; color: #333; }
-        .table-header .col-write { background: #f7f7f7; color: #333; }
-        .table-header .col-target { background: #d8daeb; color: #333; }
-        .table-header .col-syscall { background: #8073ac; color: white; }
+        .table-header .col-seq { background: var(--c-col-seq); color: white; }
+        .table-header .col-time { background: var(--c-col-time); color: var(--c-text); }
+        .table-header .col-pid { background: var(--c-col-pid); color: var(--c-text); }
+        .table-header .col-read { background: var(--c-col-read); color: var(--c-text); }
+        .table-header .col-write { background: var(--c-col-write); color: var(--c-text); }
+        .table-header .col-target { background: var(--c-col-target); color: var(--c-text); }
+        .table-header .col-syscall { background: var(--c-col-syscall); color: white; }
         
         /* Data row colors (lightened) */
-        .row .col-seq { background: #f6e0c5; }
-        .row .col-time { background: #fef0dc; }
-        .row .col-pid { background: #fef5e7; }
-        .row .col-read { background: #fff8ef; }
-        .row .col-write { background: #fcfcfc; }
-        .row .col-target { background: #f0eff6; }
-        .row .col-syscall { background: #e8e6f0; }
+        .row .col-seq { background: var(--c-cell-seq); }
+        .row .col-time { background: var(--c-cell-time); }
+        .row .col-pid { background: var(--c-cell-pid); }
+        .row .col-read { background: var(--c-cell-read); }
+        .row .col-write { background: var(--c-cell-write); }
+        .row .col-target { background: var(--c-cell-target); }
+        .row .col-syscall { background: var(--c-cell-syscall); }
         
         .syscall-badge {
             display: inline-block;
@@ -241,14 +312,14 @@
             font-weight: 500;
             margin-right: 6px;
         }
-        .error-text { color: #c0392b; font-weight: 600; }
-        .highlight { background: #fff59d !important; padding: 1px 2px; border-radius: 2px; }
+        .error-text { color: var(--c-error); font-weight: 600; }
+        .highlight { background: var(--c-highlight) !important; padding: 1px 2px; border-radius: 2px; }
         
         /* DNS lookup highlight */
-        .row.dns-lookup { border-left: 3px solid #3498db; }
-        .row.dns-lookup .col-seq { background: #d4edfa; }
+        .row.dns-lookup { border-left: 3px solid var(--c-dns-border); }
+        .row.dns-lookup .col-seq { background: var(--c-dns-cell); }
         .dns-badge { 
-            background: #3498db; 
+            background: var(--c-primary); 
             color: white; 
             padding: 1px 4px; 
             border-radius: 2px; 
@@ -258,7 +329,7 @@
         }
         
         .io-link {
-            color: #3498db;
+            color: var(--c-primary);
             cursor: pointer;
             font-weight: bold;
             margin-right: 4px;
@@ -266,7 +337,7 @@
         .io-link:hover { text-decoration: underline; }
         
         .data-preview {
-            color: #666;
+            color: var(--c-text-muted);
             font-style: italic;
             cursor: help;
             max-width: 400px;
@@ -277,7 +348,7 @@
             vertical-align: bottom;
         }
         .data-preview:hover {
-            color: #333;
+            color: var(--c-text);
         }
         
         /* Tooltip for truncated cells */
@@ -287,7 +358,7 @@
         /* View toggle */
         .view-toggle {
             display: inline-flex;
-            background: #1a252f;
+            background: var(--c-toggle-bg);
             border-radius: 4px;
             overflow: hidden;
             margin-left: 20px;
@@ -296,7 +367,7 @@
             padding: 6px 14px;
             border: none;
             background: transparent;
-            color: #8899aa;
+            color: var(--c-toggle-text);
             cursor: pointer;
             font-size: 13px;
             font-weight: 500;
@@ -304,7 +375,7 @@
         }
         .view-toggle button:hover { color: #ccc; }
         .view-toggle button.active {
-            background: #3498db;
+            background: var(--c-primary);
             color: white;
         }
         
@@ -334,7 +405,7 @@
             top: 0;
             bottom: 0;
             width: 1px;
-            background: #ccc;
+            background: var(--c-tree-line);
         }
         .tree-node.root::before { display: none; }
         .tree-node:last-child::before { bottom: auto; height: 20px; }
@@ -351,15 +422,15 @@
             top: 20px;
             width: 14px;
             height: 1px;
-            background: #ccc;
+            background: var(--c-tree-line);
         }
         .tree-node.root > .tree-card-wrap::before { display: none; }
         
         .tree-card {
             display: inline-flex;
             align-items: stretch;
-            background: #f8f9fa;
-            border: 1px solid #ddd;
+            background: var(--c-tree-card-bg);
+            border: 1px solid var(--c-card-border);
             border-radius: 6px;
             font-size: 11px;
             font-family: "SF Mono", Consolas, monospace;
@@ -370,8 +441,8 @@
         .tree-card:hover { box-shadow: 0 2px 8px rgba(0,0,0,0.12); }
         
         .tree-pid-badge {
-            background: #2c3e50;
-            color: white;
+            background: var(--c-tree-pid);
+            color: var(--c-tree-pid-text);
             padding: 8px 10px;
             font-weight: 700;
             font-size: 12px;
@@ -391,7 +462,7 @@
         
         .tree-program {
             font-weight: 600;
-            color: #2c3e50;
+            color: var(--c-card-title);
             white-space: nowrap;
             overflow: hidden;
             text-overflow: ellipsis;
@@ -402,11 +473,11 @@
         .tree-stats {
             display: flex;
             gap: 12px;
-            color: #666;
+            color: var(--c-text-muted);
             font-size: 10px;
         }
         .tree-stats .tree-stat { white-space: nowrap; }
-        .tree-stats .tree-stat-label { color: #999; }
+        .tree-stats .tree-stat-label { color: var(--c-text-dim); }
         
         .tree-actions {
             display: flex;
@@ -414,18 +485,18 @@
             justify-content: center;
             padding: 4px 8px;
             gap: 2px;
-            border-left: 1px solid #eee;
+            border-left: 1px solid var(--c-card-border);
         }
         .tree-actions button {
             padding: 3px 8px;
-            border: 1px solid #ccc;
+            border: 1px solid var(--c-tree-line);
             border-radius: 3px;
             background: white;
             cursor: pointer;
             font-size: 10px;
             white-space: nowrap;
         }
-        .tree-actions button:hover { background: #e8f4fd; border-color: #3498db; }
+        .tree-actions button:hover { background: var(--c-primary-bg); border-color: var(--c-primary); }
         
         .tree-toggle {
             display: inline-block;
@@ -434,14 +505,14 @@
             line-height: 18px;
             text-align: center;
             cursor: pointer;
-            color: #666;
+            color: var(--c-text-muted);
             font-size: 12px;
             border-radius: 3px;
             user-select: none;
             margin-right: 4px;
             vertical-align: middle;
         }
-        .tree-toggle:hover { background: #e0e0e0; }
+        .tree-toggle:hover { background: var(--c-card-border); }
         
         .tree-children { display: block; }
         .tree-children.collapsed { display: none; }
@@ -449,18 +520,18 @@
         .tree-group-summary {
             display: inline-flex;
             align-items: center;
-            background: #f0eff6;
-            border: 1px solid #d8daeb;
+            background: var(--c-tree-group-bg);
+            border: 1px solid var(--c-col-target);
             border-radius: 4px;
             padding: 4px 10px;
             font-size: 11px;
-            color: #555;
+            color: var(--c-text-label);
             cursor: pointer;
             margin: 3px 0;
         }
-        .tree-group-summary:hover { background: #e8e6f0; }
+        .tree-group-summary:hover { background: var(--c-accent-hover); }
         .tree-group-count {
-            background: #8073ac;
+            background: var(--c-tree-group-badge);
             color: white;
             border-radius: 10px;
             padding: 1px 7px;
@@ -472,22 +543,22 @@
         .tree-loading {
             text-align: center;
             padding: 40px;
-            color: #666;
+            color: var(--c-text-muted);
         }
         
         /* Loading & home */
         .loading {
             text-align: center;
             padding: 40px;
-            color: #666;
+            color: var(--c-text-muted);
         }
         .loading::before {
             content: '';
             display: inline-block;
             width: 20px;
             height: 20px;
-            border: 2px solid #ddd;
-            border-top-color: #3498db;
+            border: 2px solid var(--c-card-border);
+            border-top-color: var(--c-primary);
             border-radius: 50%;
             animation: spin 0.8s linear infinite;
             margin-right: 10px;
@@ -506,16 +577,16 @@
             transition: transform 0.1s;
         }
         .trace-list li:hover { transform: translateX(4px); }
-        .trace-list .name { font-weight: 600; color: #2c3e50; }
-        .trace-list .command { font-family: monospace; font-size: 13px; color: #666; margin-top: 4px; }
-        .trace-list .meta { font-size: 12px; color: #888; margin-top: 8px; }
+        .trace-list .name { font-weight: 600; color: var(--c-card-title); }
+        .trace-list .command { font-family: monospace; font-size: 13px; color: var(--c-text-muted); margin-top: 4px; }
+        .trace-list .meta { font-size: 12px; color: var(--c-text-faint); margin-top: 8px; }
         
         /* I/O popup */
         .io-popup {
             display: none;
             position: fixed;
             background: white;
-            border: 1px solid #ccc;
+            border: 1px solid var(--c-tree-line);
             border-radius: 6px;
             box-shadow: 0 4px 12px rgba(0,0,0,0.2);
             z-index: 1000;
@@ -525,7 +596,7 @@
         .io-popup a {
             display: block;
             padding: 10px 14px;
-            color: #333;
+            color: var(--c-text);
             text-decoration: none;
             font-size: 13px;
         }
