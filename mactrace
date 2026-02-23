@@ -109,8 +109,8 @@ DTRACE_SCRIPT = r'''
  */
 
 #pragma D option quiet
-#pragma D option switchrate=50hz
-#pragma D option cleanrate=307hz
+#pragma D option switchrate=$SWITCHRATE$
+#pragma D option cleanrate=$CLEANRATE$
 #pragma D option bufsize=$BUFSIZE$
 #pragma D option dynvarsize=$DYNVARSIZE$
 #pragma D option strsize=$STRSIZE$
@@ -1671,18 +1671,28 @@ class TraceResult:
 class MacTrace:
     """Main tracer class"""
     
+    # DTrace tuning defaults
+    DEFAULT_STRSIZE = 2048           # max copyinstr() length (paths); keep low to avoid scratch exhaustion
+    DEFAULT_BUFSIZE = "256m"         # per-CPU trace output buffer
+    DEFAULT_DYNVARSIZE = "256m"      # thread-local (self->) variable pool
+    DEFAULT_SWITCHRATE = "50hz"      # how often DTrace drains per-CPU buffers
+    DEFAULT_CLEANRATE = "307hz"      # how often DTrace reclaims dead dynamic vars (prime avoids resonance)
+
     def __init__(self, verbose: bool = False, capture_io: bool = False,
-                 io_size: int = 1*1024*1024, strsize: int = 2048, bufsize: str = "256m", 
-                 dynvarsize: str = "256m", cache_size: int = 0, cache_dir: str = None):
+                 io_size: int = 1*1024*1024, strsize: int = None, bufsize: str = None, 
+                 dynvarsize: str = None, switchrate: str = None, cleanrate: str = None,
+                 cache_size: int = 0, cache_dir: str = None):
         self.verbose = verbose
         self.capture_io = capture_io
         self.io_size = io_size
-        self.strsize = strsize
+        self.strsize = strsize or self.DEFAULT_STRSIZE
         # Warn about dtrace stack limits - large io_size can crash dtrace
         if io_size > 4*1024*1024:
             print(f"⚠️  --io-size={io_size} may crash dtrace (stack overflow). Try ≤4M.", file=sys.stderr)
-        self.bufsize = bufsize
-        self.dynvarsize = dynvarsize
+        self.bufsize = bufsize or self.DEFAULT_BUFSIZE
+        self.dynvarsize = dynvarsize or self.DEFAULT_DYNVARSIZE
+        self.switchrate = switchrate or self.DEFAULT_SWITCHRATE
+        self.cleanrate = cleanrate or self.DEFAULT_CLEANRATE
         self.events: List[SyscallEvent] = []
         self.process_events: List[ProcessEvent] = []
         self.pids_traced: set = set()
@@ -3021,6 +3031,8 @@ class MacTrace:
         dtrace_script = dtrace_script.replace("$STRSIZE$", str(self.strsize))
         dtrace_script = dtrace_script.replace("$BUFSIZE$", self.bufsize)
         dtrace_script = dtrace_script.replace("$DYNVARSIZE$", self.dynvarsize)
+        dtrace_script = dtrace_script.replace("$SWITCHRATE$", self.switchrate)
+        dtrace_script = dtrace_script.replace("$CLEANRATE$", self.cleanrate)
         
         # Add rawio pragma and I/O buffer capture if requested
         if self.capture_io:
@@ -3607,6 +3619,8 @@ syscall::recvmsg_nocancel:return
         dtrace_script = dtrace_script.replace("$STRSIZE$", str(self.strsize))
         dtrace_script = dtrace_script.replace("$BUFSIZE$", self.bufsize)
         dtrace_script = dtrace_script.replace("$DYNVARSIZE$", self.dynvarsize)
+        dtrace_script = dtrace_script.replace("$SWITCHRATE$", self.switchrate)
+        dtrace_script = dtrace_script.replace("$CLEANRATE$", self.cleanrate)
         
         # Add rawio pragma and I/O buffer capture if requested
         if self.capture_io:
@@ -4264,12 +4278,16 @@ Path resolution for -o:
                         help="Max bytes to capture per I/O op (default: 1M, max ~4M due to dtrace limits)")
     parser.add_argument("--cache", type=str, default=None,
                         help="Copy local files up to SIZE to cache dir (e.g., 10M, 500k, 1G)")
-    parser.add_argument("--strsize", type=int, default=2048,
-                        help="DTrace strsize - max string size for copyinstr paths (default: 2K)")
-    parser.add_argument("--bufsize", type=str, default="256m",
-                        help="DTrace bufsize - per-CPU trace buffer size (default: 256m)")
-    parser.add_argument("--dynvarsize", type=str, default="256m",
-                        help="DTrace dynvarsize - thread-local variable pool (default: 256m)")
+    parser.add_argument("--strsize", type=int, default=MacTrace.DEFAULT_STRSIZE,
+                        help=f"DTrace strsize - max copyinstr length for paths (default: {MacTrace.DEFAULT_STRSIZE})")
+    parser.add_argument("--bufsize", type=str, default=MacTrace.DEFAULT_BUFSIZE,
+                        help=f"DTrace bufsize - per-CPU trace buffer (default: {MacTrace.DEFAULT_BUFSIZE})")
+    parser.add_argument("--dynvarsize", type=str, default=MacTrace.DEFAULT_DYNVARSIZE,
+                        help=f"DTrace dynvarsize - thread-local variable pool (default: {MacTrace.DEFAULT_DYNVARSIZE})")
+    parser.add_argument("--switchrate", type=str, default=MacTrace.DEFAULT_SWITCHRATE,
+                        help=f"DTrace switchrate - buffer drain frequency (default: {MacTrace.DEFAULT_SWITCHRATE})")
+    parser.add_argument("--cleanrate", type=str, default=MacTrace.DEFAULT_CLEANRATE,
+                        help=f"DTrace cleanrate - dead dynvar reclaim frequency (default: {MacTrace.DEFAULT_CLEANRATE})")
     parser.add_argument("--no-filter-wrapper", action="store_true",
                         help="Don't filter out wrapper processes (sudo/sh/bash) when using -u")
     parser.add_argument("command", nargs=argparse.REMAINDER, help="Command to trace")
@@ -4355,6 +4373,8 @@ Path resolution for -o:
         strsize=args.strsize,
         bufsize=args.bufsize,
         dynvarsize=args.dynvarsize,
+        switchrate=args.switchrate,
+        cleanrate=args.cleanrate,
         cache_size=cache_size,
         cache_dir=cache_dir
     )
