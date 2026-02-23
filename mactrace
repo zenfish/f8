@@ -1759,6 +1759,56 @@ class MacTrace:
         3: "SOCK_RAW",
     }
     
+    # mmap/mprotect protection flags (bitfield)
+    PROT_FLAGS = {
+        0x00: "PROT_NONE",
+        0x01: "PROT_READ",
+        0x02: "PROT_WRITE",
+        0x04: "PROT_EXEC",
+    }
+    
+    # mmap flags (bitfield, macOS values)
+    MAP_FLAGS = {
+        0x0001: "MAP_SHARED",
+        0x0002: "MAP_PRIVATE",
+        0x0010: "MAP_FIXED",
+        0x1000: "MAP_ANON",
+        0x0800: "MAP_NORESERVE",
+        0x2000: "MAP_RESILIENT_CODESIGN",
+        0x4000: "MAP_RESILIENT_MEDIA",
+    }
+    
+    # shutdown(2) how values
+    SHUT_NAMES = {
+        0: "SHUT_RD",
+        1: "SHUT_WR",
+        2: "SHUT_RDWR",
+    }
+    
+    # Socket option levels
+    SOL_NAMES = {
+        0xffff: "SOL_SOCKET",
+        0: "IPPROTO_IP",
+        6: "IPPROTO_TCP",
+        17: "IPPROTO_UDP",
+        41: "IPPROTO_IPV6",
+    }
+    
+    # Common SOL_SOCKET option names
+    SO_NAMES = {
+        0x0004: "SO_REUSEADDR",
+        0x0008: "SO_KEEPALIVE",
+        0x0080: "SO_LINGER",
+        0x0100: "SO_OOBINLINE",
+        0x1001: "SO_SNDBUF",
+        0x1002: "SO_RCVBUF",
+        0x1005: "SO_SNDTIMEO",
+        0x1006: "SO_RCVTIMEO",
+        0x1022: "SO_TIMESTAMP",
+        0x1100: "SO_NOSIGPIPE",
+        0x1104: "SO_NOAPNFALLBK",
+    }
+    
     # Signal name mapping
     SIGNAL_NAMES = {
         1: "SIGHUP", 2: "SIGINT", 3: "SIGQUIT", 4: "SIGILL",
@@ -1808,6 +1858,40 @@ class MacTrace:
     def _signal_name(self, sig: int) -> str:
         """Convert signal number to name"""
         return self.SIGNAL_NAMES.get(sig, f"SIG{sig}")
+    
+    def _parse_prot_flags(self, prot: int) -> str:
+        """Convert mmap/mprotect protection bits to symbolic string.
+        e.g. 3 → 'PROT_READ|PROT_WRITE', 5 → 'PROT_READ|PROT_EXEC'"""
+        if prot == 0:
+            return "PROT_NONE"
+        parts = []
+        for bit, name in sorted(self.PROT_FLAGS.items()):
+            if bit != 0 and (prot & bit):
+                parts.append(name)
+        return "|".join(parts) if parts else f"0x{prot:x}"
+    
+    def _parse_mmap_flags(self, flags: int) -> str:
+        """Convert mmap flags to symbolic string.
+        e.g. 0x1002 → 'MAP_PRIVATE|MAP_ANON'"""
+        parts = []
+        remaining = flags
+        for bit, name in sorted(self.MAP_FLAGS.items()):
+            if flags & bit:
+                parts.append(name)
+                remaining &= ~bit
+        if remaining:
+            parts.append(f"0x{remaining:x}")
+        return "|".join(parts) if parts else "0x0"
+    
+    def _parse_sockopt_level(self, level: int) -> str:
+        """Convert setsockopt/getsockopt level to name."""
+        return self.SOL_NAMES.get(level, f"SOL_{level}")
+    
+    def _parse_sockopt_name(self, level: int, optname: int) -> str:
+        """Convert setsockopt/getsockopt option name to symbolic string."""
+        if level == 0xffff:  # SOL_SOCKET
+            return self.SO_NAMES.get(optname, f"SO_0x{optname:x}")
+        return f"0x{optname:x}"
         
     def _parse_open_flags(self, flags: int) -> str:
         """Convert open flags to string"""
@@ -2614,6 +2698,15 @@ class MacTrace:
                 if len(args) >= 2:
                     result["mode"] = int(args[1])
                     
+            elif syscall == "faccessat":
+                # faccessat: dirfd path mode
+                if len(args) >= 1:
+                    result["dirfd"] = int(args[0])
+                if len(args) >= 2:
+                    result["path"] = clean_arg(args[1])
+                if len(args) >= 3:
+                    result["mode"] = int(args[2])
+                    
             elif syscall in ("unlink", "rmdir", "chdir", "readlink"):
                 if len(args) >= 1:
                     result["path"] = clean_arg(args[0])
@@ -2636,6 +2729,13 @@ class MacTrace:
                 if len(args) >= 2:
                     result["mode"] = args[1]
                     
+            elif syscall == "fchmod":
+                # fchmod: fd mode
+                if len(args) >= 1:
+                    result["fd"] = int(args[0])
+                if len(args) >= 2:
+                    result["mode"] = args[1]
+                    
             elif syscall == "chown":
                 if len(args) >= 1:
                     result["path"] = clean_arg(args[0])
@@ -2643,6 +2743,35 @@ class MacTrace:
                     result["uid"] = int(args[1])
                 if len(args) >= 3:
                     result["gid"] = int(args[2])
+                    
+            elif syscall == "fchdir":
+                # fchdir: fd
+                if len(args) >= 1:
+                    result["fd"] = int(args[0])
+                    
+            elif syscall in ("truncate",):
+                # truncate: path length
+                if len(args) >= 1:
+                    result["path"] = clean_arg(args[0])
+                if len(args) >= 2:
+                    result["length"] = int(args[1])
+                    
+            elif syscall in ("ftruncate",):
+                # ftruncate: fd length
+                if len(args) >= 1:
+                    result["fd"] = int(args[0])
+                if len(args) >= 2:
+                    result["length"] = int(args[1])
+                    
+            elif syscall in ("fsync", "fsync_nocancel"):
+                # fsync: fd
+                if len(args) >= 1:
+                    result["fd"] = int(args[0])
+                    
+            elif syscall in ("getdirentries64",):
+                # getdirentries64: fd
+                if len(args) >= 1:
+                    result["fd"] = int(args[0])
                     
             elif syscall == "socket":
                 if len(args) >= 1:
@@ -2674,6 +2803,48 @@ class MacTrace:
                 if len(args) >= 3:
                     result["flags"] = args[2]
                     
+            elif syscall in ("accept", "accept_nocancel"):
+                # accept: fd (listening socket)
+                if len(args) >= 1:
+                    result["fd"] = int(args[0])
+                    
+            elif syscall == "shutdown":
+                # shutdown: fd how
+                if len(args) >= 1:
+                    result["fd"] = int(args[0])
+                if len(args) >= 2:
+                    how = int(args[1])
+                    result["how"] = how
+                    result["how_str"] = self.SHUT_NAMES.get(how, f"SHUT_{how}")
+                    
+            elif syscall == "setsockopt":
+                # setsockopt: fd level optname
+                if len(args) >= 1:
+                    result["fd"] = int(args[0])
+                if len(args) >= 2:
+                    level = int(args[1])
+                    result["level"] = level
+                    result["level_str"] = self._parse_sockopt_level(level)
+                if len(args) >= 3:
+                    optname = int(args[2])
+                    result["optname"] = optname
+                    result["optname_str"] = self._parse_sockopt_name(
+                        level if len(args) >= 2 else -1, optname)
+                    
+            elif syscall == "getsockopt":
+                # getsockopt: fd level optname
+                if len(args) >= 1:
+                    result["fd"] = int(args[0])
+                if len(args) >= 2:
+                    level = int(args[1])
+                    result["level"] = level
+                    result["level_str"] = self._parse_sockopt_level(level)
+                if len(args) >= 3:
+                    optname = int(args[2])
+                    result["optname"] = optname
+                    result["optname_str"] = self._parse_sockopt_name(
+                        level if len(args) >= 2 else -1, optname)
+                    
             elif syscall in ("execve", "posix_spawn"):
                 if len(args) >= 1:
                     result["path"] = clean_arg(args[0])
@@ -2682,7 +2853,9 @@ class MacTrace:
                 if len(args) >= 1:
                     result["pid"] = int(args[0])
                 if len(args) >= 2:
-                    result["signal"] = int(args[1])
+                    sig = int(args[1])
+                    result["signal"] = sig
+                    result["signal_str"] = self._signal_name(sig)
                     
             elif syscall in ("wait4", "wait4_nocancel"):
                 if len(args) >= 1:
@@ -2691,15 +2864,39 @@ class MacTrace:
                     result["options"] = args[1]
                     
             elif syscall == "mmap":
-                # mmap has complex args
+                # mmap: length prot flags fd offset
                 if len(args) >= 1:
                     result["length"] = int(args[0], 16) if args[0].startswith("0x") else int(args[0])
                 if len(args) >= 2:
-                    result["prot"] = int(args[1])
+                    prot = int(args[1])
+                    result["prot"] = prot
+                    result["prot_str"] = self._parse_prot_flags(prot)
                 if len(args) >= 3:
-                    result["flags"] = args[2]
+                    flags = int(args[2], 16) if args[2].startswith("0x") else int(args[2])
+                    result["flags"] = flags
+                    result["flags_str"] = self._parse_mmap_flags(flags)
                 if len(args) >= 4:
                     result["fd"] = int(args[3], 16) if args[3].startswith("0x") else int(args[3])
+                if len(args) >= 5:
+                    result["offset"] = int(args[4], 16) if args[4].startswith("0x") else int(args[4])
+                    
+            elif syscall == "munmap":
+                # munmap: addr(0x) length
+                if len(args) >= 1:
+                    result["addr"] = args[0]  # keep as hex string
+                if len(args) >= 2:
+                    result["length"] = int(args[1])
+                    
+            elif syscall == "mprotect":
+                # mprotect: addr(0x) length prot
+                if len(args) >= 1:
+                    result["addr"] = args[0]  # keep as hex string
+                if len(args) >= 2:
+                    result["length"] = int(args[1])
+                if len(args) >= 3:
+                    prot = int(args[2])
+                    result["prot"] = prot
+                    result["prot_str"] = self._parse_prot_flags(prot)
                     
             elif syscall in ("dup", "dup2"):
                 if len(args) >= 1:
@@ -2730,6 +2927,29 @@ class MacTrace:
             elif syscall == "listxattr":
                 if len(args) >= 1:
                     result["path"] = clean_arg(args[0])
+                    
+            elif syscall in ("select", "select_nocancel"):
+                # select: nfds
+                if len(args) >= 1:
+                    result["nfds"] = int(args[0])
+                    
+            elif syscall in ("poll", "poll_nocancel"):
+                # poll: nfds timeout
+                if len(args) >= 1:
+                    result["nfds"] = int(args[0])
+                if len(args) >= 2:
+                    result["timeout"] = int(args[1])
+                    
+            elif syscall in ("kevent", "kevent64"):
+                # kevent: kqueue_fd
+                if len(args) >= 1:
+                    result["fd"] = int(args[0])
+                    
+            else:
+                # Catch-all: preserve any unrecognized syscall args
+                # so nothing is silently dropped
+                if args:
+                    result["raw_args"] = args
                     
         except (ValueError, IndexError):
             # If parsing fails, store raw args

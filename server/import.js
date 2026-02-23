@@ -359,12 +359,18 @@ function extractTarget(event) {
     const args = event.args || {};
     const pid = event.pid || 0;
     const fd = args.fd;
+    const syscall = event.syscall || '';
     
     // Socket address from connect/bind/accept/sendto/recvfrom
     if (args.display) return args.display;
     
     // File path
     if (args.path) return args.path;
+    
+    // Memory operations — show address as target
+    if (args.addr !== undefined) {
+        return args.addr;  // hex string like "0x1045a0000"
+    }
     
     // fd-based operations
     if (fd !== undefined) {
@@ -385,21 +391,82 @@ function extractTarget(event) {
     }
     
     // Socket creation
-    if (event.syscall === 'socket') {
+    if (syscall === 'socket') {
         return `${args.domain || '?'}/${args.type || '?'}`;
     }
     
     return '';
 }
 
+function formatBytes(n) {
+    if (n < 1024) return n + 'B';
+    if (n < 1024 * 1024) return (n / 1024).toFixed(1) + 'K';
+    return (n / (1024 * 1024)).toFixed(1) + 'M';
+}
+
 function extractDetails(event) {
     const args = event.args || {};
     const retval = event.return_value || 0;
+    const syscall = event.syscall || '';
     const parts = [];
+    
+    // I/O size for read/write family
     if (args.count !== undefined) parts.push(`count=${args.count}`);
-    if (['read', 'write', 'sendto', 'recvfrom'].some(s => (event.syscall || '').includes(s)) && retval > 0) {
-        parts.push(`→ ${retval < 1024 ? retval+'B' : (retval/1024).toFixed(1)+'K'}`);
+    if (['read', 'write', 'sendto', 'recvfrom'].some(s => syscall.includes(s)) && retval > 0) {
+        parts.push(`→ ${formatBytes(retval)}`);
     }
+    
+    // Memory ops: show length + protection
+    if (syscall === 'mprotect') {
+        if (args.length !== undefined) parts.push(formatBytes(args.length));
+        if (args.prot_str) parts.push(args.prot_str);
+    } else if (syscall === 'mmap') {
+        if (args.length !== undefined) parts.push(formatBytes(args.length));
+        if (args.prot_str) parts.push(args.prot_str);
+        if (args.flags_str) parts.push(args.flags_str);
+        if (args.fd !== undefined && args.fd >= 0) parts.push(`fd=${args.fd}`);
+        if (args.offset) parts.push(`off=0x${args.offset.toString(16)}`);
+    } else if (syscall === 'munmap') {
+        if (args.length !== undefined) parts.push(formatBytes(args.length));
+    }
+    
+    // Socket options
+    if (syscall === 'setsockopt' || syscall === 'getsockopt') {
+        if (args.level_str) parts.push(args.level_str);
+        if (args.optname_str) parts.push(args.optname_str);
+    }
+    
+    // shutdown how
+    if (syscall === 'shutdown' && args.how_str) {
+        parts.push(args.how_str);
+    }
+    
+    // kill signal
+    if (syscall === 'kill' && args.signal_str) {
+        parts.push(`→ ${args.signal_str}`);
+    }
+    
+    // poll/select
+    if (args.nfds !== undefined) parts.push(`nfds=${args.nfds}`);
+    if (syscall.includes('poll') && args.timeout !== undefined) {
+        parts.push(args.timeout < 0 ? 'timeout=∞' : `timeout=${args.timeout}ms`);
+    }
+    
+    // File mode for mkdir/chmod/fchmod
+    if (args.mode !== undefined && ['mkdir', 'chmod', 'fchmod'].some(s => syscall.includes(s))) {
+        parts.push(`mode=${args.mode}`);
+    }
+    
+    // truncate/ftruncate length
+    if (args.length !== undefined && syscall.includes('truncat')) {
+        parts.push(`→ ${formatBytes(args.length)}`);
+    }
+    
+    // Catch-all: show raw_args if nothing else matched
+    if (parts.length === 0 && args.raw_args && args.raw_args.length > 0) {
+        parts.push(args.raw_args.join(' '));
+    }
+    
     return parts.join(' ');
 }
 
