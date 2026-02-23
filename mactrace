@@ -1675,11 +1675,13 @@ class MacTrace:
     """Main tracer class"""
     
     # DTrace tuning defaults
-    DEFAULT_STRSIZE = 2048           # max copyinstr() length (paths); keep low to avoid scratch exhaustion
+    DEFAULT_STRSIZE = 4096           # max copyinstr() length (paths); keep low to avoid scratch exhaustion
     DEFAULT_BUFSIZE = "256m"         # per-CPU trace output buffer
     DEFAULT_DYNVARSIZE = "256m"      # thread-local (self->) variable pool
+    # DEFAULT_SWITCHRATE = "25hz"      # how often DTrace drains per-CPU buffers
     DEFAULT_SWITCHRATE = "50hz"      # how often DTrace drains per-CPU buffers
-    DEFAULT_CLEANRATE = "307hz"      # how often DTrace reclaims dead dynamic vars (prime avoids resonance)
+    # DEFAULT_CLEANRATE = "307hz"      # how often DTrace reclaims dead dynamic vars (prime avoids resonance)
+    DEFAULT_CLEANRATE = "202hz"      # how often DTrace reclaims dead dynamic vars (prime avoids resonance)
 
     def __init__(self, verbose: bool = False, capture_io: bool = False,
                  io_size: int = 1*1024*1024, strsize: int = None, bufsize: str = None, 
@@ -3324,6 +3326,15 @@ syscall::recvmsg_nocancel:return
                     old_tty_settings = None
                 
                 # select loop: forward stdin→master (user input) and master→tty (program output)
+                # Track Ctrl-C presses for escalating shutdown:
+                #   1st Ctrl-C: forward to traced program (normal behavior)
+                #   2nd Ctrl-C: send SIGINT to dtrace for graceful stop
+                #   3rd Ctrl-C: kill dtrace immediately
+                CTRL_C = b'\x03'
+                CTRL_C_ESCALATION_WINDOW = 2.0  # seconds between presses to escalate
+                ctrl_c_count = 0
+                last_ctrl_c_time = 0.0
+                
                 try:
                     while dtrace_proc.poll() is None:
                         try:
@@ -3334,10 +3345,40 @@ syscall::recvmsg_nocancel:return
                         if sys.stdin in rlist:
                             try:
                                 data = os.read(sys.stdin.fileno(), 4096)
-                                if data:
-                                    os.write(master_fd, data)
-                                else:
+                                if not data:
                                     break  # EOF on stdin
+                                
+                                if CTRL_C in data:
+                                    now = time.time()
+                                    if now - last_ctrl_c_time > CTRL_C_ESCALATION_WINDOW:
+                                        ctrl_c_count = 1  # reset if too much time passed
+                                    else:
+                                        ctrl_c_count += 1
+                                    last_ctrl_c_time = now
+                                    
+                                    if ctrl_c_count <= 1:
+                                        # First: forward to traced program normally
+                                        os.write(master_fd, data)
+                                        if tty:
+                                            tty.write(b'\r\n[Ctrl-C sent to program. Press again to stop tracing.]\r\n')
+                                    elif ctrl_c_count == 2:
+                                        # Second: send SIGINT to dtrace for graceful shutdown
+                                        if tty:
+                                            tty.write(b'\r\n[Stopping trace...]\r\n')
+                                        dtrace_proc.send_signal(signal.SIGINT)
+                                        try:
+                                            dtrace_proc.wait(timeout=5)
+                                        except subprocess.TimeoutExpired:
+                                            pass  # will escalate on next Ctrl-C
+                                    else:
+                                        # Third+: kill dtrace immediately
+                                        if tty:
+                                            tty.write(b'\r\n[Killing trace.]\r\n')
+                                        dtrace_proc.kill()
+                                        dtrace_proc.wait()
+                                        break
+                                else:
+                                    os.write(master_fd, data)
                             except OSError:
                                 break
                         
@@ -3367,8 +3408,14 @@ syscall::recvmsg_nocancel:return
                             except OSError:
                                 break
                 except KeyboardInterrupt:
-                    # Ctrl-C in raw mode comes as \x03 — but just in case
-                    pass
+                    # Shouldn't fire in raw mode, but just in case — stop dtrace
+                    if dtrace_proc.poll() is None:
+                        dtrace_proc.send_signal(signal.SIGINT)
+                        try:
+                            dtrace_proc.wait(timeout=5)
+                        except subprocess.TimeoutExpired:
+                            dtrace_proc.kill()
+                            dtrace_proc.wait()
                 
                 # Drain any remaining output from master
                 try:
@@ -3466,10 +3513,22 @@ syscall::recvmsg_nocancel:return
                     stdout_thread.join(timeout=2)
                     stderr_thread.join(timeout=2)
                 except subprocess.TimeoutExpired:
-                    dtrace_proc.kill()
-                    dtrace_proc.wait()
-                    if self.verbose:
-                        print("Timeout expired, killed dtrace", file=sys.stderr)
+                    print(f"\nTimeout expired, stopping trace...", file=sys.stderr)
+                    dtrace_proc.send_signal(signal.SIGINT)
+                    try:
+                        dtrace_proc.wait(timeout=5)
+                    except subprocess.TimeoutExpired:
+                        dtrace_proc.kill()
+                        dtrace_proc.wait()
+                except KeyboardInterrupt:
+                    print(f"\nStopping trace...", file=sys.stderr)
+                    dtrace_proc.send_signal(signal.SIGINT)
+                    try:
+                        dtrace_proc.wait(timeout=5)
+                    except subprocess.TimeoutExpired:
+                        print(f"Killing trace...", file=sys.stderr)
+                        dtrace_proc.kill()
+                        dtrace_proc.wait()
             
             # Read dtrace output from file
             try:
