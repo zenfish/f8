@@ -108,6 +108,9 @@ DTRACE_SCRIPT = r'''
  * $target_pid is replaced with $target when using dtrace -c
  */
 
+/* DTrace options — ALL values MUST use $VARIABLE$ substitution.
+ * Defaults live in MacTrace.DEFAULT_* class constants.
+ * Never hardcode values here. */
 #pragma D option quiet
 #pragma D option switchrate=$SWITCHRATE$
 #pragma D option cleanrate=$CLEANRATE$
