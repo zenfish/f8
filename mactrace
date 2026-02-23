@@ -1651,9 +1651,10 @@ class TraceResult:
     summary: Dict[str, int]
     target_stdout: List[str]
     target_stderr: List[str]
+    interrupted: bool              # True if trace was stopped by Ctrl-C / signal
     
     def to_dict(self) -> Dict[str, Any]:
-        return {
+        d = {
             "command": self.command,
             "start_time": self.start_time,
             "end_time": self.end_time,
@@ -1669,6 +1670,9 @@ class TraceResult:
             "process_events": self.process_events,
             "summary": self.summary
         }
+        if self.interrupted:
+            d["interrupted"] = True
+        return d
 
 
 class MacTrace:
@@ -1718,6 +1722,7 @@ class MacTrace:
         self._cached_files: set = set()  # Track files already queued for caching
         self._cache_success: set = set()  # Files successfully cached
         self._cache_errors: Dict[str, str] = {}  # path -> error message
+        self._interrupted = False  # Set True when trace stopped by Ctrl-C / signal
     
     # Errno mapping (common ones)
     ERRNO_NAMES = {
@@ -3363,6 +3368,7 @@ syscall::recvmsg_nocancel:return
                                             tty.write(b'\r\n[Ctrl-C sent to program. Press again to stop tracing.]\r\n')
                                     elif ctrl_c_count == 2:
                                         # Second: send SIGINT to dtrace for graceful shutdown
+                                        self._interrupted = True
                                         if tty:
                                             tty.write(b'\r\n[Stopping trace...]\r\n')
                                         dtrace_proc.send_signal(signal.SIGINT)
@@ -3372,6 +3378,7 @@ syscall::recvmsg_nocancel:return
                                             pass  # will escalate on next Ctrl-C
                                     else:
                                         # Third+: kill dtrace immediately
+                                        self._interrupted = True
                                         if tty:
                                             tty.write(b'\r\n[Killing trace.]\r\n')
                                         dtrace_proc.kill()
@@ -3409,6 +3416,7 @@ syscall::recvmsg_nocancel:return
                                 break
                 except KeyboardInterrupt:
                     # Shouldn't fire in raw mode, but just in case — stop dtrace
+                    self._interrupted = True
                     if dtrace_proc.poll() is None:
                         dtrace_proc.send_signal(signal.SIGINT)
                         try:
@@ -3521,6 +3529,7 @@ syscall::recvmsg_nocancel:return
                         dtrace_proc.kill()
                         dtrace_proc.wait()
                 except KeyboardInterrupt:
+                    self._interrupted = True
                     print(f"\nStopping trace...", file=sys.stderr)
                     dtrace_proc.send_signal(signal.SIGINT)
                     try:
@@ -3630,7 +3639,8 @@ syscall::recvmsg_nocancel:return
             process_events=[e.to_dict() for e in self.process_events],
             summary=syscall_counts,
             target_stdout=self.target_stdout,
-            target_stderr=self.target_stderr
+            target_stderr=self.target_stderr,
+            interrupted=self._interrupted
         )
 
 
@@ -3893,6 +3903,7 @@ syscall::recvmsg_nocancel:return
                     dtrace_proc.kill()
                     dtrace_proc.wait()
             except KeyboardInterrupt:
+                self._interrupted = True
                 print(f"\nStopping trace...", file=sys.stderr)
                 dtrace_proc.send_signal(signal.SIGINT)
                 try:
@@ -3972,7 +3983,8 @@ syscall::recvmsg_nocancel:return
             process_events=[e.to_dict() for e in self.process_events],
             summary=syscall_counts,
             target_stdout=self.target_stdout,
-            target_stderr=self.target_stderr
+            target_stderr=self.target_stderr,
+            interrupted=self._interrupted
         )
 
 
@@ -4282,7 +4294,8 @@ def filter_wrapper_processes(result: 'TraceResult', original_command: List[str],
         process_events=filtered_process_events,
         summary=summary,
         target_stdout=result.target_stdout,
-        target_stderr=result.target_stderr
+        target_stderr=result.target_stderr,
+        interrupted=result.interrupted
     )
 
 
@@ -4373,7 +4386,7 @@ Path resolution for -o:
     if args.output:
         output_path = resolve_path(args.output, 'MACTRACE_OUTPUT', check_exists=False)
         if os.path.exists(output_path):
-            print(f"Error: Output file already exists: {output_path}", file=sys.stderr)
+            print(f"Error: Output file already exists:\n    {output_path}\n", file=sys.stderr)
             print(f"Will not overwrite. Remove the file or choose a different output path.", file=sys.stderr)
             sys.exit(1)
     
@@ -4502,6 +4515,22 @@ Path resolution for -o:
         if error_count > 0:
             print(f"Failed to cache {error_count} file(s)", file=sys.stderr)
     
+    # If trace was interrupted, clean up and exit
+    if result.interrupted:
+        print(f"\nTrace interrupted — cleaning up.", file=sys.stderr)
+        # Remove output JSON if it exists (shouldn't yet, but be safe)
+        if args.output:
+            output_path = resolve_path(args.output, 'MACTRACE_OUTPUT', check_exists=False)
+            if os.path.exists(output_path):
+                os.unlink(output_path)
+                print(f"  Removed: {output_path}", file=sys.stderr)
+        # Remove cache directory if we created it
+        if cache_dir and os.path.isdir(cache_dir):
+            import shutil
+            shutil.rmtree(cache_dir, ignore_errors=True)
+            print(f"  Removed: {cache_dir}/", file=sys.stderr)
+        sys.exit(130)  # 128 + SIGINT — conventional interrupted exit code
+
     # Output JSON
     output_data = json.dumps(result.to_dict(), indent=2 if args.json_pretty else None)
     

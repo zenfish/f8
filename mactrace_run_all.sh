@@ -38,6 +38,30 @@ else
     base=$( echo $1 | sed -e 's/[@ \.]*$//')
 fi
 
+#
+# Cleanup function — removes any artifacts created by this run
+#
+cleanup_artifacts() {
+    echo -e "\nCleaning up trace artifacts..." >&2
+    # JSON trace output
+    if [ -f "$base.json" ]; then
+        rm -f "$base.json"
+        echo "  Removed: $base.json" >&2
+    fi
+    # I/O analysis directory
+    if [ -d "$base" ]; then
+        rm -rf "$base"
+        echo "  Removed: $base/" >&2
+    fi
+    # DB entry (best-effort — might not exist yet)
+    local db_id
+    db_id=$(mactrace_db list -j 2>/dev/null | jq -r ".[] | select(.name == \"$base\") | .id" 2>/dev/null || true)
+    if [ -n "$db_id" ]; then
+        mactrace_db delete "$db_id" 2>/dev/null || true
+        echo "  Removed DB entry: $base (id=$db_id)" >&2
+    fi
+}
+
 mactrace_db list -j |jq -r '.[] | .name + "\t" + (.id | tostring)' | while IFS=$'\t' read name id; do 
     if [ "$base" = "$name" ]; 
         then    
@@ -62,18 +86,29 @@ if [ -n "$attach_pid" ]; then
     # Using a handler (not '') so child processes still get default SIGINT
     # and mactrace can catch it internally to flush output.
     trap 'true' INT
-    sudo mactrace --capture-io -o "$base.json" -jp -e -p "$attach_pid" || true
+    sudo mactrace --capture-io -o "$base.json" -jp -e -p "$attach_pid"
+    mactrace_exit=$?
     # Restore default SIGINT — next Ctrl+C kills as normal
     trap - INT
 else
     sudo mactrace --capture-io -o "$base.json" -jp -e $traceme
+    mactrace_exit=$?
+fi
+
+# If mactrace was interrupted (exit 130), clean up and bail
+if [ $mactrace_exit -eq 130 ]; then
+    cleanup_artifacts
+    exit 130
 fi
 
 # Verify trace output was written before continuing
-# if [ ! -f "$base.json" ]; then
-#     echo -e "\nError: trace output $base.json not found — mactrace may have failed"
-#     exit 1
-# fi
+if [ ! -f "$base.json" ]; then
+    echo -e "\nError: trace output $base.json not found — mactrace may have failed"
+    exit 1
+fi
+
+# Trap INT during post-processing to clean up if interrupted here too
+trap 'cleanup_artifacts; exit 130' INT
 
 echo -e "\n... saving i/o\n"
 
@@ -85,6 +120,9 @@ echo -e "\nimporting to sqlite\n"
 # Import to SQLite
 mactrace_import     "$base.json" --io-dir "$base"
 
+# Post-processing done, remove INT trap
+trap - INT
+
 # so it doesn't die if it doesn't kill the server!
 set +e
 
@@ -94,4 +132,3 @@ killall mactrace_server
 echo -e "\nstarting server on http://localhost:3000/\n"
 
 mactrace_server
-
