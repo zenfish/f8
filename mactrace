@@ -364,12 +364,19 @@ syscall::pwrite_nocancel:return
     self->pwrite_ts = 0;
 }
 
-syscall::stat64:entry,
+syscall::stat64:entry
+/TRACED/
+{
+    self->stat_path = copyinstr(arg0);
+    self->stat_is_lstat = 0;
+    self->stat_ts = walltimestamp/1000;
+}
+
 syscall::lstat64:entry
 /TRACED/
 {
     self->stat_path = copyinstr(arg0);
-    self->stat_func = probefunc;
+    self->stat_is_lstat = 1;
     self->stat_ts = walltimestamp/1000;
 }
 
@@ -378,7 +385,8 @@ syscall::lstat64:return
 /TRACED && self->stat_path != NULL/
 {
     printf("MACTRACE_SYSCALL %d %d %s %d %d %d \"%s\"\n",
-        pid, tid, self->stat_func, (int)arg1, errno, self->stat_ts, self->stat_path);
+        pid, tid, self->stat_is_lstat ? "lstat64" : "stat64",
+        (int)arg1, errno, self->stat_ts, self->stat_path);
     self->stat_path = NULL;
 }
 
@@ -1679,7 +1687,7 @@ class MacTrace:
     """Main tracer class"""
     
     # DTrace tuning defaults
-    DEFAULT_STRSIZE = 4096           # max copyinstr() length (paths); keep low to avoid scratch exhaustion
+    DEFAULT_STRSIZE = 1024           # max copyinstr() length (paths); keep low to avoid scratch exhaustion
     DEFAULT_BUFSIZE = "256m"         # per-CPU trace output buffer
     DEFAULT_DYNVARSIZE = "256m"      # thread-local (self->) variable pool
     # DEFAULT_SWITCHRATE = "25hz"      # how often DTrace drains per-CPU buffers
@@ -1723,6 +1731,7 @@ class MacTrace:
         self._cache_success: set = set()  # Files successfully cached
         self._cache_errors: Dict[str, str] = {}  # path -> error message
         self._interrupted = False  # Set True when trace stopped by Ctrl-C / signal
+        self._dtrace_errors: List[str] = []  # Captured dtrace diagnostic messages
     
     # Errno mapping (common ones)
     ERRNO_NAMES = {
@@ -2364,6 +2373,59 @@ class MacTrace:
         for t in self._cache_threads:
             t.join(timeout=timeout)
         return len(self._cache_success), len(self._cache_errors)
+    
+    def summarize_dtrace_health(self, syscall_count: int) -> None:
+        """Print a summary of DTrace errors, drops, and scratch space issues."""
+        if not self._dtrace_errors:
+            return
+        
+        import re
+        
+        total_drops = 0
+        scratch_errors = {}  # probe → count
+        invalid_addr = 0
+        other_errors = 0
+        
+        drop_re = re.compile(r'dtrace: (\d+) drops on CPU')
+        scratch_re = re.compile(r'enabled probe ID \d+ \(ID \d+: ([^)]+)\): out of scratch space')
+        invalid_re = re.compile(r'invalid address')
+        
+        for line in self._dtrace_errors:
+            m = drop_re.search(line)
+            if m:
+                total_drops += int(m.group(1))
+                continue
+            m = scratch_re.search(line)
+            if m:
+                probe = m.group(1)
+                scratch_errors[probe] = scratch_errors.get(probe, 0) + 1
+                continue
+            if invalid_re.search(line):
+                invalid_addr += 1
+                continue
+            other_errors += 1
+        
+        if total_drops == 0 and not scratch_errors and invalid_addr == 0:
+            return
+        
+        print(f"--- DTrace health ---", file=sys.stderr)
+        
+        if total_drops > 0:
+            loss_pct = total_drops / (syscall_count + total_drops) * 100 if syscall_count else 0
+            print(f"  Buffer drops: {total_drops:,} events lost ({loss_pct:.1f}% of total)", file=sys.stderr)
+            if loss_pct > 10:
+                print(f"  ⚠ High drop rate. Try: --switchrate 200hz --bufsize 512m", file=sys.stderr)
+        
+        if scratch_errors:
+            total_scratch = sum(scratch_errors.values())
+            print(f"  Scratch space: {total_scratch:,} probe failures", file=sys.stderr)
+            for probe, count in sorted(scratch_errors.items(), key=lambda x: -x[1])[:5]:
+                print(f"    {probe}: {count}", file=sys.stderr)
+            if total_scratch > 100:
+                print(f"  ⚠ Reduce --strsize (currently {self.strsize}) or trace fewer syscalls", file=sys.stderr)
+        
+        if invalid_addr > 0:
+            print(f"  Invalid address: {invalid_addr} (userspace pages not faulted in — normal)", file=sys.stderr)
     
     def _merge_io_hexdumps(self, lines: List[str]) -> List[str]:
         """Pre-process dtrace output to merge MACTRACE_IO/MACTRACE_SOCKADDR with tracemem hexdumps.
@@ -3424,6 +3486,7 @@ syscall::recvmsg_nocancel:return
                                         if line:
                                             # Filter dtrace stderr messages that come through the PTY
                                             if line.lstrip().startswith('dtrace:'):
+                                                self._dtrace_errors.append(line.lstrip())
                                                 if self.verbose:
                                                     print(f"\nDTrace: {line.lstrip()}", file=sys.stderr)
                                             else:
@@ -3508,6 +3571,7 @@ syscall::recvmsg_nocancel:return
                         line = line_bytes.decode(errors='replace').rstrip('\n')
                         # Filter dtrace messages
                         if line.lstrip().startswith('dtrace:'):
+                            self._dtrace_errors.append(line.lstrip())
                             if self.verbose:
                                 print(f"DTrace: {line.lstrip()}", file=sys.stderr)
                         else:
@@ -3894,6 +3958,7 @@ syscall::recvmsg_nocancel:return
                 for line_bytes in dtrace_proc.stderr:
                     line = line_bytes.decode(errors='replace').rstrip('\n')
                     if line.lstrip().startswith('dtrace:'):
+                        self._dtrace_errors.append(line.lstrip())
                         if self.verbose:
                             print(f"DTrace: {line.lstrip()}", file=sys.stderr)
                     dtrace_stderr_lines.append(line)
@@ -4524,6 +4589,9 @@ Path resolution for -o:
                 print(f"  {syscall}: {count}", file=sys.stderr)
         else:
             print(f"--- All syscalls traced ---", file=sys.stderr)
+    
+    # DTrace health summary (drops, scratch errors, etc.)
+    tracer.summarize_dtrace_health(result.syscall_count)
     
     # Wait for cache operations to complete
     if cache_dir and tracer._cached_files:
