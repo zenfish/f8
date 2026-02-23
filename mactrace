@@ -1684,8 +1684,8 @@ class MacTrace:
     DEFAULT_DYNVARSIZE = "256m"      # thread-local (self->) variable pool
     # DEFAULT_SWITCHRATE = "25hz"      # how often DTrace drains per-CPU buffers
     DEFAULT_SWITCHRATE = "50hz"      # how often DTrace drains per-CPU buffers
-    # DEFAULT_CLEANRATE = "307hz"      # how often DTrace reclaims dead dynamic vars (prime avoids resonance)
-    DEFAULT_CLEANRATE = "202hz"      # how often DTrace reclaims dead dynamic vars (prime avoids resonance)
+    # DEFAULT_CLEANRATE = "202hz"      # how often DTrace reclaims dead dynamic vars (prime avoids resonance)
+    DEFAULT_CLEANRATE = "307hz"      # how often DTrace reclaims dead dynamic vars (prime avoids resonance)
 
     def __init__(self, verbose: bool = False, capture_io: bool = False,
                  io_size: int = 1*1024*1024, strsize: int = None, bufsize: str = None, 
@@ -3246,7 +3246,25 @@ syscall::recvmsg_nocancel:return
                 if self.verbose:
                     print(f"Command wrapped for user {username}: {cmd_str}", file=sys.stderr)
         else:
-            cmd_str = ' '.join(shlex.quote(c) for c in command)
+            # Shell metacharacters that should NOT be quoted — they signal the user
+            # wants shell interpretation (pipes, redirects, chaining).
+            # dtrace -c passes its argument through sh -c, so these work if unquoted.
+            SHELL_METACHARS = {'|', '&&', '||', ';', '>', '>>', '<', '<<', '&'}
+            has_shell_meta = any(c in SHELL_METACHARS for c in command)
+            
+            if has_shell_meta:
+                # Quote normal args but pass shell operators through raw
+                parts = []
+                for c in command:
+                    if c in SHELL_METACHARS:
+                        parts.append(c)
+                    else:
+                        parts.append(shlex.quote(c))
+                cmd_str = ' '.join(parts)
+                if self.verbose:
+                    print(f"Shell metacharacters detected, preserving: {cmd_str}", file=sys.stderr)
+            else:
+                cmd_str = ' '.join(shlex.quote(c) for c in command)
         
         dtrace_proc = None
         target_pid = None
@@ -4386,7 +4404,7 @@ Path resolution for -o:
     if args.output:
         output_path = resolve_path(args.output, 'MACTRACE_OUTPUT', check_exists=False)
         if os.path.exists(output_path):
-            print(f"Error: Output file already exists:\n    {output_path}\n", file=sys.stderr)
+            print(f"Error: Output file already exists:\n\n    {output_path}\n", file=sys.stderr)
             print(f"Will not overwrite. Remove the file or choose a different output path.", file=sys.stderr)
             sys.exit(1)
     

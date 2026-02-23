@@ -34,8 +34,9 @@ if [ -n "$attach_pid" ]; then
     traceme="PID $attach_pid ($proc_name)"
 else
     traceme="$*"
-    # look at first arg, truncate anything after a space, ".", or @
-    base=$( echo $1 | sed -e 's/[@ \.]*$//')
+    # Derive base name: strip directory path, then strip file extension
+    # /tmp/oc.sh → oc   |   ./configure → configure   |   n → n
+    base=$(basename "$1" | sed -e 's/\.[^.]*$//')
 fi
 
 #
