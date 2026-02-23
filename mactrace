@@ -109,7 +109,8 @@ DTRACE_SCRIPT = r'''
  */
 
 #pragma D option quiet
-#pragma D option switchrate=10hz
+#pragma D option switchrate=50hz
+#pragma D option cleanrate=307hz
 #pragma D option bufsize=$BUFSIZE$
 #pragma D option dynvarsize=$DYNVARSIZE$
 #pragma D option strsize=$STRSIZE$
@@ -1671,8 +1672,8 @@ class MacTrace:
     """Main tracer class"""
     
     def __init__(self, verbose: bool = False, capture_io: bool = False,
-                 io_size: int = 1*1024*1024, strsize: int = 16384, bufsize: str = "256m", 
-                 dynvarsize: str = "128m", cache_size: int = 0, cache_dir: str = None):
+                 io_size: int = 1*1024*1024, strsize: int = 2048, bufsize: str = "256m", 
+                 dynvarsize: str = "256m", cache_size: int = 0, cache_dir: str = None):
         self.verbose = verbose
         self.capture_io = capture_io
         self.io_size = io_size
@@ -4263,12 +4264,12 @@ Path resolution for -o:
                         help="Max bytes to capture per I/O op (default: 1M, max ~4M due to dtrace limits)")
     parser.add_argument("--cache", type=str, default=None,
                         help="Copy local files up to SIZE to cache dir (e.g., 10M, 500k, 1G)")
-    parser.add_argument("--strsize", type=int, default=16384,
-                        help="DTrace strsize - max string size for paths etc (default: 16K)")
+    parser.add_argument("--strsize", type=int, default=2048,
+                        help="DTrace strsize - max string size for copyinstr paths (default: 2K)")
     parser.add_argument("--bufsize", type=str, default="256m",
-                        help="DTrace bufsize - trace buffer size (default: 256m)")
-    parser.add_argument("--dynvarsize", type=str, default="128m",
-                        help="DTrace dynvarsize - dynamic variable space (default: 128m)")
+                        help="DTrace bufsize - per-CPU trace buffer size (default: 256m)")
+    parser.add_argument("--dynvarsize", type=str, default="256m",
+                        help="DTrace dynvarsize - thread-local variable pool (default: 256m)")
     parser.add_argument("--no-filter-wrapper", action="store_true",
                         help="Don't filter out wrapper processes (sudo/sh/bash) when using -u")
     parser.add_argument("command", nargs=argparse.REMAINDER, help="Command to trace")

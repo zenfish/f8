@@ -6,10 +6,11 @@
  */
 
 #pragma D option quiet
-#pragma D option switchrate=10hz
-#pragma D option bufsize=16m
-#pragma D option dynvarsize=32m
-#pragma D option strsize=1024
+#pragma D option switchrate=50hz
+#pragma D option cleanrate=307hz
+#pragma D option bufsize=256m
+#pragma D option dynvarsize=256m
+#pragma D option strsize=2048
 
 /*
  * TRACED predicate - matches target and all descendants
