@@ -269,19 +269,23 @@
         .col-target { width: var(--col-target-width); min-width: 100px; flex-shrink: 0; overflow: hidden; }
         .col-syscall { flex: 1; min-width: 200px; }
         
-        /* Resize handle on header cells */
+        /* Resize handle on header cells — straddles the right border
+         * so it's easy to grab from either side. overflow must be
+         * visible on header cells so the handle isn't clipped. */
         .table-header .cell {
             position: relative;
+            overflow: visible;
         }
         .table-header .cell.resizable::after {
             content: '';
             position: absolute;
-            right: 0;
+            right: -7px;
             top: 0;
             bottom: 0;
-            width: 12px;
+            width: 14px;
             cursor: col-resize;
             background: transparent;
+            z-index: 20;
         }
         .table-header .cell.resizable:hover::after {
             background: rgba(255,255,255,0.3);
@@ -1976,19 +1980,32 @@
         `;
     }
     
-    // Column resizing
+    // Column resizing — find nearest resizable right-edge to the click,
+    // regardless of which cell the event landed on.
     (function setupColumnResize() {
+        const RESIZE_GRAB_PX = 8; // max px from a right-edge to count as a resize grab
         let resizing = null;
         let startX = 0;
         let startWidth = 0;
         
+        function findResizeTarget(clientX) {
+            const cells = tableHeader.querySelectorAll('.cell.resizable');
+            let best = null;
+            let bestDist = Infinity;
+            for (const cell of cells) {
+                const rect = cell.getBoundingClientRect();
+                const dist = Math.abs(clientX - rect.right);
+                if (dist < bestDist) {
+                    bestDist = dist;
+                    best = cell;
+                }
+            }
+            return bestDist <= RESIZE_GRAB_PX ? best : null;
+        }
+        
         tableHeader.addEventListener('mousedown', e => {
-            const cell = e.target.closest('.cell.resizable');
+            const cell = findResizeTarget(e.clientX);
             if (!cell) return;
-            
-            // Check if click is near the right edge (resize handle area)
-            const rect = cell.getBoundingClientRect();
-            if (e.clientX < rect.right - 14) return; // Not in resize zone
             
             e.preventDefault();
             resizing = cell.dataset.resize;
