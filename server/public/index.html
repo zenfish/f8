@@ -279,7 +279,7 @@
             right: 0;
             top: 0;
             bottom: 0;
-            width: 5px;
+            width: 12px;
             cursor: col-resize;
             background: transparent;
         }
@@ -1988,7 +1988,7 @@
             
             // Check if click is near the right edge (resize handle area)
             const rect = cell.getBoundingClientRect();
-            if (e.clientX < rect.right - 8) return; // Not in resize zone
+            if (e.clientX < rect.right - 14) return; // Not in resize zone
             
             e.preventDefault();
             resizing = cell.dataset.resize;
