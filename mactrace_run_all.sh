@@ -135,7 +135,7 @@ existing_db_id=$(mactrace_db list -j 2>/dev/null | jq -r ".[] | select(.name == 
 if [ -n "$existing_db_id" ]; then
     if [ -n "$force_mode" ]; then
         echo "Removing existing DB entry: $base (id=$existing_db_id)"
-        mactrace_db delete "$existing_db_id" 2>/dev/null || true
+        mactrace_db delete -f "$existing_db_id" 2>/dev/null || true
     else
         echo -e "\nAn existing saved DB is already present with the name \"$base\", cowardly bailin' out!"
         echo -e "you can remove that entry with the command:\n"
