@@ -61,29 +61,32 @@ resolve_path() {
 throttle_flag=""
 force_mode=""
 attach_pid=""
+custom_name=""
 
 # Parse flags (order-independent, before positional args)
-while [[ "$1" == --* ]]; do
+while [[ "$1" == -* ]]; do
     case "$1" in
         --throttle) throttle_flag="--throttle"; shift ;;
         --force)    force_mode=1; shift ;;
+        -n|--name)
+            if [ -z "$2" ]; then
+                echo "Error: $1 requires a name argument"
+                exit 1
+            fi
+            custom_name="$2"; shift 2 ;;
+        -p)
+            if [ -z "$2" ] || ! [[ "$2" =~ ^[0-9]+$ ]]; then
+                echo "Error: -p requires a numeric PID"
+                exit 1
+            fi
+            attach_pid="$2"; shift 2 ;;
         *) echo "Unknown flag: $1"; exit 1 ;;
     esac
 done
 
-if [ "$1" = "-p" ]; then
-    if [ -z "$2" ] || ! [[ "$2" =~ ^[0-9]+$ ]]; then
-        echo "Usage: $0 [--throttle] [--force] -p PID"
-        echo "       $0 [--throttle] [--force] program-to-trace [args...]"
-        exit 1
-    fi
-    attach_pid="$2"
-    shift 2
-fi
-
 if [ -z "$attach_pid" ] && [ -z "$1" ]; then
-    echo "Usage: $0 [--throttle] [--force] -p PID"
-    echo "       $0 [--throttle] [--force] program-to-trace [args...]"
+    echo "Usage: $0 [--throttle] [--force] [-n name] -p PID"
+    echo "       $0 [--throttle] [--force] [-n name] program-to-trace [args...]"
     exit 1
 fi
 
@@ -96,10 +99,16 @@ if [ -n "$attach_pid" ]; then
         echo "Error: No process with PID $attach_pid"
         exit 1
     fi
-    base="${proc_name}_${attach_pid}"
     traceme="PID $attach_pid ($proc_name)"
 else
     traceme="$*"
+fi
+
+if [ -n "$custom_name" ]; then
+    base="$custom_name"
+elif [ -n "$attach_pid" ]; then
+    base="${proc_name}_${attach_pid}"
+else
     # Strip directory path and file extension: /tmp/oc.sh → oc
     base=$(basename "$1" | sed -e 's/\.[^.]*$//')
 fi
