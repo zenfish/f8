@@ -54,11 +54,16 @@ resolve_path() {
 }
 
 # ── Parse arguments ─────────────────────────────────────────────────
+throttle_flag=""
 attach_pid=""
+if [ "$1" = "--throttle" ]; then
+    throttle_flag="--throttle"
+    shift
+fi
 if [ "$1" = "-p" ]; then
     if [ -z "$2" ] || ! [[ "$2" =~ ^[0-9]+$ ]]; then
-        echo "Usage: $0 -p PID"
-        echo "       $0 program-to-trace [args...]"
+        echo "Usage: $0 [--throttle] -p PID"
+        echo "       $0 [--throttle] program-to-trace [args...]"
         exit 1
     fi
     attach_pid="$2"
@@ -134,11 +139,11 @@ echo -e "    $traceme\n"
 # ── Run mactrace ────────────────────────────────────────────────────
 if [ -n "$attach_pid" ]; then
     trap 'true' INT
-    sudo mactrace --capture-io -o "$base.json" -jp -e -p "$attach_pid"
+    sudo mactrace $throttle_flag --capture-io -o "$base.json" -jp -e -p "$attach_pid"
     mactrace_exit=$?
     trap - INT
 else
-    sudo mactrace --capture-io -o "$base.json" -jp -e $traceme
+    sudo mactrace $throttle_flag --capture-io -o "$base.json" -jp -e $traceme
     mactrace_exit=$?
 fi
 

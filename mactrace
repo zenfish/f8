@@ -3078,7 +3078,7 @@ class MacTrace:
             return None
     
     def trace(self, command: List[str], timeout: Optional[int] = None,
-              run_as_user: Optional[tuple] = None) -> TraceResult:
+              run_as_user: Optional[tuple] = None, throttle: bool = False) -> TraceResult:
         """
         Execute and trace a command.
         
@@ -3086,6 +3086,7 @@ class MacTrace:
             command: Command and arguments to execute
             timeout: Optional timeout in seconds
             run_as_user: Optional (uid, gid, username) tuple to run command as
+            throttle: If True, run traced program at background priority (macOS taskpolicy -b)
             
         Returns:
             TraceResult with all collected data
@@ -3327,6 +3328,16 @@ syscall::recvmsg_nocancel:return
                     print(f"Shell metacharacters detected, preserving: {cmd_str}", file=sys.stderr)
             else:
                 cmd_str = ' '.join(shlex.quote(c) for c in command)
+        
+        # Throttle: wrap command in taskpolicy -b (macOS background QoS)
+        # Applied to the traced command, NOT to dtrace itself, so DTrace
+        # stays at normal priority while the traced program runs slower.
+        # taskpolicy -b sets PRIO_DARWIN_BG: throttled I/O + lower CPU priority.
+        # Inherited by all child processes (perfect for npm install etc.).
+        if throttle:
+            cmd_str = f'/usr/sbin/taskpolicy -b {cmd_str}'
+            if self.verbose:
+                print(f"Throttle enabled: {cmd_str}", file=sys.stderr)
         
         dtrace_proc = None
         target_pid = None
@@ -4278,7 +4289,7 @@ def filter_wrapper_processes(result: 'TraceResult', original_command: List[str],
     import os.path
     
     # Wrappers to skip when looking for the real target
-    WRAPPER_BASENAMES = {'sudo', 'sh', 'bash', 'zsh', 'dash', 'ksh', 'env'}
+    WRAPPER_BASENAMES = {'sudo', 'sh', 'bash', 'zsh', 'dash', 'ksh', 'env', 'taskpolicy', 'nice'}
     
     # What we're actually looking for (basename of the command)
     target_basename = os.path.basename(original_command[0]) if original_command else None
@@ -4448,6 +4459,9 @@ Path resolution for -o:
                         help=f"DTrace cleanrate - dead dynvar reclaim frequency (default: {MacTrace.DEFAULT_CLEANRATE})")
     parser.add_argument("--no-filter-wrapper", action="store_true",
                         help="Don't filter out wrapper processes (sudo/sh/bash) when using -u")
+    parser.add_argument("--throttle", action="store_true",
+                        help="Throttle traced program (macOS taskpolicy -b: background I/O + CPU). "
+                             "Reduces DTrace drops for heavy workloads like npm install")
     parser.add_argument("command", nargs=argparse.REMAINDER, help="Command to trace")
     
     args = parser.parse_args()
@@ -4558,11 +4572,12 @@ Path resolution for -o:
             except (IOError, OSError):
                 pass  # Not readable, let it fail naturally
         
-        result = tracer.trace(command, timeout=args.timeout, run_as_user=run_as_user)
+        result = tracer.trace(command, timeout=args.timeout, run_as_user=run_as_user,
+                              throttle=args.throttle)
         
-        # Filter out wrapper processes (sudo, sh, bash) when using -u
-        # This keeps only the real target command and its children
-        if run_as_user and not args.no_filter_wrapper:
+        # Filter out wrapper processes (sudo, sh, bash, taskpolicy) when using
+        # -u or --throttle. Keeps only the real target command and its children.
+        if (run_as_user or args.throttle) and not args.no_filter_wrapper:
             result = filter_wrapper_processes(result, command, verbose=args.verbose)
     
     # Target stdout/stderr is already echoed to TTY in real-time during tracing
