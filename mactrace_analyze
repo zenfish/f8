@@ -50,16 +50,28 @@ from datetime import datetime
 # Display limits
 # ============================================================================
 
-MAX_DISPLAY_FILES = 100   # Max files shown in text summary (use --list-all for full list)
 MAX_PATH_DISPLAY = 120    # Truncate displayed paths longer than this
 
 def truncate_path(path: str, max_len: int = MAX_PATH_DISPLAY) -> str:
     """Truncate long paths, keeping start and end visible."""
     if len(path) <= max_len:
         return path
-    # Show first 50 + ... + last 50
     keep = (max_len - 5) // 2
     return path[:keep] + " ... " + path[-keep:]
+
+
+def python_hexdump(data: bytes) -> bytes:
+    """Pure Python replacement for hexdump -C. No subprocess fork needed."""
+    lines = []
+    for offset in range(0, len(data), 16):
+        chunk = data[offset:offset+16]
+        hex_part = ' '.join(f'{b:02x}' for b in chunk[:8])
+        if len(chunk) > 8:
+            hex_part += '  ' + ' '.join(f'{b:02x}' for b in chunk[8:])
+        ascii_part = ''.join(chr(b) if 32 <= b < 127 else '.' for b in chunk)
+        lines.append(f'{offset:08x}  {hex_part:<48s}  |{ascii_part}|')
+    lines.append(f'{len(data):08x}')
+    return '\n'.join(lines).encode('ascii') + b'\n'
 
 
 # ============================================================================
@@ -543,13 +555,11 @@ class MacTraceAnalyzer:
     """Analyze mactrace JSON output."""
 
     def __init__(self, save_io_dir: str = None, save_all_io: bool = False,
-                 hexdump: bool = False, render_terminal_output: bool = False,
-                 list_all: bool = False):
+                 hexdump: bool = False, render_terminal_output: bool = False):
         self.save_io_dir = save_io_dir
         self.save_all_io = save_all_io
         self.hexdump = hexdump
         self.render_terminal_output = render_terminal_output
-        self.list_all = list_all
         
         self.trace_data: Dict[str, Any] = {}
         self.files: Dict[str, FileAccess] = {}
@@ -918,8 +928,6 @@ class MacTraceAnalyzer:
         
         Returns a dict with statistics about saved files.
         """
-        import subprocess
-        
         if not self.save_io_dir:
             return {}
         
@@ -988,20 +996,11 @@ class MacTraceAnalyzer:
                 'program': program
             })
             
-            # Create hexdump if requested
-            if self.hexdump:
-                try:
-                    result = subprocess.run(
-                        ['hexdump', '-C', filepath],
-                        capture_output=True,
-                        timeout=30
-                    )
-                    if result.returncode == 0 and result.stdout:
-                        hexdump_filepath = filepath + '.hexdump'
-                        with open(hexdump_filepath, 'wb') as f:
-                            f.write(result.stdout)
-                except (subprocess.TimeoutExpired, FileNotFoundError):
-                    pass
+            # Create hexdump if requested (pure Python — no subprocess fork per file)
+            if self.hexdump and combined_data:
+                hexdump_filepath = filepath + '.hexdump'
+                with open(hexdump_filepath, 'wb') as f:
+                    f.write(python_hexdump(combined_data))
             
             # Create rendered version if requested
             if self.render_terminal_output:
@@ -1084,13 +1083,9 @@ class MacTraceAnalyzer:
                 
         if regular_files:
             sorted_files = sorted(regular_files, key=lambda x: x.path)
-            showing = len(sorted_files)
-            limited = not self.list_all and showing > MAX_DISPLAY_FILES
-            if limited:
-                showing = MAX_DISPLAY_FILES
-            print(f"\n--- Files Accessed ({len(sorted_files)} total{', showing first ' + str(showing) if limited else ''}) ---")
+            print(f"\n--- Files Accessed ({len(sorted_files)} total) ---")
             print("  Flags: R=Read, W=Write, S=Stat/access only (not opened), E=Error")
-            for fa in sorted_files[:showing]:
+            for fa in sorted_files:
                 flags = []
                 if fa.read: flags.append('R')
                 if fa.written: flags.append('W')
@@ -1107,25 +1102,17 @@ class MacTraceAnalyzer:
                     io_info = f" ({', '.join(parts)})"
                     
                 print(f"  [{','.join(flags):5}] {truncate_path(fa.path)}{io_info}")
-            if limited:
-                print(f"  ... and {len(sorted_files) - showing} more (use --list-all to see all)")
                 
         if config_files:
             sorted_cfg = sorted(config_files, key=lambda x: x.path)
-            showing_cfg = len(sorted_cfg)
-            limited_cfg = not self.list_all and showing_cfg > MAX_DISPLAY_FILES
-            if limited_cfg:
-                showing_cfg = MAX_DISPLAY_FILES
-            print(f"\n--- Config Files ({len(sorted_cfg)} total{', showing first ' + str(showing_cfg) if limited_cfg else ''}) ---")
-            for fa in sorted_cfg[:showing_cfg]:
+            print(f"\n--- Config Files ({len(sorted_cfg)} total) ---")
+            for fa in sorted_cfg:
                 flags = []
                 if fa.read: flags.append('R')
                 if fa.written: flags.append('W')
                 if fa.stat and not fa.opened: flags.append('S')
                 if fa.error: flags.append('E')
                 print(f"  [{','.join(flags):5}] {truncate_path(fa.path)}")
-            if limited_cfg:
-                print(f"  ... and {len(sorted_cfg) - showing_cfg} more")
                 
         if library_files and not hide_startup:
             print(f"\n--- Libraries ({len(library_files)} loaded) ---")
@@ -1298,9 +1285,6 @@ def main():
                              'files, so this is only needed if you want them on disk')
     parser.add_argument('--render-terminal', action='store_true',
                         help='Create .rendered versions showing terminal output as user would see it')
-    parser.add_argument('--list-all', action='store_true',
-                        help=f'Show all files in text output (default: cap at {MAX_DISPLAY_FILES})')
-    
     args = parser.parse_args()
     
     # Resolve input file path using config
@@ -1321,7 +1305,6 @@ def main():
         save_all_io=save_all_io,
         hexdump=args.hexdump,
         render_terminal_output=args.render_terminal,
-        list_all=args.list_all,
     )
     
     try:

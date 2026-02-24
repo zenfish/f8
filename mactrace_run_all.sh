@@ -160,7 +160,10 @@ trap 'cleanup_artifacts; exit 130' INT
 echo -e "\n... saving i/o\n"
 
 # Save I/O files (pass bare names — mactrace_analyze resolves them too)
-mactrace_analyze "$base.json" --save-io "$base" --hexdump --render-terminal
+# Tee full analysis to a text file alongside the JSON for scrollback reference
+txt_path=$(resolve_path "$base.txt" MACTRACE_OUTPUT)
+mactrace_analyze "$base.json" --save-io "$base" --hexdump --render-terminal 2>&1 | tee "$txt_path"
+echo -e "\nAnalysis saved to: $txt_path" >&2
 
 echo -e "\nimporting to sqlite\n"
 
