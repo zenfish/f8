@@ -665,6 +665,24 @@
     const BUFFER = 20;
     const SMALL_TRACE_THRESHOLD = 50000;
     
+    /* ColorBrewer "Paired" 12-class qualitative palette.
+     * Index = tree depth level (mod 12).
+     * Each entry: [background, text-color] — text chosen for contrast. */
+    const DEPTH_COLORS = [
+        ['#a6cee3', '#1a1a2e'],  // light blue
+        ['#1f78b4', '#ffffff'],  // dark blue
+        ['#b2df8a', '#1a1a2e'],  // light green
+        ['#33a02c', '#ffffff'],  // dark green
+        ['#fb9a99', '#1a1a2e'],  // light red
+        ['#e31a1c', '#ffffff'],  // dark red
+        ['#fdbf6f', '#1a1a2e'],  // light orange
+        ['#ff7f00', '#ffffff'],  // dark orange
+        ['#cab2d6', '#1a1a2e'],  // light purple
+        ['#6a3d9a', '#ffffff'],  // dark purple
+        ['#ffff99', '#1a1a2e'],  // light yellow
+        ['#b15928', '#ffffff'],  // dark brown
+    ];
+    
     let traces = [];
     let currentTrace = null;
     let allEvents = [];
@@ -1569,12 +1587,14 @@
         const toggleIcon = hasChildren ? (isExpanded ? '▼' : '▶') : '·';
         const toggleClass = hasChildren ? 'tree-toggle' : 'tree-toggle" style="color:#ccc;cursor:default';
         
+        const [depthBg, depthFg] = DEPTH_COLORS[depth % DEPTH_COLORS.length];
+        
         return `
             <div class="tree-node${rootClass}" data-pid="${node.pid}">
                 <div class="tree-card-wrap">
                     <span class="${toggleClass}" data-action="toggle" data-pid="${node.pid}">${toggleIcon}</span>
                     <div class="tree-card" data-pid="${node.pid}">
-                        <div class="tree-pid-badge">${node.pid}</div>
+                        <div class="tree-pid-badge" style="background:${depthBg};color:${depthFg}">${node.pid}</div>
                         <div class="tree-card-body">
                             <div class="tree-program" title="${escapeHtml(programFull)}">${isInferred ? '<span style="color:#8e44ad" title="Inferred from first binary open()">≈ </span>' : ''}${escapeHtml(programShort || '(shell)')}</div>
                             <div class="tree-stats">${statsHtml}</div>
