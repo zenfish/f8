@@ -3292,6 +3292,13 @@ syscall::recvmsg_nocancel:return
                     # Set TERM to match the real terminal (not "unknown" from sudo -i)
                     real_term = os.environ.get('TERM', 'xterm-256color')
                     ef.write(f"export TERM='{real_term}'\n")
+                    # Throttle: set background QoS on this process before exec.
+                    # Must be done INSIDE the wrapper (not by wrapping the command)
+                    # because taskpolicy uses posix_spawn which breaks DTrace tracking.
+                    # taskpolicy -b -p $$ sets PRIO_DARWIN_BG on the current process;
+                    # exec preserves the priority, and children inherit it.
+                    if throttle:
+                        ef.write('/usr/sbin/taskpolicy -b -p $$\n')
                     ef.write(f'exec {inner_cmd}\n')
                     env_wrapper_path = ef.name
                 
@@ -3329,15 +3336,24 @@ syscall::recvmsg_nocancel:return
             else:
                 cmd_str = ' '.join(shlex.quote(c) for c in command)
         
-        # Throttle: wrap command in taskpolicy -b (macOS background QoS)
-        # Applied to the traced command, NOT to dtrace itself, so DTrace
-        # stays at normal priority while the traced program runs slower.
-        # taskpolicy -b sets PRIO_DARWIN_BG: throttled I/O + lower CPU priority.
-        # Inherited by all child processes (perfect for npm install etc.).
-        if throttle:
-            cmd_str = f'/usr/sbin/taskpolicy -b {cmd_str}'
+        # Throttle without env wrapper: create a minimal wrapper script that
+        # sets background QoS on itself before exec'ing the real command.
+        # Can't use 'taskpolicy -b <cmd>' as a prefix because taskpolicy uses
+        # posix_spawn internally, which breaks DTrace's progenyof() tracking.
+        if throttle and not env_wrapper_path:
+            throttle_cmd = cmd_str
+            with tempfile.NamedTemporaryFile(mode='w', suffix='.sh',
+                                              prefix='mactrace_throttle_',
+                                              delete=False) as tf:
+                tf.write('#!/bin/bash\n')
+                tf.write('/usr/sbin/taskpolicy -b -p $$\n')
+                tf.write(f'exec {throttle_cmd}\n')
+                env_wrapper_path = tf.name  # reuse var for cleanup in finally block
+            os.chmod(env_wrapper_path, 0o755)
+            cmd_str = env_wrapper_path
             if self.verbose:
-                print(f"Throttle enabled: {cmd_str}", file=sys.stderr)
+                print(f"Throttle wrapper: {env_wrapper_path}", file=sys.stderr)
+                print(f"  (wraps: {throttle_cmd})", file=sys.stderr)
         
         dtrace_proc = None
         target_pid = None

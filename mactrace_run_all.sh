@@ -6,6 +6,10 @@
 # file paths stay consistent with mactrace, mactrace_import, etc.
 #
 
+### usually blank, but put things here if you want to override defaults on mactrace
+# performance_flags=""
+performance_flags="--switchrate 200hz --bufsize 512m"
+
 # ── Read mactrace config ────────────────────────────────────────────
 # Same logic as mactrace_import: read ~/.mactrace/config, only set
 # vars that aren't already in the environment.
@@ -55,15 +59,22 @@ resolve_path() {
 
 # ── Parse arguments ─────────────────────────────────────────────────
 throttle_flag=""
+force_mode=""
 attach_pid=""
-if [ "$1" = "--throttle" ]; then
-    throttle_flag="--throttle"
-    shift
-fi
+
+# Parse flags (order-independent, before positional args)
+while [[ "$1" == --* ]]; do
+    case "$1" in
+        --throttle) throttle_flag="--throttle"; shift ;;
+        --force)    force_mode=1; shift ;;
+        *) echo "Unknown flag: $1"; exit 1 ;;
+    esac
+done
+
 if [ "$1" = "-p" ]; then
     if [ -z "$2" ] || ! [[ "$2" =~ ^[0-9]+$ ]]; then
-        echo "Usage: $0 [--throttle] -p PID"
-        echo "       $0 [--throttle] program-to-trace [args...]"
+        echo "Usage: $0 [--throttle] [--force] -p PID"
+        echo "       $0 [--throttle] [--force] program-to-trace [args...]"
         exit 1
     fi
     attach_pid="$2"
@@ -71,8 +82,8 @@ if [ "$1" = "-p" ]; then
 fi
 
 if [ -z "$attach_pid" ] && [ -z "$1" ]; then
-    echo "Usage: $0 -p PID"
-    echo "       $0 program-to-trace [args...]"
+    echo "Usage: $0 [--throttle] [--force] -p PID"
+    echo "       $0 [--throttle] [--force] program-to-trace [args...]"
     exit 1
 fi
 
@@ -118,19 +129,37 @@ cleanup_artifacts() {
     fi
 }
 
-# ── Check for existing DB entry ─────────────────────────────────────
-mactrace_db list -j | jq -r '.[] | .name + "\t" + (.id | tostring)' | while IFS=$'\t' read name id; do
-    if [ "$base" = "$name" ]; then
+# ── Handle existing artifacts ────────────────────────────────────────
+existing_db_id=$(mactrace_db list -j 2>/dev/null | jq -r ".[] | select(.name == \"$base\") | .id" 2>/dev/null || true)
+
+if [ -n "$existing_db_id" ]; then
+    if [ -n "$force_mode" ]; then
+        echo "Removing existing DB entry: $base (id=$existing_db_id)"
+        mactrace_db delete "$existing_db_id" 2>/dev/null || true
+    else
         echo -e "\nAn existing saved DB is already present with the name \"$base\", cowardly bailin' out!"
         echo -e "you can remove that entry with the command:\n"
-        echo -e "    mactrace_db delete $id\n"
-        exit 9
+        echo -e "    mactrace_db delete $existing_db_id\n"
+        echo -e "Or use --force to auto-remove.\n"
+        exit 0
     fi
-done
+fi
 
-# Catch exit from subshell above
-if [[ $? -eq 9 ]]; then
-    exit 0
+# Remove existing output files if --force
+if [ -n "$force_mode" ]; then
+    if [ -f "$json_path" ]; then
+        echo "Removing existing: $json_path"
+        rm -f "$json_path"
+    fi
+    if [ -d "$io_dir" ]; then
+        echo "Removing existing: $io_dir/"
+        rm -rf "$io_dir"
+    fi
+    # Also remove the txt summary if it exists
+    txt_path_clean=$(resolve_path "$base.txt" MACTRACE_OUTPUT)
+    if [ -f "$txt_path_clean" ]; then
+        rm -f "$txt_path_clean"
+    fi
 fi
 
 echo -e "\nstarting mactrace run, using \"$base\" as base to use in run.... going to be tracing:\n"
@@ -139,7 +168,7 @@ echo -e "    $traceme\n"
 # ── Run mactrace ────────────────────────────────────────────────────
 if [ -n "$attach_pid" ]; then
     trap 'true' INT
-    sudo mactrace $throttle_flag --capture-io -o "$base.json" -jp -e -p "$attach_pid"
+    sudo mactrace $performance_flags $throttle_flag --capture-io -o "$base.json" -jp -e -p "$attach_pid"
     mactrace_exit=$?
     trap - INT
 else
