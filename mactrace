@@ -4569,9 +4569,18 @@ Path resolution for -o:
     # No need to print again here
     
     # Summary to stderr
+    # Calculate capture stats from DTrace diagnostics
+    import re as _re
+    _total_drops = sum(int(m.group(1)) for line in tracer._dtrace_errors
+                       if (m := _re.search(r'(\d+) drops on CPU', line)))
+    _capture_pct = ""
+    if _total_drops > 0:
+        pct = result.syscall_count / (result.syscall_count + _total_drops) * 100
+        _capture_pct = f" ({pct:.0f}% captured, {_total_drops:,} dropped)"
+    
     print(f"--- Trace summary ---", file=sys.stderr)
     print(f"PID: {result.target_pid}, Exit code: {result.exit_code}", file=sys.stderr)
-    print(f"Syscalls: {result.syscall_count}, Processes: {len(result.pids_traced)}", file=sys.stderr)
+    print(f"Syscalls: {result.syscall_count:,}{_capture_pct}, Processes: {len(result.pids_traced)}", file=sys.stderr)
     print(f"Duration: {result.duration_ms:.1f}ms", file=sys.stderr)
     
     # Show untraced syscalls if requested

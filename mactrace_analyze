@@ -47,6 +47,22 @@ from datetime import datetime
 
 
 # ============================================================================
+# Display limits
+# ============================================================================
+
+MAX_DISPLAY_FILES = 100   # Max files shown in text summary (use --list-all for full list)
+MAX_PATH_DISPLAY = 120    # Truncate displayed paths longer than this
+
+def truncate_path(path: str, max_len: int = MAX_PATH_DISPLAY) -> str:
+    """Truncate long paths, keeping start and end visible."""
+    if len(path) <= max_len:
+        return path
+    # Show first 50 + ... + last 50
+    keep = (max_len - 5) // 2
+    return path[:keep] + " ... " + path[-keep:]
+
+
+# ============================================================================
 # Configuration
 # ============================================================================
 
@@ -527,11 +543,13 @@ class MacTraceAnalyzer:
     """Analyze mactrace JSON output."""
 
     def __init__(self, save_io_dir: str = None, save_all_io: bool = False,
-                 hexdump: bool = False, render_terminal_output: bool = False):
+                 hexdump: bool = False, render_terminal_output: bool = False,
+                 list_all: bool = False):
         self.save_io_dir = save_io_dir
         self.save_all_io = save_all_io
         self.hexdump = hexdump
         self.render_terminal_output = render_terminal_output
+        self.list_all = list_all
         
         self.trace_data: Dict[str, Any] = {}
         self.files: Dict[str, FileAccess] = {}
@@ -1065,9 +1083,14 @@ class MacTraceAnalyzer:
                 regular_files.append(fa)
                 
         if regular_files:
-            print("\n--- Files Accessed ---")
+            sorted_files = sorted(regular_files, key=lambda x: x.path)
+            showing = len(sorted_files)
+            limited = not self.list_all and showing > MAX_DISPLAY_FILES
+            if limited:
+                showing = MAX_DISPLAY_FILES
+            print(f"\n--- Files Accessed ({len(sorted_files)} total{', showing first ' + str(showing) if limited else ''}) ---")
             print("  Flags: R=Read, W=Write, S=Stat/access only (not opened), E=Error")
-            for fa in sorted(regular_files, key=lambda x: x.path):
+            for fa in sorted_files[:showing]:
                 flags = []
                 if fa.read: flags.append('R')
                 if fa.written: flags.append('W')
@@ -1083,17 +1106,26 @@ class MacTraceAnalyzer:
                         parts.append(f"wrote {format_bytes(fa.bytes_written)}")
                     io_info = f" ({', '.join(parts)})"
                     
-                print(f"  [{','.join(flags):5}] {fa.path}{io_info}")
+                print(f"  [{','.join(flags):5}] {truncate_path(fa.path)}{io_info}")
+            if limited:
+                print(f"  ... and {len(sorted_files) - showing} more (use --list-all to see all)")
                 
         if config_files:
-            print("\n--- Config Files ---")
-            for fa in sorted(config_files, key=lambda x: x.path):
+            sorted_cfg = sorted(config_files, key=lambda x: x.path)
+            showing_cfg = len(sorted_cfg)
+            limited_cfg = not self.list_all and showing_cfg > MAX_DISPLAY_FILES
+            if limited_cfg:
+                showing_cfg = MAX_DISPLAY_FILES
+            print(f"\n--- Config Files ({len(sorted_cfg)} total{', showing first ' + str(showing_cfg) if limited_cfg else ''}) ---")
+            for fa in sorted_cfg[:showing_cfg]:
                 flags = []
                 if fa.read: flags.append('R')
                 if fa.written: flags.append('W')
                 if fa.stat and not fa.opened: flags.append('S')
                 if fa.error: flags.append('E')
-                print(f"  [{','.join(flags):5}] {fa.path}")
+                print(f"  [{','.join(flags):5}] {truncate_path(fa.path)}")
+            if limited_cfg:
+                print(f"  ... and {len(sorted_cfg) - showing_cfg} more")
                 
         if library_files and not hide_startup:
             print(f"\n--- Libraries ({len(library_files)} loaded) ---")
@@ -1187,7 +1219,7 @@ class MacTraceAnalyzer:
             if errs:
                 args = errs[0].get('args', {})
                 if 'path' in args:
-                    print(f"    e.g., path={args['path']}")
+                    print(f"    e.g., path={truncate_path(args['path'])}")
                     
     def to_json(self) -> Dict[str, Any]:
         """Return analysis as JSON-serializable dict."""
@@ -1266,6 +1298,8 @@ def main():
                              'files, so this is only needed if you want them on disk')
     parser.add_argument('--render-terminal', action='store_true',
                         help='Create .rendered versions showing terminal output as user would see it')
+    parser.add_argument('--list-all', action='store_true',
+                        help=f'Show all files in text output (default: cap at {MAX_DISPLAY_FILES})')
     
     args = parser.parse_args()
     
@@ -1287,6 +1321,7 @@ def main():
         save_all_io=save_all_io,
         hexdump=args.hexdump,
         render_terminal_output=args.render_terminal,
+        list_all=args.list_all,
     )
     
     try:

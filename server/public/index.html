@@ -339,7 +339,7 @@
         .data-preview {
             color: var(--c-text-muted);
             font-style: italic;
-            cursor: help;
+            cursor: pointer;
             max-width: 400px;
             display: inline-block;
             overflow: hidden;
@@ -349,6 +349,12 @@
         }
         .data-preview:hover {
             color: var(--c-text);
+        }
+        .data-preview.expanded {
+            max-width: none;
+            white-space: pre-wrap;
+            word-break: break-all;
+            overflow: visible;
         }
         
         /* Tooltip for truncated cells */
@@ -699,16 +705,14 @@
     const formatDuration = ms => ms < 1000 ? ms.toFixed(1)+'ms' : (ms/1000).toFixed(2)+'s';
     
     // Decode hex to display string - printable chars as-is, others as \xNN
-    function hexToDisplay(hex, maxLen = 60) {
+    function hexToDisplay(hex, maxLen = Infinity) {
         if (!hex) return '';
         let result = '';
-        let hasUnprintable = false;
         for (let i = 0; i < hex.length && result.length < maxLen; i += 2) {
             const byte = parseInt(hex.substr(i, 2), 16);
             if (byte >= 32 && byte < 127) {
                 result += String.fromCharCode(byte);
             } else {
-                hasUnprintable = true;
                 if (byte === 10) result += '\\n';
                 else if (byte === 13) result += '\\r';
                 else if (byte === 9) result += '\\t';
@@ -716,7 +720,7 @@
                 else result += '\\x' + byte.toString(16).padStart(2, '0');
             }
         }
-        if (hex.length > maxLen * 2) result += '...';
+        if (result.length >= maxLen) result += '...';
         return result;
     }
     
@@ -1128,13 +1132,15 @@
             io = `<span class="io-link" data-io="${escapeHtml(e.io_path)}"${chunkAttr}>[+]</span>`;
         }
         
-        // Data preview - decode hex on the fly
+        // Data preview - decode hex on the fly (click to expand full content)
         let dataStr = '';
         if (e.data_raw) {
             const decoded = hexToDisplay(e.data_raw, 50);
-            const fullDecoded = hexToDisplay(e.data_raw, 200);
+            const fullDecoded = hexToDisplay(e.data_raw);  // no limit
             const display = searchTerm ? highlightText(decoded, searchTerm) : escapeHtml(decoded);
-            dataStr = ` <span class="data-preview" title="${escapeHtml(fullDecoded)}">"${display}"</span>`;
+            const isTruncated = fullDecoded.length > 50;
+            const truncHint = isTruncated ? ` (${fullDecoded.length} chars — click to expand)` : '';
+            dataStr = ` <span class="data-preview" data-short="${escapeHtml(decoded)}" data-full="${escapeHtml(fullDecoded)}" title="${escapeHtml(fullDecoded.slice(0, 500))}${fullDecoded.length > 500 ? '…' : ''}${truncHint}">"${display}"</span>`;
         }
         
         // Enrich target with hostname if we have DNS mapping
@@ -1284,6 +1290,17 @@
             ioPopup.classList.add('show');
         } else {
             ioPopup.classList.remove('show');
+        }
+        
+        // Data preview: click to expand/collapse
+        const preview = e.target.closest('.data-preview');
+        if (preview && preview.dataset.full) {
+            e.stopPropagation();
+            if (preview.classList.toggle('expanded')) {
+                preview.textContent = '"' + preview.dataset.full + '"';
+            } else {
+                preview.textContent = '"' + preview.dataset.short + '..."';
+            }
         }
         
         // DNS jump links
