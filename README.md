@@ -1,10 +1,137 @@
 # mactrace
 
-An strace-like utility for macOS using DTrace. Traces system calls for a command and all its children, outputting structured JSON suitable for timeline analysis.
+An strace-like system call tracer for macOS using DTrace. Traces every syscall for a command and all its child processes, producing structured JSON for analysis and an interactive web-based timeline viewer.
+
+![Trace list](docs/screenshot-traces.png)
+*Trace list — each imported trace shows the command, event count, duration, and exit code.*
+
+![Timeline view](docs/screenshot-timeline.png)
+*Timeline detail — color-coded syscalls with category filtering, I/O tracking, and process tree.*
+
+## Installation
+
+### Prerequisites
+
+- macOS (tested on 15.3 Sequoia)
+- Python 3.8+
+- Node.js 18+ (for the web server)
+- Root privileges (DTrace requires sudo)
+- SIP dtrace restrictions disabled (see [Troubleshooting](#troubleshooting))
+
+### Setup
+
+```bash
+# Clone or copy to your preferred location
+cd ~/src
+git clone <repo-url> mactrace
+cd mactrace
+
+# Install Node.js dependencies for the web server
+cd server && npm install && cd ..
+
+# Add to PATH
+echo 'export PATH="$HOME/src/mactrace:$PATH"' >> ~/.zshrc
+source ~/.zshrc
+
+# Create a config so traces have a consistent home
+mkdir -p ~/.mactrace ~/traces
+cat > ~/.mactrace/config << 'EOF'
+MACTRACE_HOME=~/.mactrace
+MACTRACE_OUTPUT=~/traces
+MACTRACE_DB=$MACTRACE_HOME/mactrace.db
+EOF
+```
+
+### Verify Installation
+
+```bash
+# Should print usage info
+sudo mactrace --help
+
+# Quick test — trace the 'echo' command
+sudo mactrace -o test.json -jp echo hello
+```
+
+## Quick Start
+
+### 1. Trace a command
+
+```bash
+sudo mactrace -o trace.json -jp ls -la /tmp
+```
+
+This runs `ls -la /tmp` under DTrace, captures every syscall (open, read, write, stat, etc.), and writes structured JSON to `trace.json`. The `-j` flag enables JSON output, `-p` pretty-prints it.
+
+### 2. Analyze the trace (text summary)
+
+```bash
+./mactrace_analyze trace.json
+```
+
+Sample output:
+```
+=== mactrace Analysis ===
+Command: ls -la /tmp
+Duration: 12.3ms
+Total syscalls: 87
+PIDs traced: 1
+
+--- Category Breakdown ---
+  file      : 52  (59.8%)
+  memory    : 18  (20.7%)
+  process   :  9  (10.3%)
+  other     :  8  ( 9.2%)
+
+--- Top Syscalls ---
+  stat64          : 15
+  open            : 12
+  read            :  9
+  close           :  8
+  mmap            :  7
+
+--- Files Accessed ---
+  /tmp                          R
+  /usr/lib/dyld                 R
+  /dev/dtracehelper             RS
+
+--- Errors ---
+  stat64("/tmp/.X11-unix")      ENOENT (2)
+```
+
+### 3. View in the web timeline
+
+```bash
+# Import into the database
+mactrace_import trace.json
+
+# Start the server
+mactrace_server
+# → http://localhost:3000
+```
+
+Select a trace from the dropdown to see the interactive timeline with:
+- Color-coded syscall categories (file, network, process, memory, IPC, signal)
+- Click-to-expand I/O hexdump viewer
+- Category filter buttons and text search
+- Process tree visualization
+- Per-syscall timing and return values
+
+### 4. Trace everything a program does
+
+```bash
+# Capture I/O data (read/write buffer contents)
+sudo mactrace --capture-io -o trace.json ./my_program
+
+# Attach to a running process
+sudo mactrace -p 12345 -o trace.json -t 30
+
+# Trace with larger buffers for busy programs
+sudo mactrace --capture-io --strsize 65536 -o trace.json ./my_program
+```
 
 ## Requirements
 
-- macOS (tested on 15.7.3 Sequoia)
+- macOS (tested on 15.3 Sequoia)
 - SIP disabled (or at least dtrace restrictions disabled) for full tracing
 - Python 3.8+
 - Root privileges (DTrace requires sudo)
@@ -346,7 +473,19 @@ jq '.events[] | select(.syscall | test("socket|connect|send|recv"))' trace.json
 jq --arg pid "12346" '.events[] | select(.pid == ($pid | tonumber))' trace.json
 ```
 
-## Analysis Tools
+## Tools Overview
+
+| Tool | Purpose |
+|------|---------|
+| `mactrace` | Core tracer — runs a command under DTrace, captures all syscalls to JSON |
+| `mactrace_analyze` | Text-based analysis — category breakdown, top syscalls, files, errors, I/O extraction |
+| `mactrace_timeline` | Generates a standalone HTML timeline (no server needed) |
+| `mactrace_import` | Imports JSON traces into SQLite for the web server |
+| `mactrace_server` | Starts the web-based timeline viewer |
+| `mactrace_db` | Database management — list, info, delete, vacuum, stats |
+| `mactrace_run_all.sh` | Batch tracer — runs a command with all analysis tools in one shot |
+
+## Analysis Tools (Detail)
 
 ### mactrace_analyze
 
@@ -449,18 +588,58 @@ mactrace_db vacuum            # Compact the database
 mactrace_db stats             # Show database statistics
 ```
 
-### FTS5 Note
+## Troubleshooting
 
-The import may show:
+### "dtrace: system integrity protection is on, some features will not be available"
+
+DTrace on modern macOS is restricted by SIP. To get full tracing:
+
+1. Reboot into Recovery Mode (hold Cmd+R on Intel, power button on Apple Silicon)
+2. Open Terminal from Utilities menu
+3. Run: `csrutil enable --without dtrace`
+4. Reboot
+
+**Note:** This only disables SIP's dtrace restrictions, not SIP itself. To re-enable: `csrutil enable` from Recovery Mode.
+
+### "dtrace: failed to initialize dtrace: DTrace requires additional privileges"
+
+DTrace requires root. Always run mactrace with `sudo`:
+```bash
+sudo mactrace -o trace.json ./my_program
 ```
-Note: FTS5 not available, search will use LIKE
+
+### Drops: "dtrace: N dynamic variable drops" or missing events
+
+DTrace has fixed-size buffers. If your traced program is very busy, increase buffer sizes:
+```bash
+sudo mactrace --bufsize 512m --dynvarsize 512m -o trace.json ./my_program
 ```
 
-This is informational. **FTS5** (Full-Text Search 5) is a SQLite extension for fast text search. The server uses **sql.js** (WebAssembly SQLite), which doesn't include FTS5 by default.
+For I/O capture, also increase string/data sizes:
+```bash
+sudo mactrace --capture-io --strsize 65536 --io-size 65536 -o trace.json ./my_program
+```
 
-**Impact:** Search still works via `LIKE '%term%'` queries. For ~100K events this is fine. For millions of events, search would be slower.
+### Server won't start / "Cannot find module 'better-sqlite3'"
 
-**If you need FTS5:** Use native SQLite with FTS5 compiled in, or a sql.js build with FTS5 enabled (larger WASM file).
+Install Node.js dependencies:
+```bash
+cd server && npm install
+```
+
+### Empty or missing trace output
+
+- Check that the traced program actually ran (look for exit code in the JSON)
+- Try `-v` (verbose) to see DTrace activity on stderr
+- Use `-e` to detect untraced syscalls that mactrace doesn't cover yet
+- Some programs behave differently under sudo — use `-u yourname` to run as yourself
+
+### Import shows "0 events imported"
+
+The JSON file might be empty or malformed. Check it:
+```bash
+python3 -c "import json; d=json.load(open('trace.json')); print(f'{len(d.get(\"events\",[]))} events')"
+```
 
 ## Future Improvements
 
