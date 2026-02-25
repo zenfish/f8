@@ -643,6 +643,13 @@ The JSON file might be empty or malformed. Check it:
 python3 -c "import json; d=json.load(open('trace.json')); print(f'{len(d.get(\"events\",[]))} events')"
 ```
 
+## Adding Syscalls
+
+See **[ADDING_SYSCALLS.md](ADDING_SYSCALLS.md)** for a step-by-step guide to adding new system calls. There are two levels:
+
+- **Level 1 (basic):** Add one line to `syscalls.json` — the syscall gets counted, categorized, and colored in all tools. Takes 30 seconds.
+- **Level 2 (rich):** Add DTrace probes + a Python parser to capture and decode arguments (paths, fds, flags). Takes 15-30 minutes.
+
 ## Future Improvements
 
 - [ ] Socket address decoding (IP/port extraction)
