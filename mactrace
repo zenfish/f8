@@ -1591,7 +1591,7 @@ syscall::kqueue:return
 # Import syscall categories from shared module
 import sys
 import os
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, os.path.dirname(os.path.realpath(__file__)))
 from mactrace_categories import get_category as get_syscall_category
 
 

@@ -25,8 +25,8 @@ sys.dont_write_bytecode = True
 # =============================================================================
 
 def _find_syscalls_json():
-    """Find syscalls.json relative to this script's location."""
-    script_dir = os.path.dirname(os.path.abspath(__file__))
+    """Find syscalls.json relative to this script's real location (follows symlinks)."""
+    script_dir = os.path.dirname(os.path.realpath(__file__))
     path = os.path.join(script_dir, 'syscalls.json')
     if os.path.exists(path):
         return path
