@@ -1,0 +1,12 @@
+[run]
+source = .
+omit =
+    tests/*
+    server/node_modules/*
+    */io/*
+
+[report]
+exclude_lines =
+    if __name__ == "__main__"
+    pragma: no cover
+    raise NotImplementedError

@@ -317,7 +317,7 @@ def render_terminal(data: bytes, width: int = 80) -> bytes:
             else:
                 i += 2
                 continue
-        elif data[i] >= 0x20 or data[i] in (0x09, 0x0a, 0x0d):
+        elif data[i] >= 0x20 or data[i] in (0x08, 0x09, 0x0a, 0x0d):
             cleaned.append(data[i])
             i += 1
         else:
