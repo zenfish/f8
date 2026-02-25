@@ -4482,11 +4482,13 @@ def main():
     parser = argparse.ArgumentParser(
         description="mactrace - strace-like utility for macOS using DTrace",
         formatter_class=argparse.RawDescriptionHelpFormatter,
+        usage="%(prog)s [options] command [args ...]",
         epilog="""
 Requires root privileges.
 
-Trace a command:    sudo ./mactrace ls -la
-Attach to a PID:   sudo ./mactrace -p 12345
+Trace a command:    sudo mactrace ls -la
+Trace a pipeline:   sudo mactrace sh -c 'echo hello | wc -c'
+Attach to a PID:    sudo mactrace -p 12345
 
 Configuration (in priority order):
   1. Command-line flags
@@ -4512,6 +4514,16 @@ Path resolution for -o:
   /absolute/path  -> used as-is
   ./relative      -> used as-is
   filename.json   -> $MACTRACE_OUTPUT/filename.json
+
+Shell metacharacters:
+  mactrace traces a single command and its children. Pipes, redirects,
+  backgrounding (&), semicolons, and other shell syntax are interpreted
+  by YOUR shell before mactrace sees them. To trace a pipeline or
+  compound command, wrap it with sh -c:
+
+    sudo mactrace sh -c 'echo hello | wc -c'
+    sudo mactrace sh -c 'curl -s example.com > /tmp/out'
+    sudo mactrace sh -c 'cmd1 && cmd2'
 
 """
     )
@@ -4547,7 +4559,10 @@ Path resolution for -o:
     parser.add_argument("--throttle", action="store_true",
                         help="Throttle traced program (macOS taskpolicy -b: background I/O + CPU). "
                              "Reduces DTrace drops for heavy workloads like npm install")
-    parser.add_argument("command", nargs=argparse.REMAINDER, help="Command to trace")
+    parser.add_argument("command", nargs=argparse.REMAINDER,
+                        help="Command to trace. Pipelines and shell metacharacters "
+                             "(|, &, ;, >, etc.) must be wrapped: "
+                             "sudo mactrace sh -c 'cmd1 | cmd2'")
     
     args = parser.parse_args()
     
