@@ -19,6 +19,7 @@ Options:
 import argparse
 import os
 import sys
+sys.dont_write_bytecode = True
 import sqlite3
 from datetime import datetime
 

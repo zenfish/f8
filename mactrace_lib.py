@@ -7,6 +7,8 @@ code duplication. All mactrace Python tools should import from here.
 """
 
 import os
+import sys
+sys.dont_write_bytecode = True
 import re
 import pwd
 
