@@ -1,11 +1,12 @@
 #!/usr/bin/env node
 /**
- * mactrace timeline server (using sql.js)
+ * mactrace timeline server (using better-sqlite3)
  * 
+ * Database is memory-mapped and read on demand — no full-RAM copy.
  * Usage: mactrace-server [--db mactrace.db] [--port 3000]
  */
 
-import initSqlJs from 'sql.js';
+import Database from 'better-sqlite3';
 import express from 'express';
 import path from 'path';
 import { fileURLToPath } from 'url';
@@ -30,23 +31,16 @@ if (!fs.existsSync(dbFile)) {
     process.exit(1);
 }
 
-// Load database
-const SQL = await initSqlJs();
-const buffer = fs.readFileSync(dbFile);
-const db = new SQL.Database(buffer);
+// Open database read-only with WAL mode for concurrent reads.
+// better-sqlite3 uses memory-mapped I/O — only pages actually
+// accessed are loaded, so a 500MB DB doesn't need 500MB RAM.
+const db = new Database(dbFile, { readonly: true, fileMustExist: true });
+db.pragma('mmap_size = 268435456'); // 256MB mmap window
 
-// Helper to run query and get results as objects
+// Helpers — better-sqlite3 returns rows as plain objects directly
 function query(sql, params = []) {
     try {
-        const stmt = db.prepare(sql);
-        stmt.bind(params);
-        const results = [];
-        while (stmt.step()) {
-            const row = stmt.getAsObject();
-            results.push(row);
-        }
-        stmt.free();
-        return results;
+        return db.prepare(sql).all(...params);
     } catch (e) {
         console.error('Query error:', e.message, sql);
         return [];
@@ -54,8 +48,12 @@ function query(sql, params = []) {
 }
 
 function queryOne(sql, params = []) {
-    const results = query(sql, params);
-    return results[0] || null;
+    try {
+        return db.prepare(sql).get(...params) || null;
+    } catch (e) {
+        console.error('Query error:', e.message, sql);
+        return null;
+    }
 }
 
 const app = express();

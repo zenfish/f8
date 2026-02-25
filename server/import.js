@@ -5,7 +5,7 @@
  * Usage: mactrace-import trace.json [--db mactrace.db] [--io-dir ./io_output]
  */
 
-import initSqlJs from 'sql.js';
+import Database from 'better-sqlite3';
 import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
@@ -243,22 +243,18 @@ const startTime = trace.start_time || null;
 
 console.log(`Loaded ${events.length.toLocaleString()} events`);
 
-// Initialize SQL.js
-const SQL = await initSqlJs();
-
-// Load existing DB or create new
-let db;
+// Open or create database (better-sqlite3 writes directly to disk —
+// no need to export/save manually)
+const db = new Database(dbFile);
+db.pragma('journal_mode = WAL');
 if (fs.existsSync(dbFile)) {
-    const buffer = fs.readFileSync(dbFile);
-    db = new SQL.Database(buffer);
     console.log(`Opened existing database: ${dbFile}`);
 } else {
-    db = new SQL.Database();
     console.log(`Creating new database: ${dbFile}`);
 }
 
 // Create schema
-db.run(`
+db.exec(`
     CREATE TABLE IF NOT EXISTS traces (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         name TEXT,
@@ -274,7 +270,7 @@ db.run(`
     )
 `);
 
-db.run(`
+db.exec(`
     CREATE TABLE IF NOT EXISTS events (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         trace_id INTEGER NOT NULL,
@@ -297,13 +293,13 @@ db.run(`
     )
 `);
 
-db.run('CREATE INDEX IF NOT EXISTS idx_events_trace ON events(trace_id)');
-db.run('CREATE INDEX IF NOT EXISTS idx_events_category ON events(trace_id, category)');
-db.run('CREATE INDEX IF NOT EXISTS idx_events_syscall ON events(trace_id, syscall)');
-db.run('CREATE INDEX IF NOT EXISTS idx_events_errno ON events(trace_id, errno)');
+db.exec('CREATE INDEX IF NOT EXISTS idx_events_trace ON events(trace_id)');
+db.exec('CREATE INDEX IF NOT EXISTS idx_events_category ON events(trace_id, category)');
+db.exec('CREATE INDEX IF NOT EXISTS idx_events_syscall ON events(trace_id, syscall)');
+db.exec('CREATE INDEX IF NOT EXISTS idx_events_errno ON events(trace_id, errno)');
 
 // Process lifecycle table (from process_tree + process_events)
-db.run(`
+db.exec(`
     CREATE TABLE IF NOT EXISTS processes (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         trace_id INTEGER NOT NULL,
@@ -317,11 +313,11 @@ db.run(`
         FOREIGN KEY (trace_id) REFERENCES traces(id) ON DELETE CASCADE
     )
 `);
-db.run('CREATE INDEX IF NOT EXISTS idx_processes_trace ON processes(trace_id)');
-db.run('CREATE INDEX IF NOT EXISTS idx_processes_pid ON processes(trace_id, pid)');
+db.exec('CREATE INDEX IF NOT EXISTS idx_processes_trace ON processes(trace_id)');
+db.exec('CREATE INDEX IF NOT EXISTS idx_processes_pid ON processes(trace_id, pid)');
 
 // DNS lookups table for hostname → IP correlation
-db.run(`
+db.exec(`
     CREATE TABLE IF NOT EXISTS dns_lookups (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         trace_id INTEGER NOT NULL,
@@ -332,17 +328,17 @@ db.run(`
         FOREIGN KEY (trace_id) REFERENCES traces(id) ON DELETE CASCADE
     )
 `);
-db.run('CREATE INDEX IF NOT EXISTS idx_dns_trace ON dns_lookups(trace_id)');
-db.run('CREATE INDEX IF NOT EXISTS idx_dns_ip ON dns_lookups(trace_id, ip)');
+db.exec('CREATE INDEX IF NOT EXISTS idx_dns_trace ON dns_lookups(trace_id)');
+db.exec('CREATE INDEX IF NOT EXISTS idx_dns_ip ON dns_lookups(trace_id, ip)');
 
 // Insert trace
 const traceName = path.basename(jsonFile, '.json');
-db.run(`INSERT INTO traces (name, command, json_file, io_dir, target_pid, exit_code, duration_ms, event_count, start_time)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-       [traceName, command, path.resolve(jsonFile), ioDir ? path.resolve(ioDir) : null,
-        targetPid, exitCode, durationMs, events.length, startTime]);
+db.prepare(`INSERT INTO traces (name, command, json_file, io_dir, target_pid, exit_code, duration_ms, event_count, start_time)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+    .run(traceName, command, path.resolve(jsonFile), ioDir ? path.resolve(ioDir) : null,
+         targetPid, exitCode, durationMs, events.length, startTime);
 
-const traceId = db.exec('SELECT last_insert_rowid() as id')[0].values[0][0];
+const traceId = db.prepare('SELECT last_insert_rowid() as id').get().id;
 console.log(`Created trace #${traceId}: ${traceName}`);
 
 // Track file descriptors
@@ -591,7 +587,7 @@ let imported = 0;
 
 // Wrap in a transaction for correctness (atomic import) and performance
 // (~100x faster than autocommit per-row).
-db.run('BEGIN TRANSACTION');
+db.exec('BEGIN TRANSACTION');
 
 for (const event of events) {
     trackFd(event);
@@ -615,7 +611,7 @@ for (const event of events) {
     const timestampUs = event.timestamp_us || 0;
     const timeStr = formatTime(timestampUs);
     
-    insertStmt.run([
+    insertStmt.run(
         traceId,
         event.timestamp_us || imported,
         timestampUs,
@@ -632,7 +628,7 @@ for (const event of events) {
         ioPath,
         ioChunk,
         dataRaw
-    ]);
+    );
     
     imported++;
     if (imported % 5000 === 0) {
@@ -640,8 +636,7 @@ for (const event of events) {
     }
 }
 
-insertStmt.free();
-db.run('COMMIT');
+db.exec('COMMIT');
 console.log(`\n  ${imported.toLocaleString()} events imported`);
 
 // Write metadata for any generated I/O files
@@ -702,7 +697,7 @@ if (Object.keys(processTree).length > 0 || processEvents.length > 0) {
     
     let procCount = 0;
     for (const [pid, info] of procInfo) {
-        procStmt.run([
+        procStmt.run(
             traceId, pid,
             info.parent_pid ?? null,
             info.exec_path ?? null,
@@ -710,10 +705,9 @@ if (Object.keys(processTree).length > 0 || processEvents.length > 0) {
             info.exec_time ?? null,
             info.exit_time ?? null,
             info.exit_code ?? null
-        ]);
+        );
         procCount++;
     }
-    procStmt.free();
     console.log(`  ${procCount.toLocaleString()} processes imported`);
 }
 
@@ -726,32 +720,22 @@ function extractDnsLookups() {
     const connectEvents = [];
     
     // Query for mDNSResponder sends
-    const dnsStmt = db.prepare(`
+    const dnsRows = db.prepare(`
         SELECT seq, data_raw FROM events 
         WHERE trace_id = ? AND target = '/var/run/mDNSResponder'
         AND data_raw IS NOT NULL AND syscall LIKE '%send%'
         ORDER BY seq
-    `);
-    dnsStmt.bind([traceId]);
-    while (dnsStmt.step()) {
-        const row = dnsStmt.getAsObject();
-        dnsEvents.push(row);
-    }
-    dnsStmt.free();
+    `).all(traceId);
+    dnsEvents.push(...dnsRows);
     
     // Query for connect to IPs
-    const connStmt = db.prepare(`
+    const connRows = db.prepare(`
         SELECT seq, target FROM events 
         WHERE trace_id = ? AND syscall = 'connect'
         AND target GLOB '[0-9]*.[0-9]*.[0-9]*.[0-9]*:*'
         ORDER BY seq
-    `);
-    connStmt.bind([traceId]);
-    while (connStmt.step()) {
-        const row = connStmt.getAsObject();
-        connectEvents.push(row);
-    }
-    connStmt.free();
+    `).all(traceId);
+    connectEvents.push(...connRows);
     
     if (dnsEvents.length === 0) {
         console.log('  No mDNSResponder traffic found');
@@ -822,9 +806,8 @@ function extractDnsLookups() {
     
     // Insert unique correlations
     for (const [hostname, info] of correlations) {
-        dnsInsert.run([traceId, hostname, info.ip, info.lookup_seq, info.connect_seq]);
+        dnsInsert.run(traceId, hostname, info.ip, info.lookup_seq, info.connect_seq);
     }
-    dnsInsert.free();
     
     console.log(`  Found ${correlations.size} hostname → IP correlations`);
     for (const [hostname, info] of correlations) {
@@ -836,17 +819,15 @@ extractDnsLookups();
 
 // Create FTS table for search (if SQLite FTS5 is available)
 try {
-    db.run('DROP TABLE IF EXISTS events_fts');
-    db.run(`CREATE VIRTUAL TABLE events_fts USING fts5(syscall, target, details, time_str, errno_name, content=events, content_rowid=id)`);
-    db.run(`INSERT INTO events_fts(rowid, syscall, target, details, time_str, errno_name) SELECT id, syscall, target, details, time_str, errno_name FROM events WHERE trace_id = ${traceId}`);
+    db.exec('DROP TABLE IF EXISTS events_fts');
+    db.exec(`CREATE VIRTUAL TABLE events_fts USING fts5(syscall, target, details, time_str, errno_name, content=events, content_rowid=id)`);
+    db.exec(`INSERT INTO events_fts(rowid, syscall, target, details, time_str, errno_name) SELECT id, syscall, target, details, time_str, errno_name FROM events WHERE trace_id = ${traceId}`);
     console.log('Created full-text search index');
 } catch (e) {
     console.log('Note: FTS5 not available, search will use LIKE (see README.md)');
 }
 
-// Save database
-const data = db.export();
-fs.writeFileSync(dbFile, Buffer.from(data));
+// better-sqlite3 writes directly to disk — no export/save step needed
 db.close();
 
 console.log(`Done! Saved to ${dbFile}`);

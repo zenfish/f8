@@ -8,8 +8,8 @@
     "import": "node import.js"
   },
   "dependencies": {
+    "better-sqlite3": "^12.6.2",
     "express": "^4.18.2",
-    "sql.js": "^1.10.0",
     "stream-json": "^1.9.1"
   }
 }
