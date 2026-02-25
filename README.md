@@ -26,20 +26,22 @@ cd ~/src
 git clone <repo-url> mactrace
 cd mactrace
 
-# Install Node.js dependencies for the web server
-cd server && npm install && cd ..
+# Run the installer (installs deps, creates config, sets up PATH)
+./install.sh
+```
 
-# Add to PATH
-echo 'export PATH="$HOME/src/mactrace:$PATH"' >> ~/.zshrc
-source ~/.zshrc
+The installer does three things:
+1. **`npm install`** in `server/` — installs better-sqlite3 for the web server
+2. **Creates `~/.mactrace/config`** — sets `MACTRACE_OUTPUT=~/traces` so traces have a consistent home. All tools read this config automatically, even through `sudo` (uses `SUDO_USER` to find your home directory). See [ENVIRONMENT.md](ENVIRONMENT.md) for full config syntax.
+3. **Adds tools to PATH** — symlinks to `/usr/local/bin`, or prints the `export PATH=...` line if that's not writable
 
-# Create a config so traces have a consistent home
-mkdir -p ~/.mactrace ~/traces
-cat > ~/.mactrace/config << 'EOF'
-MACTRACE_HOME=~/.mactrace
-MACTRACE_OUTPUT=~/traces
-MACTRACE_DB=$MACTRACE_HOME/mactrace.db
-EOF
+### Manual Setup (if you prefer)
+
+```bash
+cd server && npm install && cd ..                      # Node.js deps
+mkdir -p ~/.mactrace ~/traces                          # Directories
+echo 'MACTRACE_OUTPUT=~/traces' > ~/.mactrace/config   # Config
+export PATH="$PWD:$PATH"                               # PATH
 ```
 
 ### Verify Installation
