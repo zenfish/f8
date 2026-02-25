@@ -608,21 +608,22 @@ app.get('/api/traces/:id/process-tree', (req, res) => {
     }
 });
 
-// Category colors
+// Category colors — loaded from shared syscalls.json (single source of truth)
+const syscallsJsonPath = path.join(__dirname, '..', 'syscalls.json');
+const syscallsData = JSON.parse(fs.readFileSync(syscallsJsonPath, 'utf-8'));
+const categoryColors = {};
+for (const cat of syscallsData.categories) {
+    categoryColors[cat.id] = { bg: cat.color, text: cat.textColor };
+}
+if (syscallsData.defaultCategory) {
+    categoryColors[syscallsData.defaultCategory.id] = {
+        bg: syscallsData.defaultCategory.color,
+        text: syscallsData.defaultCategory.textColor
+    };
+}
+
 app.get('/api/categories', (req, res) => {
-    res.json({
-        file: { bg: '#4CAF50', text: '#ffffff' },
-        network: { bg: '#2196F3', text: '#ffffff' },
-        process: { bg: '#FF9800', text: '#000000' },
-        memory: { bg: '#9C27B0', text: '#ffffff' },
-        signal: { bg: '#F44336', text: '#ffffff' },
-        ipc: { bg: '#00BCD4', text: '#000000' },
-        poll: { bg: '#8BC34A', text: '#000000' },
-        time: { bg: '#FFC107', text: '#000000' },
-        mac: { bg: '#795548', text: '#ffffff' },
-        necp: { bg: '#607D8B', text: '#ffffff' },
-        other: { bg: '#9E9E9E', text: '#000000' }
-    });
+    res.json(categoryColors);
 });
 
 const server = app.listen(port, () => {

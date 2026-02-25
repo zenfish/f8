@@ -1,285 +1,109 @@
 #!/usr/bin/env python3
 """
-mactrace_categories.py - Syscall category definitions
+mactrace_categories.py - Syscall category definitions (loaded from syscalls.json)
 
-This file defines the mapping of syscalls to categories.
-Edit this file to add new syscalls or adjust categorization.
+This module provides the mapping of syscalls to categories, colors, and display
+order. All data is loaded from syscalls.json — edit THAT file to add/remove
+syscalls or categories.
 
-Categories are used for:
-- Filtering in analysis and timeline views
-- Color coding in visualizations
-- Grouping in summaries
+Usage as module:
+    from mactrace_categories import get_category, get_color, get_text_color
 
-To add a new syscall:
-1. Find the appropriate category
-2. Add the syscall name to that category's set
-3. All tools (mactrace, mactrace_analyze, mactrace_timeline) will pick it up
+Usage standalone:
+    ./mactrace_categories.py           # Summary
+    ./mactrace_categories.py -a        # All syscalls
+    ./mactrace_categories.py --verify  # Verify no duplicates, valid colors
 """
 
-# =============================================================================
-# SYSCALL CATEGORIES
-# =============================================================================
-# Each category maps to a set of syscall names.
-# A syscall should only appear in ONE category.
-# Unknown syscalls default to 'other'.
-
-SYSCALL_CATEGORIES = {
-    # -------------------------------------------------------------------------
-    # FILE - File system operations
-    # -------------------------------------------------------------------------
-    'file': {
-        # Open/close
-        'open', 'open_nocancel', 'openat', 'openat_nocancel',
-        'close', 'close_nocancel',
-        
-        # Read/write
-        'read', 'read_nocancel', 'pread', 'pread_nocancel',
-        'write', 'write_nocancel', 'pwrite', 'pwrite_nocancel',
-        'readv', 'writev', 'preadv', 'pwritev',
-        
-        # Stat/access
-        'stat', 'stat64', 'lstat', 'lstat64', 'fstat', 'fstat64', 'fstatat64',
-        'access', 'faccessat',
-        'statfs', 'statfs64', 'fstatfs', 'fstatfs64',
-        
-        # Directory operations
-        'mkdir', 'mkdirat', 'rmdir',
-        'chdir', 'fchdir', 'getcwd',
-        'getdirentries', 'getdirentries64', 'getattrlistbulk',
-        
-        # File manipulation
-        'unlink', 'unlinkat', 'rename', 'renameat', 'renamex_np',
-        'link', 'linkat', 'symlink', 'symlinkat', 'readlink', 'readlinkat',
-        'truncate', 'ftruncate',
-        
-        # Permissions
-        'chmod', 'fchmod', 'fchmodat',
-        'chown', 'fchown', 'lchown', 'fchownat',
-        'chflags', 'fchflags',
-        
-        # Extended attributes
-        'getxattr', 'fgetxattr', 'setxattr', 'fsetxattr',
-        'listxattr', 'flistxattr', 'removexattr', 'fremovexattr',
-        
-        # File descriptors
-        'dup', 'dup2', 'dup3',
-        'fcntl', 'fcntl_nocancel',
-        'ioctl',
-        
-        # Sync
-        'fsync', 'fsync_nocancel', 'fdatasync',
-        'sync',
-        
-        # Other file ops
-        'umask', 'pathconf', 'fpathconf',
-        'getattrlist', 'setattrlist', 'fgetattrlist', 'fsetattrlist',
-        'exchangedata', 'searchfs',
-    },
-    
-    # -------------------------------------------------------------------------
-    # NETWORK - Network/socket operations
-    # -------------------------------------------------------------------------
-    'network': {
-        # Socket creation
-        'socket', 'socketpair',
-        
-        # Connection
-        'connect', 'connect_nocancel',
-        'bind', 'listen',
-        'accept', 'accept_nocancel',
-        
-        # Data transfer
-        'send', 'sendto', 'sendto_nocancel', 'sendmsg', 'sendmsg_nocancel',
-        'recv', 'recvfrom', 'recvfrom_nocancel', 'recvmsg', 'recvmsg_nocancel',
-        
-        # Socket options
-        'setsockopt', 'getsockopt',
-        'shutdown',
-        
-        # Socket info
-        'getpeername', 'getsockname',
-        'gethostuuid',
-    },
-    
-    # -------------------------------------------------------------------------
-    # NECP - Network Extension Control Policy (macOS)
-    # -------------------------------------------------------------------------
-    'necp': {
-        'necp_open',
-        'necp_client_action',
-        'necp_session_open',
-        'necp_session_action',
-        'necp_match_policy',
-    },
-    
-    # -------------------------------------------------------------------------
-    # PROCESS - Process lifecycle and info
-    # -------------------------------------------------------------------------
-    'process': {
-        # Creation/execution
-        'fork', 'vfork',
-        'execve', 'posix_spawn',
-        '__mac_execve',
-        
-        # Exit/wait
-        'exit', '_exit',
-        'wait4', 'wait4_nocancel', 'waitpid', 'waitid',
-        
-        # Process info
-        'getpid', 'getppid', 'getpgid', 'getsid',
-        'setpgid', 'setsid',
-        
-        # User/group IDs
-        'getuid', 'geteuid', 'getgid', 'getegid',
-        'setuid', 'seteuid', 'setgid', 'setegid',
-        'setreuid', 'setregid',
-        'getgroups', 'setgroups',
-        
-        # Resource limits
-        'getrlimit', 'setrlimit',
-        'getrusage',
-        
-        # Priority
-        'getpriority', 'setpriority',
-        'nice',
-    },
-    
-    # -------------------------------------------------------------------------
-    # MEMORY - Memory management
-    # -------------------------------------------------------------------------
-    'memory': {
-        'mmap', 'munmap', 'mprotect',
-        'madvise', 'mincore', 'mlock', 'munlock',
-        'msync',
-        'mremap',
-        'brk', 'sbrk',
-    },
-    
-    # -------------------------------------------------------------------------
-    # SIGNAL - Signal handling
-    # -------------------------------------------------------------------------
-    'signal': {
-        'sigaction', 'sigprocmask', 'sigsuspend', 'sigpending',
-        'sigwait', 'sigtimedwait',
-        'sigaltstack',
-        'sigreturn',
-        'kill', 'killpg',
-        'pthread_kill',
-    },
-    
-    # -------------------------------------------------------------------------
-    # MAC - Mandatory Access Control (macOS security framework)
-    # -------------------------------------------------------------------------
-    'mac': {
-        '__mac_syscall',
-        '__mac_get_file', '__mac_set_file',
-        '__mac_get_link', '__mac_set_link',
-        '__mac_get_proc', '__mac_set_proc',
-        '__mac_get_fd', '__mac_set_fd',
-        '__mac_get_pid',
-        '__mac_get_lcid', '__mac_get_lctx',
-        '__mac_set_lctx',
-    },
-    
-    # -------------------------------------------------------------------------
-    # IPC - Inter-process communication
-    # -------------------------------------------------------------------------
-    'ipc': {
-        # Pipes
-        'pipe', 'pipe2',
-        
-        # Shared memory
-        'shm_open', 'shm_unlink',
-        'shmget', 'shmat', 'shmdt', 'shmctl',
-        
-        # Semaphores
-        'sem_open', 'sem_close', 'sem_unlink',
-        'sem_wait', 'sem_trywait', 'sem_post',
-        'semget', 'semop', 'semctl',
-        
-        # Message queues
-        'msgget', 'msgsnd', 'msgrcv', 'msgctl',
-        
-        # Mach IPC (macOS)
-        'mach_msg', 'mach_msg_overwrite',
-    },
-    
-    # -------------------------------------------------------------------------
-    # POLL - Event waiting/polling
-    # -------------------------------------------------------------------------
-    'poll': {
-        'select', 'select_nocancel',
-        'pselect', 'pselect_nocancel',
-        'poll', 'poll_nocancel',
-        'ppoll',
-        'kevent', 'kevent64', 'kevent_qos', 'kevent_id',
-        'kqueue',
-    },
-    
-    # -------------------------------------------------------------------------
-    # TIME - Time and timers
-    # -------------------------------------------------------------------------
-    'time': {
-        'gettimeofday', 'settimeofday',
-        'clock_gettime', 'clock_settime', 'clock_getres',
-        'nanosleep',
-        'getitimer', 'setitimer',
-        'timer_create', 'timer_delete', 'timer_settime', 'timer_gettime',
-    },
-    
-    # -------------------------------------------------------------------------
-    # THREAD - Thread operations
-    # -------------------------------------------------------------------------
-    'thread': {
-        'pthread_create', 'pthread_exit', 'pthread_join',
-        'pthread_mutex_lock', 'pthread_mutex_unlock',
-        'pthread_cond_wait', 'pthread_cond_signal',
-        'bsdthread_create', 'bsdthread_terminate',
-        'bsdthread_register',
-        'thread_selfid',
-        'workq_kernreturn', 'workq_open',
-    },
-}
+import json
+import os
+import sys
 
 # =============================================================================
-# CATEGORY COLORS (for visualization)
-# =============================================================================
-# Colors from ColorBrewer PiYG (pink-green diverging) palette
-# https://colorbrewer2.org/#type=diverging&scheme=PiYG&n=10
-
-CATEGORY_COLORS = {
-    'file':     '#276419',  # dark green - most common, anchoring
-    'network':  '#4d9221',  # green
-    'necp':     '#7fbc41',  # medium green
-    'process':  '#b8e186',  # light green
-    'memory':   '#e6f5d0',  # pale green
-    'signal':   '#fde0ef',  # pale pink
-    'mac':      '#f1b6da',  # light pink
-    'ipc':      '#de77ae',  # medium pink
-    'poll':     '#c51b7d',  # pink
-    'time':     '#8e0152',  # dark pink/magenta
-    'thread':   '#762a83',  # purple (from PRGn for extra category)
-    'other':    '#878787',  # neutral gray
-}
-
-# =============================================================================
-# CATEGORY DISPLAY ORDER
+# LOAD DATA FROM syscalls.json
 # =============================================================================
 
-CATEGORY_ORDER = [
-    'file', 'network', 'necp', 'process', 'memory', 
-    'signal', 'mac', 'ipc', 'poll', 'time', 'thread', 'other'
-]
+def _find_syscalls_json():
+    """Find syscalls.json relative to this script's location."""
+    script_dir = os.path.dirname(os.path.abspath(__file__))
+    path = os.path.join(script_dir, 'syscalls.json')
+    if os.path.exists(path):
+        return path
+    # Fallback: check current directory
+    if os.path.exists('syscalls.json'):
+        return 'syscalls.json'
+    raise FileNotFoundError(
+        f"syscalls.json not found in {script_dir} or current directory. "
+        "This file is required — it defines all syscall categories."
+    )
+
+
+def _load_syscall_data():
+    """Load and parse syscalls.json, returning structured data."""
+    path = _find_syscalls_json()
+    with open(path, 'r') as f:
+        data = json.load(f)
+    
+    categories = data.get('categories', [])
+    default_cat = data.get('defaultCategory', {
+        'id': 'other', 'label': 'Other',
+        'color': '#878787', 'textColor': '#ffffff'
+    })
+    
+    # Build lookup tables
+    syscall_to_category = {}
+    category_colors = {}
+    category_text_colors = {}
+    category_order = []
+    category_labels = {}
+    category_descriptions = {}
+    syscall_sets = {}
+    
+    for cat in categories:
+        cat_id = cat['id']
+        category_order.append(cat_id)
+        category_colors[cat_id] = cat['color']
+        category_text_colors[cat_id] = cat.get('textColor', '#ffffff')
+        category_labels[cat_id] = cat.get('label', cat_id.capitalize())
+        category_descriptions[cat_id] = cat.get('description', '')
+        syscall_sets[cat_id] = set(cat.get('syscalls', []))
+        
+        for syscall in cat.get('syscalls', []):
+            if syscall in syscall_to_category:
+                print(f"WARNING: syscall '{syscall}' in both "
+                      f"'{syscall_to_category[syscall]}' and '{cat_id}' — "
+                      f"using '{cat_id}'", file=sys.stderr)
+            syscall_to_category[syscall] = cat_id
+    
+    # Add default category
+    default_id = default_cat['id']
+    category_order.append(default_id)
+    category_colors[default_id] = default_cat['color']
+    category_text_colors[default_id] = default_cat.get('textColor', '#ffffff')
+    category_labels[default_id] = default_cat.get('label', 'Other')
+    category_descriptions[default_id] = default_cat.get('description', '')
+    
+    return {
+        'syscall_to_category': syscall_to_category,
+        'category_colors': category_colors,
+        'category_text_colors': category_text_colors,
+        'category_order': category_order,
+        'category_labels': category_labels,
+        'category_descriptions': category_descriptions,
+        'syscall_sets': syscall_sets,
+    }
+
+
+# Load once at import time
+_DATA = _load_syscall_data()
 
 # =============================================================================
-# HELPER FUNCTIONS
+# PUBLIC API (same interface as before — drop-in replacement)
 # =============================================================================
 
-# Build reverse lookup: syscall -> category
-_SYSCALL_TO_CATEGORY = {}
-for _cat, _syscalls in SYSCALL_CATEGORIES.items():
-    for _syscall in _syscalls:
-        _SYSCALL_TO_CATEGORY[_syscall] = _cat
+SYSCALL_CATEGORIES = _DATA['syscall_sets']
+CATEGORY_COLORS = _DATA['category_colors']
+CATEGORY_ORDER = _DATA['category_order']
 
 
 def get_category(syscall: str) -> str:
@@ -292,12 +116,12 @@ def get_category(syscall: str) -> str:
     Returns:
         Category name (e.g., 'file', 'network', 'mac') or 'other' if unknown.
     """
-    return _SYSCALL_TO_CATEGORY.get(syscall, 'other')
+    return _DATA['syscall_to_category'].get(syscall, 'other')
 
 
 def get_color(category: str) -> str:
     """
-    Get the color for a category.
+    Get the background color for a category.
     
     Args:
         category: The category name
@@ -305,26 +129,33 @@ def get_color(category: str) -> str:
     Returns:
         Hex color string (e.g., '#276419')
     """
-    return CATEGORY_COLORS.get(category, CATEGORY_COLORS['other'])
+    return _DATA['category_colors'].get(category, _DATA['category_colors'].get('other', '#878787'))
 
 
 def get_text_color(category: str) -> str:
     """
-    Get appropriate text color (black or white) for a category background.
-    
-    Uses relative luminance to determine contrast.
+    Get appropriate text color for a category background.
     
     Args:
         category: The category name
         
     Returns:
-        '#000000' (black) for light backgrounds, '#ffffff' (white) for dark
+        Hex color string for readable text on the category's background.
     """
-    bg_color = get_color(category).lstrip('#')
-    r, g, b = int(bg_color[0:2], 16), int(bg_color[2:4], 16), int(bg_color[4:6], 16)
-    # Relative luminance formula (simplified)
-    luminance = (0.299 * r + 0.587 * g + 0.114 * b) / 255
-    return '#000000' if luminance > 0.5 else '#ffffff'
+    return _DATA['category_text_colors'].get(category, '#ffffff')
+
+
+def get_label(category: str) -> str:
+    """
+    Get the display label for a category.
+    
+    Args:
+        category: The category id (e.g., 'necp')
+        
+    Returns:
+        Human-readable label (e.g., 'NECP')
+    """
+    return _DATA['category_labels'].get(category, category.capitalize())
 
 
 def get_categories_for_display() -> list:
@@ -337,6 +168,34 @@ def get_categories_for_display() -> list:
     return CATEGORY_ORDER.copy()
 
 
+def get_all_category_data() -> dict:
+    """
+    Get complete category data for serialization (used by JS consumers).
+    
+    Returns:
+        Dict of category_id → {color, textColor, label, order}
+    """
+    result = {}
+    for i, cat_id in enumerate(CATEGORY_ORDER):
+        result[cat_id] = {
+            'color': _DATA['category_colors'].get(cat_id),
+            'textColor': _DATA['category_text_colors'].get(cat_id),
+            'label': _DATA['category_labels'].get(cat_id),
+            'order': i,
+        }
+    return result
+
+
+def get_all_syscall_mappings() -> dict:
+    """
+    Get complete syscall→category mapping for serialization.
+    
+    Returns:
+        Dict of syscall_name → category_id
+    """
+    return dict(_DATA['syscall_to_category'])
+
+
 # =============================================================================
 # MAIN - Print category summary when run directly
 # =============================================================================
@@ -345,14 +204,51 @@ if __name__ == '__main__':
     import argparse
     
     parser = argparse.ArgumentParser(
-        description='Display mactrace syscall categories and their mappings.',
-        epilog='This file also serves as a Python module imported by other mactrace tools.'
+        description='Display mactrace syscall categories (from syscalls.json).',
+        epilog='Edit syscalls.json to add/remove syscalls or categories.'
     )
     parser.add_argument('-a', '--all', action='store_true',
                         help='Show all syscalls (default: first 5 per category)')
+    parser.add_argument('--verify', action='store_true',
+                        help='Verify data integrity (no duplicate syscalls, valid colors)')
+    parser.add_argument('--json', action='store_true',
+                        help='Output category→syscall mapping as JSON')
     args = parser.parse_args()
     
-    print("mactrace syscall categories\n")
+    if args.json:
+        output = {
+            'categories': get_all_category_data(),
+            'syscalls': get_all_syscall_mappings(),
+        }
+        print(json.dumps(output, indent=2))
+        sys.exit(0)
+    
+    if args.verify:
+        errors = 0
+        # Check for duplicate syscalls
+        seen = {}
+        for cat_id, syscalls in SYSCALL_CATEGORIES.items():
+            for s in syscalls:
+                if s in seen:
+                    print(f"ERROR: '{s}' in both '{seen[s]}' and '{cat_id}'")
+                    errors += 1
+                seen[s] = cat_id
+        
+        # Check valid hex colors
+        import re
+        for cat_id, color in CATEGORY_COLORS.items():
+            if not re.match(r'^#[0-9a-fA-F]{6}$', color):
+                print(f"ERROR: Invalid color '{color}' for category '{cat_id}'")
+                errors += 1
+        
+        if errors == 0:
+            print(f"OK: {len(seen)} syscalls across {len(SYSCALL_CATEGORIES)} categories, all valid")
+        else:
+            print(f"FAILED: {errors} error(s)")
+            sys.exit(1)
+        sys.exit(0)
+    
+    print("mactrace syscall categories (from syscalls.json)\n")
     print(f"{'Category':<12} {'Count':>6}  Syscalls")
     print("-" * 70)
     
@@ -360,10 +256,8 @@ if __name__ == '__main__':
         if cat in SYSCALL_CATEGORIES:
             syscalls = sorted(SYSCALL_CATEGORIES[cat])
             if args.all:
-                # Show all syscalls, wrapped
                 syscall_str = ', '.join(syscalls)
             else:
-                # Show first 5 with count of remaining
                 preview = ', '.join(syscalls[:5])
                 if len(syscalls) > 5:
                     preview += f', ... (+{len(syscalls) - 5} more)'

@@ -23,88 +23,11 @@ from typing import Optional, Dict, List, Any, Tuple
 from collections import defaultdict, Counter
 from pathlib import Path
 
-
-# ============================================================================
-# Configuration
-# ============================================================================
-
-def get_mactrace_config() -> dict:
-    """
-    Read mactrace config file, supporting variable expansion.
-    Config is at ~/.mactrace/config (using SUDO_USER's home if running as root).
-    """
-    config = {}
-    
-    sudo_user = os.environ.get('SUDO_USER')
-    if sudo_user and os.geteuid() == 0:
-        try:
-            home = pwd.getpwnam(sudo_user).pw_dir
-        except KeyError:
-            home = os.path.expanduser('~')
-    else:
-        home = os.path.expanduser('~')
-    
-    config_path = os.path.join(home, '.mactrace', 'config')
-    
-    if not os.path.exists(config_path):
-        return config
-    
-    try:
-        with open(config_path, 'r') as f:
-            for line in f:
-                line = line.strip()
-                if not line or line.startswith('#'):
-                    continue
-                if '=' not in line:
-                    continue
-                    
-                key, value = line.split('=', 1)
-                key = key.strip()
-                value = value.strip()
-                
-                if '~' in value:
-                    value = value.replace('~', home)
-                
-                def expand_var(match):
-                    var_name = match.group(1) or match.group(2)
-                    if var_name in config:
-                        return config[var_name]
-                    return os.environ.get(var_name, match.group(0))
-                
-                value = re.sub(r'\$\{(\w+)\}|\$(\w+)', expand_var, value)
-                config[key] = value
-                
-    except (IOError, OSError):
-        pass
-    
-    return config
-
-
-def get_config_value(key: str, default: str = None) -> str:
-    """Get a config value, checking env vars first, then config file."""
-    env_val = os.environ.get(key)
-    if env_val:
-        return env_val
-    config = get_mactrace_config()
-    return config.get(key, default)
-
-
-def resolve_input_path(path: str) -> str:
-    """Resolve input file path using MACTRACE_OUTPUT if path is relative."""
-    if not path or path == '-':
-        return path
-    
-    if os.path.isabs(path) or path.startswith('./') or path.startswith('../'):
-        return path
-    
-    if os.path.exists(path):
-        return path
-    
-    output_dir = get_config_value('MACTRACE_OUTPUT')
-    if output_dir:
-        return os.path.join(output_dir, path)
-    
-    return path
+# Shared utilities
+from mactrace_lib import (
+    get_mactrace_config, get_config_value, resolve_input_path,
+    format_bytes_short as format_bytes, format_duration, sanitize_filename,
+)
 
 
 # Color palette for column headers
@@ -161,42 +84,7 @@ IO_SYSCALLS = {
 }
 
 
-def format_bytes(n: int) -> str:
-    """Format bytes with K, M, G suffixes."""
-    if n < 1024:
-        return f"{n}"
-    elif n < 1024 * 1024:
-        return f"{n / 1024:.1f}K"
-    elif n < 1024 * 1024 * 1024:
-        return f"{n / (1024 * 1024):.1f}M"
-    else:
-        return f"{n / (1024 * 1024 * 1024):.2f}G"
-
-
-def format_duration(ms: float) -> str:
-    """Format duration."""
-    if ms < 1:
-        return f"{ms * 1000:.1f}µs"
-    elif ms < 1000:
-        return f"{ms:.1f}ms"
-    else:
-        return f"{ms / 1000:.2f}s"
-
-
-def sanitize_filename(s: str, max_len: int = 60) -> str:
-    """Sanitize a string for use in a filename."""
-    if not s:
-        return "unknown"
-    s = s.replace('/', '_').replace('\\', '_').replace(':', '_')
-    s = s.replace('*', '_').replace('?', '_').replace('"', '_')
-    s = s.replace('<', '_').replace('>', '_').replace('|', '_')
-    s = s.replace(' ', '_').replace('\n', '_').replace('\r', '_')
-    s = s.lstrip('_.')
-    while '__' in s:
-        s = s.replace('__', '_')
-    if len(s) > max_len:
-        s = s[:max_len]
-    return s.rstrip('_') or "unknown"
+# format_bytes, format_duration, sanitize_filename now imported from mactrace_lib
 
 
 class TimelineGenerator:

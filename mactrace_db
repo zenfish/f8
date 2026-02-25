@@ -22,55 +22,8 @@ import sys
 import sqlite3
 from datetime import datetime
 
-# Try to import config utilities from mactrace_analyze
-try:
-    from mactrace_analyze import get_mactrace_config, resolve_input_path
-except ImportError:
-    # Fallback if not in path
-    def get_mactrace_config():
-        """Read config from ~/.mactrace/config using SUDO_USER if available."""
-        config = {}
-        sudo_user = os.environ.get('SUDO_USER')
-        if sudo_user:
-            import pwd
-            try:
-                home = pwd.getpwnam(sudo_user).pw_dir
-            except KeyError:
-                home = os.path.expanduser('~')
-        else:
-            home = os.path.expanduser('~')
-        
-        config_path = os.path.join(home, '.mactrace', 'config')
-        if os.path.exists(config_path):
-            with open(config_path, 'r') as f:
-                for line in f:
-                    line = line.strip()
-                    if not line or line.startswith('#'):
-                        continue
-                    if '=' in line:
-                        key, value = line.split('=', 1)
-                        key = key.strip()
-                        value = value.strip()
-                        # Expand ~ and $VAR
-                        if value.startswith('~'):
-                            value = home + value[1:]
-                        # Expand $VAR references to already-loaded config values
-                        import re
-                        for match in re.findall(r'\$(\w+)|\$\{(\w+)\}', value):
-                            var = match[0] or match[1]
-                            if var in config:
-                                value = value.replace(f'${var}', config[var]).replace(f'${{{var}}}', config[var])
-                            elif var in os.environ:
-                                value = value.replace(f'${var}', os.environ[var]).replace(f'${{{var}}}', os.environ[var])
-                        config[key] = value
-        return config
-
-    def resolve_input_path(path):
-        if os.path.isabs(path) or path.startswith('./') or path.startswith('../'):
-            return path
-        config = get_mactrace_config()
-        output_dir = config.get('MACTRACE_OUTPUT', os.environ.get('MACTRACE_OUTPUT', '.'))
-        return os.path.join(output_dir, path)
+# Shared utilities
+from mactrace_lib import get_mactrace_config, resolve_input_path
 
 
 def get_db_path(args_db):

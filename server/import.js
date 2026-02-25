@@ -8,6 +8,7 @@
 import initSqlJs from 'sql.js';
 import fs from 'fs';
 import path from 'path';
+import { fileURLToPath } from 'url';
 
 // Parse arguments
 const args = process.argv.slice(2);
@@ -42,31 +43,25 @@ if (!fs.existsSync(ioDir)) {
     console.log(`Created I/O directory: ${ioDir}`);
 }
 
-// Category detection
-const SYSCALL_CATEGORIES = {
-    file: ['open', 'close', 'read', 'write', 'pread', 'pwrite', 'lseek', 'fstat', 'stat', 'lstat',
-           'fstat64', 'stat64', 'lstat64', 'access', 'faccessat', 'unlink', 'rename', 'mkdir',
-           'rmdir', 'chmod', 'fchmod', 'truncate', 'ftruncate', 'link', 'symlink', 'readlink',
-           'openat', 'mkdirat', 'unlinkat', 'fcntl', 'dup', 'dup2', 'fsync', 'getdirentries64'],
-    network: ['socket', 'bind', 'listen', 'accept', 'connect', 'sendto', 'recvfrom',
-              'sendmsg', 'recvmsg', 'shutdown', 'setsockopt', 'getsockopt'],
-    process: ['fork', 'vfork', 'execve', 'posix_spawn', 'exit', 'wait4', 'waitpid',
-              'kill', 'getpid', 'getppid', 'getuid', 'geteuid', 'getgid'],
-    memory: ['mmap', 'munmap', 'mprotect', 'madvise', 'mincore', 'mlock', 'munlock'],
-    signal: ['sigaction', 'sigprocmask', 'sigaltstack', 'sigsuspend'],
-    ipc: ['pipe', 'shm_open', 'sem_open', 'sem_wait', 'sem_post'],
-    poll: ['select', 'poll', 'kevent', 'kevent64', 'kqueue'],
-    time: ['gettimeofday', 'clock_gettime', 'nanosleep'],
-    mac: ['__mac_syscall', '__mac_get_pid', '__mac_get_proc'],
-    necp: ['necp_client_action', 'necp_open', 'necp_session_open'],
-};
+// Category detection — loaded from shared syscalls.json (single source of truth)
+const __dirname_import = path.dirname(fileURLToPath(import.meta.url));
+const syscallsJsonPath = path.join(__dirname_import, '..', 'syscalls.json');
+const syscallsData = JSON.parse(fs.readFileSync(syscallsJsonPath, 'utf-8'));
+
+// Build reverse lookup: syscall name → category id
+const SYSCALL_TO_CATEGORY = {};
+for (const cat of syscallsData.categories) {
+    for (const sc of cat.syscalls || []) {
+        SYSCALL_TO_CATEGORY[sc] = cat.id;
+    }
+}
+const DEFAULT_CATEGORY = syscallsData.defaultCategory?.id || 'other';
 
 function getCategory(syscall) {
+    // Try exact match first, then strip _nocancel suffix
+    if (SYSCALL_TO_CATEGORY[syscall]) return SYSCALL_TO_CATEGORY[syscall];
     const base = syscall.replace(/_nocancel$/, '');
-    for (const [cat, syscalls] of Object.entries(SYSCALL_CATEGORIES)) {
-        if (syscalls.includes(base)) return cat;
-    }
-    return 'other';
+    return SYSCALL_TO_CATEGORY[base] || DEFAULT_CATEGORY;
 }
 
 function sanitizeFilename(s, maxLen = 60) {
@@ -594,6 +589,10 @@ const insertStmt = db.prepare(`
 console.log('Importing events...');
 let imported = 0;
 
+// Wrap in a transaction for correctness (atomic import) and performance
+// (~100x faster than autocommit per-row).
+db.run('BEGIN TRANSACTION');
+
 for (const event of events) {
     trackFd(event);
     
@@ -642,6 +641,7 @@ for (const event of events) {
 }
 
 insertStmt.free();
+db.run('COMMIT');
 console.log(`\n  ${imported.toLocaleString()} events imported`);
 
 // Write metadata for any generated I/O files
