@@ -6,56 +6,23 @@
 # file paths stay consistent with mactrace, mactrace_import, etc.
 #
 
-### usually blank, but put things here if you want to override defaults on mactrace
-# performance_flags=""
-performance_flags="--switchrate 200hz --bufsize 512m"
-
-# ── Read mactrace config ────────────────────────────────────────────
-# Same logic as mactrace_import: read ~/.mactrace/config, only set
-# vars that aren't already in the environment.
-read_config() {
-    local config_home="$HOME"
-    # If running as root via sudo, use the original user's home
-    if [[ $EUID -eq 0 && -n "$SUDO_USER" ]]; then
-        config_home=$(eval echo "~$SUDO_USER")
-    fi
-    local config_file="$config_home/.mactrace/config"
-    [[ -f "$config_file" ]] || return
-
-    while IFS='=' read -r key value || [[ -n "$key" ]]; do
-        [[ "$key" =~ ^[[:space:]]*# ]] && continue
-        [[ -z "$key" ]] && continue
-        key=$(echo "$key" | xargs)
-        value=$(echo "$value" | xargs)
-        # Skip if already set
-        [[ -n "${!key}" ]] && continue
-        # Expand ~ and $VAR references
-        value="${value//\~/$config_home}"
-        while [[ "$value" =~ \$([A-Za-z_][A-Za-z0-9_]*) ]]; do
-            local var_name="${BASH_REMATCH[1]}"
-            local var_value="${!var_name}"
-            value="${value//\$$var_name/$var_value}"
-        done
-        export "$key=$value"
-    done < "$config_file"
-}
+# ── Shared config reader and path resolver ──────────────────────────
+# Resolve symlinks to find actual script location (for sourcing common lib)
+_SOURCE="$0"
+while [[ -L "$_SOURCE" ]]; do
+    _DIR="$(cd "$(dirname "$_SOURCE")" && pwd)"
+    _SOURCE="$(readlink "$_SOURCE")"
+    [[ "$_SOURCE" != /* ]] && _SOURCE="$_DIR/$_SOURCE"
+done
+_SCRIPT_DIR="$(cd "$(dirname "$_SOURCE")" && pwd)"
+source "$_SCRIPT_DIR/mactrace_common.sh"
 
 read_config
 
-# ── resolve_path: match mactrace's path resolution rules ────────────
-# Absolute → as-is.  Explicit relative (./ ../) → as-is.
-# Bare name → $prefix/name  (where prefix comes from the named env var).
-resolve_path() {
-    local path="$1" env_var="$2"
-    [[ "$path" == /* ]]  && { echo "$path"; return; }
-    [[ "$path" == ./* || "$path" == ../* ]] && { echo "$path"; return; }
-    local prefix="${!env_var}"
-    if [[ -n "$prefix" ]]; then
-        echo "$prefix/$path"
-    else
-        echo "$path"
-    fi
-}
+# Performance flags: override via MACTRACE_PERF_FLAGS in ~/.mactrace/config,
+# or set on the command line. Defaults to high-speed settings.
+# Example config line:  MACTRACE_PERF_FLAGS=--switchrate 200hz --bufsize 512m
+performance_flags="${MACTRACE_PERF_FLAGS:---switchrate 200hz --bufsize 512m}"
 
 # ── Parse arguments ─────────────────────────────────────────────────
 throttle_flag=""

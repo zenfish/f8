@@ -11,7 +11,7 @@ import express from 'express';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import fs from 'fs';
-import { execSync } from 'child_process';
+import { execSync, execFileSync } from 'child_process';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -192,11 +192,13 @@ app.get('/api/traces/:id/io/:filename', (req, res) => {
     if (!trace?.io_dir) return res.status(404).json({ error: 'I/O directory not found' });
     
     const filename = req.params.filename;
-    if (filename.includes('..') || filename.includes('/')) {
+    if (filename.includes('..') || filename.includes('/') || filename.includes('\\')) {
         return res.status(400).json({ error: 'Invalid filename' });
     }
     
-    const filepath = path.join(trace.io_dir, filename);
+    // Defense-in-depth: strip any directory components that slipped past the check
+    const safeName = path.basename(filename);
+    const filepath = path.join(trace.io_dir, safeName);
     
     // If requesting a .hexdump file that doesn't exist, generate from .bin
     if (filename.endsWith('.hexdump') && !fs.existsSync(filepath)) {
@@ -206,7 +208,8 @@ app.get('/api/traces/:id/io/:filename', (req, res) => {
                 // Buffer sized from actual file: hexdump output is ~4x input size
                 const binSize = fs.statSync(binPath).size;
                 const maxBuffer = Math.max(binSize * 5, 1024 * 1024); // 5x file size, min 1MB
-                const hexdump = execSync(`hexdump -C "${binPath}"`, { maxBuffer });
+                // execFileSync avoids shell interpolation (no command injection via filenames)
+                const hexdump = execFileSync('hexdump', ['-C', binPath], { maxBuffer });
                 res.setHeader('Content-Type', 'text/plain; charset=utf-8');
                 res.send(hexdump);
                 return;

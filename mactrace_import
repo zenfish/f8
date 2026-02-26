@@ -40,51 +40,8 @@ done
 SCRIPT_DIR="$(cd "$(dirname "$SOURCE")" && pwd)"
 SERVER_DIR="$SCRIPT_DIR/server"
 
-# Read mactrace config file (same logic as mactrace Python script)
-# Config is at ~/.mactrace/config, using SUDO_USER's home if running as root
-read_config() {
-    local config_home="$HOME"
-    
-    # If running as root via sudo, use the original user's home
-    if [[ $EUID -eq 0 && -n "$SUDO_USER" ]]; then
-        config_home=$(eval echo "~$SUDO_USER")
-    fi
-    
-    local config_file="$config_home/.mactrace/config"
-    
-    if [[ ! -f "$config_file" ]]; then
-        return
-    fi
-    
-    # Read config file, only set vars that aren't already set in environment
-    while IFS='=' read -r key value || [[ -n "$key" ]]; do
-        # Skip comments and empty lines
-        [[ "$key" =~ ^[[:space:]]*# ]] && continue
-        [[ -z "$key" ]] && continue
-        
-        # Trim whitespace
-        key=$(echo "$key" | xargs)
-        value=$(echo "$value" | xargs)
-        
-        # Skip if already set in environment
-        if [[ -n "${!key}" ]]; then
-            continue
-        fi
-        
-        # Expand ~ to config_home
-        value="${value//\~/$config_home}"
-        
-        # Expand $VAR references (simple expansion)
-        while [[ "$value" =~ \$([A-Za-z_][A-Za-z0-9_]*) ]]; do
-            local var_name="${BASH_REMATCH[1]}"
-            local var_value="${!var_name}"
-            value="${value//\$$var_name/$var_value}"
-        done
-        
-        # Export the variable
-        export "$key=$value"
-    done < "$config_file"
-}
+# Shared config reader and path resolver
+source "$SCRIPT_DIR/mactrace_common.sh"
 
 # Load config before anything else
 read_config
@@ -130,36 +87,7 @@ fi
 MACTRACE_HOME="${MACTRACE_HOME:-${HOME}/.mactrace}"
 mkdir -p "$MACTRACE_HOME"
 
-# resolve_path: Apply env var prefix to relative paths
-resolve_path() {
-    local path="$1"
-    local env_var="$2"
-    local prefix="${!env_var}"
-    
-    # Absolute path - use as-is
-    if [[ "$path" == /* ]]; then
-        echo "$path"
-        return
-    fi
-    
-    # Explicit relative (./ or ../) - use as-is
-    if [[ "$path" == ./* || "$path" == ../* ]]; then
-        echo "$path"
-        return
-    fi
-    
-    # If env var is set and file exists at that location, use it
-    if [[ -n "$prefix" ]]; then
-        local candidate="$prefix/$path"
-        if [[ -e "$candidate" ]]; then
-            echo "$candidate"
-            return
-        fi
-    fi
-    
-    # Fall back to original path
-    echo "$path"
-}
+# resolve_path is now provided by mactrace_common.sh (sourced above)
 
 # Build default args from environment
 env_args=()

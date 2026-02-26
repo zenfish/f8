@@ -16,6 +16,7 @@
             --c-text-muted:     #666;
             --c-text-faint:     #888;
             --c-text-dim:       #999;
+            --c-text-dimmer:    #aaa;
             --c-text-label:     #555;
             
             /* Brand / accent */
@@ -610,7 +611,27 @@
             text-decoration: none;
             font-size: 13px;
         }
-        .io-popup a:hover { background: #f0f0f0; }
+        .io-popup a:hover { background: var(--c-bg); }
+        
+        /* Utility classes for JS-generated HTML (avoids hardcoded inline colors) */
+        .text-muted { color: var(--c-text-muted); }
+        .text-faint { color: var(--c-text-faint); }
+        .text-dim { color: var(--c-text-dim); }
+        .text-dimmer { color: var(--c-text-dimmer); }
+        .text-label { color: var(--c-text-label); }
+        .text-primary { color: var(--c-primary); }
+        .text-primary-dark { color: var(--c-primary-dark); }
+        .text-error { color: var(--c-error); }
+        .text-inferred { color: var(--c-inferred); }
+        .text-small { font-size: 12px; }
+        .text-xs { font-size: 11px; }
+        .text-xxs { font-size: 10px; }
+        .font-normal { font-weight: normal; }
+        .font-semibold { font-weight: 600; }
+        .ml-auto { margin-left: auto; }
+        .border-top-light { border-top: 1px solid var(--c-card-border); }
+        .border-top-heavy { border-top: 2px solid var(--c-card-border); }
+        .arrow-sep { color: var(--c-text-faint); margin: 0 6px; }
     </style>
 </head>
 <body>
@@ -818,7 +839,7 @@
             
             traceList.innerHTML = traces.map(t => `
                 <li data-id="${t.id}">
-                    <div class="name">${escapeHtml(t.name)} <span style="font-weight:normal;color:#888;font-size:12px">${formatTimestamp(t.imported_at)}</span></div>
+                    <div class="name">${escapeHtml(t.name)} <span class="font-normal text-faint text-small">${formatTimestamp(t.imported_at)}</span></div>
                     <div class="command">${escapeHtml(t.command)}</div>
                     <div class="meta">
                         ${t.event_count.toLocaleString()} events · 
@@ -890,9 +911,13 @@
             const data = await fetchJson(`/api/traces/${id}/events?all=true&limit=${eventLimit}`);
             allEvents = data.events;
             
-            // Warn if we hit the limit
+            // Show visible warning if trace was truncated
             if (data.filtered > eventLimit) {
-                console.warn(`Loaded ${eventLimit} of ${data.filtered} events (capped for performance)`);
+                const pct = ((eventLimit / data.filtered) * 100).toFixed(0);
+                const banner = document.createElement('div');
+                banner.style.cssText = 'background:var(--c-highlight);color:var(--c-text);padding:10px 16px;border-radius:6px;margin-bottom:12px;font-size:13px;display:flex;align-items:center;gap:8px';
+                banner.innerHTML = `<strong>⚠ Showing ${eventLimit.toLocaleString()} of ${data.filtered.toLocaleString()} events (${pct}%)</strong> — browser performance cap. Use category filters or search to focus on what matters.`;
+                summary.parentNode.insertBefore(banner, summary.nextSibling);
             }
             
             // Set start time for absolute timestamp display
@@ -913,7 +938,7 @@
             render();
             
         } catch (e) {
-            summary.innerHTML = '<div style="color:red">Error: ' + e.message + '</div>';
+            summary.innerHTML = '<div class="text-error">Error: ' + e.message + '</div>';
         }
     }
     
@@ -976,12 +1001,12 @@
                     <ul style="list-style:none;font-family:'SF Mono',Consolas,monospace;font-size:11px">
                         ${t.dnsLookups.map(d => {
                             const ip = d.ip ? d.ip.split(':')[0] : '—';
-                            const seqLink = d.lookup_seq ? `<a href="#" class="dns-jump" data-seq="${d.lookup_seq}" style="color:#888;font-size:10px;margin-left:6px" title="Jump to line #${d.lookup_seq}">#${d.lookup_seq}</a>` : '';
+                            const seqLink = d.lookup_seq ? `<a href="#" class="dns-jump text-faint text-xxs" data-seq="${d.lookup_seq}" style="margin-left:6px" title="Jump to line #${d.lookup_seq}">#${d.lookup_seq}</a>` : '';
                             return `
-                            <li style="padding:4px 0;border-bottom:1px solid #eee">
-                                <span style="color:#2980b9;font-weight:500">${escapeHtml(d.hostname)}</span>
-                                <span style="color:#888;margin:0 6px">→</span>
-                                <span style="color:#666">${escapeHtml(ip)}</span>
+                            <li style="padding:4px 0;border-bottom:1px solid var(--c-card-border)">
+                                <span class="text-primary-dark font-semibold">${escapeHtml(d.hostname)}</span>
+                                <span class="arrow-sep">→</span>
+                                <span class="text-muted">${escapeHtml(ip)}</span>
                                 ${seqLink}
                             </li>
                         `}).join('')}
@@ -1050,22 +1075,22 @@
                 <div class="stat-row"><span class="label">Files</span><span class="value">↓${formatBytes(fileRead)} ↑${formatBytes(fileWrite)}</span></div>
                 
                 <div style="margin-top:12px;padding-top:10px;border-top:1px solid #ddd">
-                    <div style="font-size:11px;color:#666;margin-bottom:6px;text-transform:uppercase;letter-spacing:0.5px">Objects Accessed</div>
+                    <div class="text-xs text-muted" style="margin-bottom:6px;text-transform:uppercase;letter-spacing:0.5px">Objects Accessed</div>
                     <div class="stat-row">
                         <span class="label">Files</span>
-                        <span class="value"><a href="/objects.html?trace=${traceId}&type=files" target="_blank" style="color:#3498db;text-decoration:none">${fileTargets.size}</a></span>
+                        <span class="value"><a href="/objects.html?trace=${traceId}&type=files" target="_blank" class="text-primary" style="text-decoration:none">${fileTargets.size}</a></span>
                     </div>
                     <div class="stat-row">
                         <span class="label">Network</span>
-                        <span class="value"><a href="/objects.html?trace=${traceId}&type=network" target="_blank" style="color:#3498db;text-decoration:none">${totalNetTargets}</a></span>
+                        <span class="value"><a href="/objects.html?trace=${traceId}&type=network" target="_blank" class="text-primary" style="text-decoration:none">${totalNetTargets}</a></span>
                     </div>
-                    ${hostTargets.size > 0 ? `<div class="stat-row" style="font-size:11px;padding-left:10px">
-                        <span class="label" style="color:#888">↳ Hosts</span>
-                        <span class="value"><a href="/objects.html?trace=${traceId}&type=network&filter=hosts" target="_blank" style="color:#5dade2;text-decoration:none;font-size:11px">${hostTargets.size}</a></span>
+                    ${hostTargets.size > 0 ? `<div class="stat-row text-xs" style="padding-left:10px">
+                        <span class="label text-faint">↳ Hosts</span>
+                        <span class="value"><a href="/objects.html?trace=${traceId}&type=network&filter=hosts" target="_blank" class="text-primary text-xs" style="text-decoration:none">${hostTargets.size}</a></span>
                     </div>` : ''}
-                    ${socketTargets.size > 0 ? `<div class="stat-row" style="font-size:11px;padding-left:10px">
-                        <span class="label" style="color:#888">↳ Sockets</span>
-                        <span class="value"><a href="/objects.html?trace=${traceId}&type=network&filter=sockets" target="_blank" style="color:#5dade2;text-decoration:none;font-size:11px">${socketTargets.size}</a></span>
+                    ${socketTargets.size > 0 ? `<div class="stat-row text-xs" style="padding-left:10px">
+                        <span class="label text-faint">↳ Sockets</span>
+                        <span class="value"><a href="/objects.html?trace=${traceId}&type=network&filter=sockets" target="_blank" class="text-primary text-xs" style="text-decoration:none">${socketTargets.size}</a></span>
                     </div>` : ''}
                 </div>
             `;
@@ -1172,7 +1197,7 @@
             // Check if target is IP:port or just IP
             const hostname = ipToHostname.get(e.target) || ipToHostname.get(e.target.split(':')[0]);
             if (hostname) {
-                targetDisplay += ` <span style="color:#2980b9">/ ${escapeHtml(hostname)}</span>`;
+                targetDisplay += ` <span class="text-primary-dark">/ ${escapeHtml(hostname)}</span>`;
                 targetTitle = `${e.target} (${hostname})`;
             }
         }
@@ -1302,8 +1327,8 @@
             let singleFileUrl = `/hexdump.html?trace=${currentTrace.id}&file=${encodeURIComponent(base)}.bin`;
             if (chunkIdx !== undefined) singleFileUrl += `&chunk=${chunkIdx}`;
             
-            html += `<a href="${singleFileUrl}" target="_blank" style="color:#888">This chunk only</a>`;
-            html += `<a href="/api/traces/${currentTrace.id}/io/${base}.bin" target="_blank" style="color:#888">Download .bin</a>`;
+            html += `<a href="${singleFileUrl}" target="_blank" class="text-faint">This chunk only</a>`;
+            html += `<a href="/api/traces/${currentTrace.id}/io/${base}.bin" target="_blank" class="text-faint">Download .bin</a>`;
             
             ioPopup.innerHTML = html;
             const rect = link.getBoundingClientRect();
@@ -1405,7 +1430,7 @@
         // Summary bar
         const rootTreeSize = mainRoot ? countDescendants(mainRoot, nodeMap) + 1 : 0;
         const orphanCount = allRoots.length - 1;
-        html += `<div style="font-size:12px;color:#666;margin-bottom:12px;padding:8px 12px;background:#f0f0f0;border-radius:4px">
+        html += `<div class="text-small text-muted" style="margin-bottom:12px;padding:8px 12px;background:var(--c-bg);border-radius:4px">
             <strong>${totalNodes.toLocaleString()}</strong> processes · 
             <strong>${data.totalExecCount}</strong> programs exec'd · 
             <strong>${rootTreeSize.toLocaleString()}</strong> in root tree` +
@@ -1419,8 +1444,8 @@
         
         // Other roots with subtrees (non-trivial orphans)
         if (otherRoots.length > 0) {
-            html += `<div style="margin-top:16px;padding-top:12px;border-top:2px solid #ddd">
-                <div style="font-size:12px;color:#888;margin-bottom:8px;font-weight:600">
+            html += `<div style="margin-top:16px;padding-top:12px" class="border-top-heavy">
+                <div class="text-small text-faint font-semibold" style="margin-bottom:8px">
                     <span class="tree-toggle" data-action="toggle-section" data-section="other-roots">▼</span>
                     Other Process Trees (${otherRoots.length})
                 </div>
@@ -1450,11 +1475,11 @@
                 }
             }
             
-            html += `<div style="margin-top:16px;padding-top:12px;border-top:2px solid #ddd">`;
+            html += `<div style="margin-top:16px;padding-top:12px" class="border-top-heavy">`;
             
             // Non-trivial orphans first (security-relevant — they did real work)
             if (nonTrivialOrphans.length > 0) {
-                html += `<div style="font-size:12px;color:#c0392b;margin-bottom:8px;font-weight:600">
+                html += `<div class="text-small text-error font-semibold" style="margin-bottom:8px">
                     <span class="tree-toggle" data-action="toggle-section" data-section="active-orphans">▼</span>
                     ⚠ Active Orphan Processes (${nonTrivialOrphans.length} PIDs — no known parent, but had activity)
                 </div>
@@ -1468,23 +1493,23 @@
             // Trivial orphans (getpid-only etc.)
             if (trivialOrphans.length > 0) {
                 const ranges = groupPidRanges(trivialOrphans.map(n => n.pid));
-                html += `<div style="font-size:12px;color:#888;margin-bottom:8px;margin-top:12px;font-weight:600">
+                html += `<div class="text-small text-faint font-semibold" style="margin-bottom:8px;margin-top:12px">
                     <span class="tree-toggle" data-action="toggle-section" data-section="trivial-orphans">▶</span>
                     Ephemeral Processes (${trivialOrphans.length.toLocaleString()} PIDs — ≤5 events each, likely shell subshells)
                 </div>
                 <div class="tree-children collapsed" data-section-content="trivial-orphans">
-                    <div style="padding:8px 12px;font-size:11px;color:#666;margin-bottom:8px">
+                    <div class="text-xs text-muted" style="padding:8px 12px;margin-bottom:8px">
                         These processes were detected by DTrace (progenyof match) but only called identity syscalls (getpid, geteuid, etc.) before exiting.
                         Typically short-lived shell subshells or pipe stages. Click any PID to view its timeline.
                     </div>
-                    <div style="padding:4px 12px;font-family:'SF Mono',Consolas,monospace;font-size:11px;color:#888;max-height:300px;overflow-y:auto;line-height:1.6">
+                    <div class="text-xs text-faint" style="padding:4px 12px;font-family:'SF Mono',Consolas,monospace;max-height:300px;overflow-y:auto;line-height:1.6">
                         ${ranges.map(r => {
                             if (r.length === 1) {
                                 const n = nodeMap.get(r[0]);
                                 const evts = n ? n.eventCount : '?';
-                                return `<span style="display:inline-block;margin:1px 4px;padding:1px 6px;background:#f0f0f0;border-radius:3px;cursor:pointer" data-action="timeline" data-pid="${r[0]}" title="PID ${r[0]}: ${evts} events">${r[0]}</span>`;
+                                return `<span style="display:inline-block;margin:1px 4px;padding:1px 6px;background:var(--c-bg);border-radius:3px;cursor:pointer" data-action="timeline" data-pid="${r[0]}" title="PID ${r[0]}: ${evts} events">${r[0]}</span>`;
                             } else {
-                                return `<span style="display:inline-block;margin:1px 4px;padding:1px 6px;background:#f0f0f0;border-radius:3px">${r[0]}–${r[1]} <span style="color:#aaa">(${r[1]-r[0]+1})</span></span>`;
+                                return `<span style="display:inline-block;margin:1px 4px;padding:1px 6px;background:var(--c-bg);border-radius:3px">${r[0]}–${r[1]} <span class="text-dimmer">(${r[1]-r[0]+1})</span></span>`;
                             }
                         }).join('')}
                     </div>
@@ -1561,7 +1586,7 @@
             ? `${totalChildren} child${totalChildren !== 1 ? 'ren' : ''}`
             : `${directCount} direct, ${totalChildren} total`;
         
-        return `<div class="tree-children-summary" style="font-size:10px;color:#888;margin-top:2px">↳ ${label}: ${desc}</div>`;
+        return `<div class="tree-children-summary text-xxs text-faint" style="margin-top:2px">↳ ${label}: ${desc}</div>`;
     }
     
     function renderTreeNode(node, nodeMap, depth, expandDepth, isRoot) {
@@ -1600,7 +1625,7 @@
                     <div class="tree-card" data-pid="${node.pid}">
                         <div class="tree-pid-badge" style="background:${depthBg};color:${depthFg}">${node.pid}</div>
                         <div class="tree-card-body">
-                            <div class="tree-program" title="${escapeHtml(programFull)}">${isInferred ? '<span style="color:#8e44ad" title="Inferred from first binary open()">≈ </span>' : ''}${escapeHtml(programShort || '(shell)')}</div>
+                            <div class="tree-program" title="${escapeHtml(programFull)}">${isInferred ? '<span class="text-inferred" title="Inferred from first binary open()">≈ </span>' : ''}${escapeHtml(programShort || '(shell)')}</div>
                             <div class="tree-stats">${statsHtml}</div>
                             ${childrenSummary}
                         </div>
@@ -1673,7 +1698,7 @@
                         <div class="tree-group-summary" data-action="expand-group" data-parent="${parentNode.pid}" data-program="${escapeHtml(prog)}" title="PIDs: ${pids}">
                             <span class="tree-group-count">${nodes.length}×</span>
                             <span>${escapeHtml(progShort)}</span>
-                            ${totalRead || totalWrite ? `<span style="margin-left:8px;color:#888">R:${formatBytes(totalRead)} W:${formatBytes(totalWrite)}</span>` : ''}
+                            ${totalRead || totalWrite ? `<span class="text-faint" style="margin-left:8px">R:${formatBytes(totalRead)} W:${formatBytes(totalWrite)}</span>` : ''}
                         </div>
                     </div>
                     <div class="tree-children collapsed" data-group-parent="${parentNode.pid}" data-group-program="${escapeHtml(prog)}">
@@ -1701,9 +1726,9 @@
             parts.push(`<span class="tree-stat"><span class="tree-stat-label">Exec</span> ${execCount}</span>`);
         }
         if (parts.length === 0 && eventCount) {
-            return `<span class="tree-stat" style="color:#aaa">${eventCount} event${eventCount !== 1 ? 's' : ''}, no I/O</span>`;
+            return `<span class="tree-stat text-dimmer">${eventCount} event${eventCount !== 1 ? 's' : ''}, no I/O</span>`;
         }
-        return parts.join('') || '<span class="tree-stat" style="color:#aaa">no I/O</span>';
+        return parts.join('') || '<span class="tree-stat text-dimmer">no I/O</span>';
     }
     
     function handleTreeClick(e) {

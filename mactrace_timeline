@@ -61,6 +61,7 @@ try:
         CATEGORY_COLORS, CATEGORY_ORDER
     )
 except ImportError:
+    print("Warning: mactrace_categories.py not found — using fallback colors/categories", file=sys.stderr)
     CATEGORY_COLORS = {
         'file': '#4CAF50', 'network': '#2196F3', 'process': '#FF9800',
         'memory': '#9C27B0', 'signal': '#F44336', 'other': '#607D8B',
@@ -1272,7 +1273,9 @@ def main():
     parser.add_argument('-d', '--output-dir', help='Directory with I/O files from mactrace_analyze.py --save-io')
     parser.add_argument('--max-rows', type=int, help='Limit output to first N rows (for huge traces)')
     parser.add_argument('--virtual', action='store_true', 
-                        help='Use virtual scrolling (scales to 1M+ rows)')
+                        help='Use virtual scrolling (scales to 1M+ rows, auto-enabled for >50K events)')
+    parser.add_argument('-v', '--verbose', action='store_true',
+                        help='Show config resolution and processing details')
     
     args = parser.parse_args()
     
@@ -1304,13 +1307,22 @@ def main():
         print(f"Error: Invalid JSON in {input_file}: {e}", file=sys.stderr)
         sys.exit(1)
     
-    # Check for large traces
+    # Auto-select virtual mode for large traces
     event_count = len(generator.trace_data.get('events', []))
-    if event_count > 50000 and not args.virtual and not args.max_rows:
-        print(f"Warning: Large trace ({event_count:,} events). Consider --virtual or --max-rows.", 
+    use_virtual = args.virtual
+    if event_count > 50000 and not use_virtual and not args.max_rows:
+        use_virtual = True
+        print(f"Auto-selecting --virtual mode for {event_count:,} events (threshold: 50,000)", 
               file=sys.stderr)
     
-    if args.virtual:
+    if args.verbose:
+        print(f"Input: {input_file}", file=sys.stderr)
+        print(f"Events: {event_count:,}", file=sys.stderr)
+        print(f"Render mode: {'virtual' if use_virtual else 'DataTables'}", file=sys.stderr)
+        if output_dir:
+            print(f"I/O dir: {output_dir}", file=sys.stderr)
+    
+    if use_virtual:
         html_content = generator.generate_virtual(max_rows=args.max_rows)
     else:
         html_content = generator.generate(max_rows=args.max_rows)
@@ -1326,7 +1338,8 @@ def main():
     with open(output_path, 'w') as f:
         f.write(html_content)
     
-    print(f"Timeline written to: {output_path}", file=sys.stderr)
+    size_kb = len(html_content) / 1024
+    print(f"Timeline written to: {output_path} ({size_kb:.0f} KB)", file=sys.stderr)
 
 
 if __name__ == '__main__':

@@ -130,7 +130,7 @@ class IORecord:
 try:
     from mactrace_categories import get_category, get_categories_for_display, CATEGORY_ORDER
 except ImportError:
-    # Fallback if module not found
+    print("Warning: mactrace_categories.py not found — all syscalls will show as 'other'", file=sys.stderr)
     def get_category(syscall):
         return 'other'
     def get_categories_for_display():
@@ -872,10 +872,15 @@ def main():
                              'files, so this is only needed if you want them on disk')
     parser.add_argument('--render-terminal', action='store_true',
                         help='Create .rendered versions showing terminal output as user would see it')
+    parser.add_argument('-v', '--verbose', action='store_true',
+                        help='Show config resolution and processing details')
     args = parser.parse_args()
     
     # Resolve input file path using config
     input_file = resolve_input_path(args.file)
+    if args.verbose:
+        if input_file != args.file:
+            print(f"Resolved {args.file} → {input_file}", file=sys.stderr)
     
     # Determine save_io directory
     save_io_dir = args.save_all_io or args.save_io
@@ -912,6 +917,12 @@ def main():
         print(f"Error: Invalid JSON in {input_file}: {e}", file=sys.stderr)
         sys.exit(1)
         
+    if args.verbose:
+        events = analyzer.trace_data.get('events', [])
+        print(f"Loaded {len(events):,} events from {input_file}", file=sys.stderr)
+        if save_io_dir:
+            print(f"I/O output: {save_io_dir}", file=sys.stderr)
+    
     analyzer.analyze()
     
     # Save I/O files if requested
