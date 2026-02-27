@@ -316,11 +316,11 @@ The output is JSON with the following structure:
 
 ## Traced Syscalls
 
-mactrace traces 108 of the 454 named macOS syscalls across 7 categories. Use `--trace help` for live details, or see **[COVERAGE.md](COVERAGE.md)** for the full breakdown, cross-version data, and the coverage gathering script.
+mactrace traces 111 of the 454 named macOS syscalls across 7 categories. Use `--trace help` for live details, or see **[COVERAGE.md](COVERAGE.md)** for the full breakdown, cross-version data, and the coverage gathering script.
 
 | Category | Traced | Coverage | Key syscalls |
 |----------|-------:|---------:|--------------|
-| Network | 29 | 85% | connect, sendto/recvfrom, sendmsg/recvmsg, connectx, sendfile |
+| Network | 32 | 94% | connect/connectx, sendto/recvfrom, sendmsg/recvmsg, sendfile, peeloff |
 | File | 42 | 100%* | open, read, write, stat, close, rename, chmod, xattr |
 | Process | 24 | 100%* | fork, exec, exit, wait, getpid/uid, posix_spawn |
 | Memory | 3 | 18% | mmap, mprotect, munmap |

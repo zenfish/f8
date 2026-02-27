@@ -10,14 +10,14 @@ mactrace traces a subset of the macOS syscall table. This document tracks what w
 
 | Category | Traced | Available | Coverage | Notes |
 |----------|-------:|----------:|---------:|-------|
-| Network | 29 | 34 | **85%** | Socket I/O, connect, DNS, NECP policy, sendfile |
+| Network | 32 | 34 | **94%** | Socket I/O, connect/connectx, DNS, NECP, sendfile, peeloff |
 | File | 42 | 42¹ | **100%**¹ | Core file ops; many Apple extensions untraced |
 | Process | 24 | 24¹ | **100%**¹ | Core lifecycle; pthread/psynch internals untraced |
 | Memory | 3 | 17 | **18%** | Core mmap/mprotect; SysV shm, madvise untraced |
 | Signal | 3 | 3 | **100%** | kill, sigaction, sigprocmask |
 | MAC | 11 | 11 | **100%** | Mandatory Access Control (__mac_syscall, etc.) |
 | Poll/Event | 7 | 18 | **39%** | select/poll/kqueue; aio_* untraced |
-| **Total** | **108** | **454** | **24%** | |
+| **Total** | **111** | **454** | **24%** | |
 
 ¹ Coverage % depends on how broadly you define the category. mactrace covers 100% of the *core* file and process syscalls (open, read, write, stat, fork, exec, exit, etc.) but macOS has many extended/Apple-specific variants (guarded file descriptors, vectored I/O, xattr, pthread internals) that aren't traced. The "Available" column above counts only syscalls in mactrace's own category definitions.
 
@@ -41,7 +41,7 @@ mactrace traces a subset of the macOS syscall table. This document tracks what w
 
 ### Network Coverage Detail
 
-29 of 34 network-related syscalls (85%):
+32 of 34 network-related syscalls (94%):
 
 ```
 Traced:                          Not traced:
@@ -64,7 +64,7 @@ Traced:                          Not traced:
   sendto, sendto_nocancel
   setsockopt
   shutdown
-  socket, socketpair
+  socket, socket_delegate, socketpair
 ```
 
 ### The 104 Unnamed Syscalls
@@ -132,12 +132,12 @@ Use `mactrace --trace help` for live category info, or `--trace help <name>` for
 
 ```
 $ mactrace --trace help
-Trace categories (7 categories, 108 traced syscalls):
+Trace categories (7 categories, 111 traced syscalls):
 
   file           42 syscalls  File system operations: open, read, write, stat, link, chmod, directory ops
   mac            11 syscalls  Apple Mandatory Access Control framework
   memory          3 syscalls  Virtual memory: mmap, mprotect, munmap
-  network        29 syscalls  Socket and network I/O: connect, send/recv, DNS, NECP, sendfile
+  network        32 syscalls  Socket and network I/O: connect, send/recv, DNS, NECP, sendfile
   poll            7 syscalls  Event multiplexing: select, poll, kqueue/kevent
   process        24 syscalls  Process lifecycle and identity: fork, exec, exit, wait, getpid/uid
   signal          3 syscalls  Signal delivery and handling: kill, sigaction, sigprocmask
@@ -145,13 +145,13 @@ Trace categories (7 categories, 108 traced syscalls):
 $ mactrace --trace help network
   network
   ───────
-  29 syscalls:
-    accept, accept_nocancel, bind, connect, connect_nocancel, connectx,
+  32 syscalls:
+    accept, accept_nocancel, bind, connect, connect_nocancel, connectx, disconnectx,
     getpeername, getsockname, getsockopt, listen, necp_client_action,
     necp_open, necp_session_action, necp_session_open, recvfrom,
     recvfrom_nocancel, recvmsg, recvmsg_nocancel, recvmsg_x, sendfile,
     sendmsg, sendmsg_nocancel, sendmsg_x, sendto, sendto_nocancel,
-    setsockopt, shutdown, socket, socketpair
+    setsockopt, shutdown, socket, socket_delegate, socketpair
 ```
 
 ## Complete Syscall Reference
@@ -200,7 +200,7 @@ interrupted by thread cancellation). The `-c` flag enables I/O data capture (raw
 | `unlink` | Delete file | path |
 | `write`\[`_nocancel`\] | Write to fd | fd, byte count; +data with `-c` |
 
-#### Network (29 syscalls)
+#### Network (32 syscalls)
 
 | Syscall | What it does | What we capture |
 |---------|-------------|-----------------|
@@ -208,6 +208,7 @@ interrupted by thread cancellation). The `-c` flag enables I/O data capture (raw
 | `bind` | Bind socket to address | fd, sockaddr (family, address, port) |
 | `connect`\[`_nocancel`\] | Connect socket to address | fd, sockaddr (family, address, port) |
 | `connectx` | Extended connect (multipath TCP) | fd, destination sockaddr from sa_endpoints_t |
+| `disconnectx` | Close a connectx association | fd, association ID, connection ID |
 | `getpeername` | Get remote socket address | fd, sockaddr |
 | `getsockname` | Get local socket address | fd, sockaddr |
 | `getsockopt` | Get socket option | fd, level, option name |
@@ -216,6 +217,7 @@ interrupted by thread cancellation). The `-c` flag enables I/O data capture (raw
 | `necp_open` | Open NECP policy session | flags |
 | `necp_session_action` | NECP session action | fd, action code |
 | `necp_session_open` | Open NECP session | flags |
+| `peeloff` | SCTP: separate stream into new socket | fd, association ID, new socket fd (return) |
 | `recvfrom`\[`_nocancel`\] | Receive datagram with source | fd, byte count, flags, source sockaddr; +data with `-c` |
 | `recvmsg`\[`_nocancel`\] | Receive message (scatter/gather) | fd, flags, source sockaddr (if present); +data with `-c` |
 | `recvmsg_x` | Batch receive multiple messages | fd, message count, flags, total bytes |
@@ -226,6 +228,7 @@ interrupted by thread cancellation). The `-c` flag enables I/O data capture (raw
 | `setsockopt` | Set socket option | fd, level, option name (SO_REUSEADDR etc.) |
 | `shutdown` | Shutdown socket half | fd, how (SHUT_RD/WR/RDWR) |
 | `socket` | Create socket | domain (AF_INET etc.), type (SOCK_STREAM etc.), protocol |
+| `socket_delegate` | Create socket in another process | domain, type, protocol, target_pid |
 | `socketpair` | Create connected socket pair | domain, type, protocol |
 
 #### MAC Framework (11 syscalls)
