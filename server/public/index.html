@@ -128,6 +128,8 @@
             background: var(--c-tree-card-bg);
             border-radius: 6px;
             padding: 12px 16px;
+            display: flex;
+            flex-direction: column;
         }
         .summary-card h3 {
             font-size: 12px;
@@ -150,14 +152,12 @@
             list-style: none;
             font-family: "SF Mono", Consolas, monospace;
             font-size: 11px;
-            max-height: 120px;
             overflow-y: auto;
+            flex: 1;
         }
         .summary-card li {
             padding: 3px 0;
             white-space: nowrap;
-            overflow: hidden;
-            text-overflow: ellipsis;
         }
         .summary-card li.error { color: var(--c-error); }
         .tag { 
@@ -337,7 +337,7 @@
             display: inline-block;
             width: 20px;
             height: 15px;
-            margin-left: 5px;
+            margin-right: 6px;
             vertical-align: middle;
             border-radius: 2px;
             box-shadow: 0 0 1px rgba(0,0,0,0.3);
@@ -349,7 +349,7 @@
             display: inline-block;
         }
         .geo-tooltip .geo-tip-text {
-            visibility: hidden;
+            display: none;
             background: var(--c-card-bg);
             border: 1px solid var(--c-card-border);
             color: var(--c-text);
@@ -357,16 +357,10 @@
             border-radius: 4px;
             font-size: 11px;
             white-space: nowrap;
-            position: absolute;
-            z-index: 100;
-            bottom: 125%;
-            left: 50%;
-            transform: translateX(-50%);
+            position: fixed;
+            z-index: 1000;
             box-shadow: 0 2px 8px rgba(0,0,0,0.15);
             pointer-events: none;
-        }
-        .geo-tooltip:hover .geo-tip-text {
-            visibility: visible;
         }
         
         .io-link {
@@ -997,7 +991,7 @@
         if (geo.region) parts.push(geo.region);
         if (geo.timezone) parts.push(`🕐 ${geo.timezone}`);
         const tipText = parts.join(' · ');
-        return `<span class="geo-tooltip"><img class="geo-flag" src="https://flagcdn.com/w40/${cc}.png" alt="${ccUpper}" onerror="this.style.display='none'"><span class="geo-tip-text">${tipText}</span></span>`;
+        return `<span class="geo-tooltip"><img class="geo-flag" src="https://flagcdn.com/w40/${cc}.png" alt="${ccUpper}" title="${tipText}" onerror="this.style.display='none'"><span class="geo-tip-text">${tipText}</span></span>`;
     }
 
     function renderSummary(t) {
@@ -1056,16 +1050,16 @@
                 ${t.dnsLookups && t.dnsLookups.length > 0 ? `
                 <div class="summary-card">
                     <h3>🌐 DNS Lookups</h3>
-                    <ul style="list-style:none;font-family:'SF Mono',Consolas,monospace;font-size:11px">
+                    <ul>
                         ${t.dnsLookups.map(d => {
                             const ip = d.ip ? d.ip.split(':')[0] : '—';
                             const seqLink = d.lookup_seq ? `<a href="#" class="dns-jump text-faint text-xxs" data-seq="${d.lookup_seq}" style="margin-left:6px" title="Jump to line #${d.lookup_seq}">#${d.lookup_seq}</a>` : '';
                             const geoFlag = renderGeoFlag(d.geo);
                             return `
                             <li style="padding:4px 0;border-bottom:1px solid var(--c-card-border)">
-                                <span class="text-primary-dark font-semibold">${escapeHtml(d.hostname)}</span>
+                                ${geoFlag}<span class="text-primary-dark font-semibold">${escapeHtml(d.hostname)}</span>
                                 <span class="arrow-sep">→</span>
-                                <span class="text-muted">${escapeHtml(ip)}</span>${geoFlag}
+                                <span class="text-muted">${escapeHtml(ip)}</span>
                                 ${seqLink}
                             </li>
                         `}).join('')}
@@ -1417,6 +1411,26 @@
             scrollToSeq(seq);
         }
     });
+
+    // Geo-flag tooltip positioning — uses fixed positioning to escape
+    // overflow:auto containers. Shows on hover over .geo-tooltip elements.
+    document.addEventListener('mouseenter', (e) => {
+        const tooltip = e.target.closest('.geo-tooltip');
+        if (!tooltip) return;
+        const tip = tooltip.querySelector('.geo-tip-text');
+        if (!tip) return;
+        const rect = tooltip.getBoundingClientRect();
+        tip.style.left = rect.left + rect.width / 2 + 'px';
+        tip.style.top = (rect.top - 8) + 'px';
+        tip.style.transform = 'translate(-50%, -100%)';
+        tip.style.display = 'block';
+    }, true);
+    document.addEventListener('mouseleave', (e) => {
+        const tooltip = e.target.closest('.geo-tooltip');
+        if (!tooltip) return;
+        const tip = tooltip.querySelector('.geo-tip-text');
+        if (tip) tip.style.display = 'none';
+    }, true);
     
     // Scroll to a specific seq number
     function scrollToSeq(seq) {
