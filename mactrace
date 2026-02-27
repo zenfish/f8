@@ -952,7 +952,7 @@ class MacTrace:
                 while i < len(lines):
                     hexline = lines[i]
                     # Match hexdump format: address followed by hex bytes
-                    match = re.match(r'^\s*([0-9a-fA-F]+):\s+((?:[0-9a-fA-F]{2}\s*)+)', hexline)
+                    match = re.match(r'^\s*([0-9a-fA-F]+):\s+((?:[0-9a-fA-F]{2} )*[0-9a-fA-F]{2})\s\s', hexline)
                     if match:
                         # Extract hex bytes from this line
                         hex_part = match.group(2).strip()
@@ -1974,7 +1974,6 @@ syscall::recvmsg_nocancel:return
         
         # Pre-process: merge MACTRACE_IO/MACTRACE_SOCKADDR lines with following tracemem hexdump blocks
         # Always run this since SOCKADDR lines have hexdumps even without --capture-io
-        dtrace_output = self._merge_io_hexdumps(dtrace_output)
         
         # Parse DTrace output
         for line in dtrace_output:
@@ -2393,7 +2392,6 @@ syscall::recvmsg_nocancel:return
         lsof_thread.join(timeout=10)
         
         # Pre-process: merge hexdump blocks
-        dtrace_output = self._merge_io_hexdumps(dtrace_output)
         
         # Parse DTrace output
         for line in dtrace_output:
