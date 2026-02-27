@@ -3,11 +3,12 @@
 geo_test.py — Connect to servers across the globe for mactrace geo flag testing.
 
 Makes HTTPS connections to well-known sites hosted in different countries
-and continents. Designed to be traced with mactrace to generate DNS lookups
-with diverse geo data for the web UI's flag display.
+and continents.  Targets are chosen to be *locally hosted* (universities,
+government sites, NICs) rather than behind US CDNs, so the IP addresses
+geo-locate to their actual countries.
 
 Usage:
-    sudo mactrace -o geo_test.json -jp python3 tests/scripts/geo_test.py
+    sudo mactrace -o geo_test.json --capture-io -jp python3 tests/scripts/geo_test.py
 """
 
 import socket
@@ -16,47 +17,44 @@ import sys
 import time
 
 # ── Servers by region ────────────────────────────────────────────────
-# Each entry: (hostname, description, expected_country)
+# Each entry: (hostname, description)
+# Selected for local hosting — not behind Cloudflare/Fastly/Akamai.
 TARGETS = [
-    # North America
-    ("www.google.com",          "Google (US)",              "US"),
-    ("github.com",              "GitHub (US)",              "US"),
-    ("www.cbc.ca",              "CBC News (Canada)",        "CA"),
+    # ── North America ──
+    ("github.com",              "GitHub (US)"),
+    ("www.mit.edu",             "MIT (US)"),
 
-    # Europe
-    ("www.bbc.co.uk",           "BBC (UK)",                 "GB"),
-    ("www.lemonde.fr",          "Le Monde (France)",        "FR"),
-    ("www.heise.de",            "Heise (Germany)",          "DE"),
-    ("www.ansa.it",             "ANSA (Italy)",             "IT"),
-    ("www.svt.se",              "SVT (Sweden)",             "SE"),
+    # ── South America ──
+    ("www.gov.br",              "Brazil Government"),
+    ("www.usp.br",              "Univ of São Paulo (Brazil)"),
+    ("www.nic.ar",              "NIC Argentina"),
+    ("www.nic.br",              "NIC Brazil"),
 
-    # Asia
-    ("www.nhk.or.jp",           "NHK (Japan)",              "JP"),
-    ("www.naver.com",           "Naver (South Korea)",      "KR"),
-    ("www.baidu.com",           "Baidu (China)",            "CN"),
-    ("timesofindia.indiatimes.com", "Times of India",       "IN"),
+    # ── Europe ──
+    ("www.heise.de",            "Heise (Germany)"),
+    ("www.ethz.ch",             "ETH Zurich (Switzerland)"),
+    ("www.uio.no",              "Univ of Oslo (Norway)"),
+    ("www.ansa.it",             "ANSA (Italy)"),
 
-    # Oceania
-    ("www.abc.net.au",          "ABC News (Australia)",     "AU"),
-    ("www.rnz.co.nz",           "RNZ (New Zealand)",        "NZ"),
+    # ── Africa ──
+    ("www.gov.za",              "South Africa Government"),
+    ("www.uct.ac.za",           "Univ Cape Town (South Africa)"),
 
-    # South America
-    ("www.globo.com",           "Globo (Brazil)",           "BR"),
-    ("www.clarin.com",          "Clarín (Argentina)",       "AR"),
+    # ── Asia ──
+    ("www.u-tokyo.ac.jp",       "Univ of Tokyo (Japan)"),
+    ("www.tsinghua.edu.cn",     "Tsinghua University (China)"),
+    ("www.baidu.com",           "Baidu (China/HK)"),
 
-    # Africa
-    ("www.news24.com",          "News24 (South Africa)",    "ZA"),
-    ("www.nation.africa",       "Nation Africa (Kenya)",    "KE"),
-
-    # Middle East
-    ("www.aljazeera.com",       "Al Jazeera (Qatar)",       "QA"),
+    # ── Oceania ──
+    ("www.anu.edu.au",          "ANU (Australia)"),
+    ("www.gov.au",              "Australia Government"),
 ]
 
 TIMEOUT_SECONDS = 5
 SSL_CONTEXT = ssl.create_default_context()
 
 
-def probe_host(hostname, description, expected_cc):
+def probe_host(hostname, description):
     """Connect to a host via HTTPS, triggering DNS + TLS."""
     try:
         # DNS resolution (getaddrinfo → recorded by mactrace)
@@ -71,23 +69,23 @@ def probe_host(hostname, description, expected_cc):
                 resp = ssock.recv(512).decode("utf-8", errors="replace")
                 status = resp.split("\r\n")[0] if resp else "?"
 
-        print(f"  ✓ {description:<35} {ip:<18} [{expected_cc}]  {status}")
+        print(f"  ✓ {description:<40} {ip:<18} {status}")
         return True
 
     except Exception as e:
-        print(f"  ✗ {description:<35} {'error':<18} [{expected_cc}]  {e}")
+        print(f"  ✗ {description:<40} {'error':<18} {e}")
         return False
 
 
 def main():
-    print(f"🌍 Geo Test — probing {len(TARGETS)} servers across {len(set(t[2] for t in TARGETS))} countries\n")
+    print(f"🌍 Geo Test — probing {len(TARGETS)} servers\n")
 
     ok = 0
     fail = 0
     t0 = time.monotonic()
 
-    for hostname, desc, cc in TARGETS:
-        if probe_host(hostname, desc, cc):
+    for hostname, desc in TARGETS:
+        if probe_host(hostname, desc):
             ok += 1
         else:
             fail += 1
