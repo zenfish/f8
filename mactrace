@@ -2875,15 +2875,30 @@ Shell metacharacters:
                 sys.exit(1)
             print(f"kern.dtrace.difo_maxsize: {current_max} → {target_max}", file=sys.stderr)
 
-            # Restore on exit
+            # Restore on ANY exit: atexit (clean + sys.exit) + signal handlers (SIGTERM/SIGHUP)
             import atexit
+            _difo_restored = False
             def _restore_difo():
+                nonlocal _difo_restored
+                if _difo_restored:
+                    return
+                _difo_restored = True
                 try:
                     _sp.run(['/usr/sbin/sysctl', f'kern.dtrace.difo_maxsize={original_difo_maxsize}'],
                             capture_output=True)
                 except Exception:
                     pass
             atexit.register(_restore_difo)
+
+            # SIGTERM/SIGHUP: restore sysctl then re-raise for default behavior
+            import signal as _sig
+            def _signal_restore(signum, frame):
+                _restore_difo()
+                # Re-raise with default handler so exit code is correct
+                _sig.signal(signum, _sig.SIG_DFL)
+                os.kill(os.getpid(), signum)
+            _sig.signal(_sig.SIGTERM, _signal_restore)
+            _sig.signal(_sig.SIGHUP, _signal_restore)
 
     tracer = MacTrace(
         verbose=args.verbose,
