@@ -105,6 +105,10 @@ def render_terminal_lines(lines: List[str]) -> List[str]:
 # concatenated at runtime via ALL_DTRACE_PROBES.
 from syscalls import HANDLER_REGISTRY, ALL_DTRACE_PROBES
 from syscalls import TRACED_SYSCALLS as _HANDLER_TRACED
+from syscalls import (
+    resolve_trace_spec, get_dtrace_probes, get_handler_registry,
+    get_active_categories, count_dif_programs, CATEGORY_ALIASES,
+)
 from syscalls._constants import (
     ERRNO_NAMES as _ERRNO_NAMES,
     AF_NAMES as _AF_NAMES,
@@ -345,10 +349,32 @@ class MacTrace:
     def __init__(self, verbose: bool = False, capture_io: bool = False,
                  io_size: int = 1*1024*1024, strsize: int = None, bufsize: str = None, 
                  dynvarsize: str = None, switchrate: str = None, cleanrate: str = None,
-                 cache_size: int = 0, cache_dir: str = None):
+                 cache_size: int = 0, cache_dir: str = None,
+                 trace_spec: str = None):
         self.verbose = verbose
         self.capture_io = capture_io
         self.io_size = io_size
+        # ── Trace filtering ──────────────────────────────────────────
+        # Parse --trace spec into categories + individual syscalls
+        if trace_spec and trace_spec.lower() != 'all':
+            self._trace_cats, self._trace_syscalls = resolve_trace_spec(trace_spec)
+        else:
+            self._trace_cats, self._trace_syscalls = None, None
+        # Build filtered DTrace probes and handler registry
+        self._filtered_probes = get_dtrace_probes(self._trace_cats, self._trace_syscalls)
+        self._filtered_registry = get_handler_registry(self._trace_cats, self._trace_syscalls)
+        # ProcessHandler is always included (process tree tracking)
+        if self._trace_cats is not None or self._trace_syscalls is not None:
+            proc_reg = get_handler_registry(frozenset(['process']))
+            for sc, h in proc_reg.items():
+                if sc not in self._filtered_registry:
+                    self._filtered_registry[sc] = h
+            proc_probes = get_dtrace_probes(frozenset(['process']))
+            if proc_probes not in self._filtered_probes:
+                self._filtered_probes += "\n" + proc_probes
+        # Pre-build the filtered DTrace script
+        self._dtrace_script = DTRACE_HEADER + "\n" + self._filtered_probes + "\n"
+        self._traced_syscalls = frozenset(self._filtered_registry.keys())
         self.strsize = strsize or self.DEFAULT_STRSIZE
         # Warn about dtrace stack limits - large io_size can crash dtrace
         if io_size > 4*1024*1024:
@@ -665,7 +691,7 @@ class MacTrace:
         passing a lightweight FdTracker adapter that manipulates
         our _fd_info and _fd_is_socket dicts.
         """
-        handler = HANDLER_REGISTRY.get(event.syscall)
+        handler = self._filtered_registry.get(event.syscall)
         if handler:
             handler.update_fd_info(event, self._fd_tracker)
     
@@ -1267,7 +1293,7 @@ class MacTrace:
         handler's parse_args().  Falls back to storing raw args for
         unrecognised syscalls.
         """
-        handler = HANDLER_REGISTRY.get(syscall)
+        handler = self._filtered_registry.get(syscall)
         if handler:
             try:
                 return handler.parse_args(syscall, args)
@@ -1315,46 +1341,45 @@ class MacTrace:
                 print(f"Warning: could not capture env for {username}: {e}", file=sys.stderr)
             return None
     
-    def trace(self, command: List[str], timeout: Optional[int] = None,
-              run_as_user: Optional[tuple] = None, throttle: bool = False) -> TraceResult:
-        """
-        Execute and trace a command.
-        
+
+    def _build_io_capture_probes(self, io_size: int) -> str:
+        """Build I/O capture DTrace probes, filtered by active trace categories.
+
+        Only includes file IO (read/write) when file handlers are loaded,
+        and network IO (sendto/recvfrom/sendmsg/recvmsg) when network
+        handlers are loaded.
+
         Args:
-            command: Command and arguments to execute
-            timeout: Optional timeout in seconds
-            run_as_user: Optional (uid, gid, username) tuple to run command as
-            throttle: If True, run traced program at background priority (macOS taskpolicy -b)
-            
+            io_size: Max bytes per tracemem capture
+
         Returns:
-            TraceResult with all collected data
+            D-language probe text for IO capture
         """
-        start_time = datetime.now()
-        base_timestamp = int(time.time() * 1000000)
-        
-        # Use dtrace -c to launch the command - this ensures tracing starts
-        # before the first instruction executes (no race condition)
-        
-        # Prepare DTrace script - use $target which dtrace sets to the launched PID
-        dtrace_script = DTRACE_SCRIPT.replace("$target_pid", "$target")
-        
-        # Substitute DTrace options
-        dtrace_script = dtrace_script.replace("$STRSIZE$", str(self.strsize))
-        dtrace_script = dtrace_script.replace("$BUFSIZE$", self.bufsize)
-        dtrace_script = dtrace_script.replace("$DYNVARSIZE$", self.dynvarsize)
-        dtrace_script = dtrace_script.replace("$SWITCHRATE$", self.switchrate)
-        dtrace_script = dtrace_script.replace("$CLEANRATE$", self.cleanrate)
-        
-        # Add rawio pragma and I/O buffer capture if requested
-        if self.capture_io:
-            io_size = self.io_size  # tracemem is independent of strsize
-            io_capture_probes = f'''
+        cats = self._trace_cats
+        syscalls = self._trace_syscalls
+        # Determine which IO families to include
+        # Include file IO if: no filter (all), or 'file' category, or any file-IO syscall requested
+        include_file = (cats is None and syscalls is None) or \
+                       (cats is not None and 'file' in cats) or \
+                       (syscalls is not None and bool(syscalls & {'read', 'read_nocancel', 'write', 'write_nocancel', 'pread', 'pwrite'}))
+        # Include network IO if: no filter (all), or 'network' category, or any net-IO syscall requested
+        include_net = (cats is None and syscalls is None) or \
+                      (cats is not None and 'network' in cats) or \
+                      (syscalls is not None and bool(syscalls & {'sendto', 'sendto_nocancel', 'recvfrom', 'recvfrom_nocancel', 'sendmsg', 'sendmsg_nocancel', 'recvmsg', 'recvmsg_nocancel'}))
+
+        parts = []
+        parts.append(f"""
 /* ============================================ */
 /* I/O DATA CAPTURE (--capture-io)              */
 /* ============================================ */
 /* Captures actual buffer contents via tracemem() */
 /* Output: MACTRACE_IO pid tid syscall fd actual_bytes <hex data> */
 /* tracemem outputs {io_size} bytes; trim to actual_bytes on parse */
+""")
+
+        if include_file:
+            parts.append(f"""
+/* ── File I/O capture ───────────────────────── */
 
 /* Save buffer pointers on entry */
 syscall::read:entry,
@@ -1370,21 +1395,6 @@ syscall::write_nocancel:entry
 /TRACED/
 {{
     self->write_buf = arg1;
-}}
-
-
-syscall::sendto:entry,
-syscall::sendto_nocancel:entry
-/TRACED/
-{{
-    self->sendto_buf = arg1;
-}}
-
-syscall::recvfrom:entry,
-syscall::recvfrom_nocancel:entry
-/TRACED/
-{{
-    self->recvfrom_buf = arg1;
 }}
 
 /* Read: capture buffer on return with actual bytes read */
@@ -1411,7 +1421,25 @@ syscall::write_nocancel:return
     printf("\\n");
     self->write_buf = 0;
 }}
+""")
 
+        if include_net:
+            parts.append(f"""
+/* ── Network I/O capture ────────────────────── */
+
+syscall::sendto:entry,
+syscall::sendto_nocancel:entry
+/TRACED/
+{{
+    self->sendto_buf = arg1;
+}}
+
+syscall::recvfrom:entry,
+syscall::recvfrom_nocancel:entry
+/TRACED/
+{{
+    self->recvfrom_buf = arg1;
+}}
 
 /* Network: sendto/recvfrom */
 syscall::sendto:return,
@@ -1568,7 +1596,48 @@ syscall::recvmsg_nocancel:return
     tracemem(copyin(this->rm_name_p, this->rm_name_len), 128, this->rm_name_len);
     printf("\\n");
 }}
-'''
+""")
+
+        if not include_file and not include_net:
+            return ''
+
+        return '\n'.join(parts)
+
+
+    def trace(self, command: List[str], timeout: Optional[int] = None,
+              run_as_user: Optional[tuple] = None, throttle: bool = False) -> TraceResult:
+        """
+        Execute and trace a command.
+        
+        Args:
+            command: Command and arguments to execute
+            timeout: Optional timeout in seconds
+            run_as_user: Optional (uid, gid, username) tuple to run command as
+            throttle: If True, run traced program at background priority (macOS taskpolicy -b)
+            
+        Returns:
+            TraceResult with all collected data
+        """
+        start_time = datetime.now()
+        base_timestamp = int(time.time() * 1000000)
+        
+        # Use dtrace -c to launch the command - this ensures tracing starts
+        # before the first instruction executes (no race condition)
+        
+        # Prepare DTrace script - use $target which dtrace sets to the launched PID
+        dtrace_script = self._dtrace_script.replace("$target_pid", "$target")
+        
+        # Substitute DTrace options
+        dtrace_script = dtrace_script.replace("$STRSIZE$", str(self.strsize))
+        dtrace_script = dtrace_script.replace("$BUFSIZE$", self.bufsize)
+        dtrace_script = dtrace_script.replace("$DYNVARSIZE$", self.dynvarsize)
+        dtrace_script = dtrace_script.replace("$SWITCHRATE$", self.switchrate)
+        dtrace_script = dtrace_script.replace("$CLEANRATE$", self.cleanrate)
+        
+        # Add rawio pragma and I/O buffer capture if requested
+        if self.capture_io:
+            io_size = self.io_size  # tracemem is independent of strsize
+            io_capture_probes = self._build_io_capture_probes(io_size)
             dtrace_script = dtrace_script.replace("$RAWIO_PRAGMA$", "#pragma D option rawbytes")
             dtrace_script += io_capture_probes
         else:
@@ -2118,7 +2187,7 @@ syscall::recvmsg_nocancel:return
         
         # Prepare DTrace script - replace $target_pid with literal PID
         # When using dtrace -p, $target is set to the attached PID
-        dtrace_script = DTRACE_SCRIPT.replace("$target_pid", "$target")
+        dtrace_script = self._dtrace_script.replace("$target_pid", "$target")
         
         # Substitute DTrace options
         dtrace_script = dtrace_script.replace("$STRSIZE$", str(self.strsize))
@@ -2129,222 +2198,9 @@ syscall::recvmsg_nocancel:return
         
         # Add rawio pragma and I/O buffer capture if requested
         if self.capture_io:
-            dtrace_script = dtrace_script.replace("$RAWIO_PRAGMA$", "#pragma D option rawbytes\n" + io_capture_probes)
+
             io_size = self.io_size
-            io_capture_probes = f'''
-/* ============================================ */
-/* I/O DATA CAPTURE (--capture-io)              */
-/* ============================================ */
-
-syscall::read:entry,
-syscall::read_nocancel:entry
-/TRACED/
-{{
-    self->read_buf = arg1;
-}}
-
-
-syscall::write:entry,
-syscall::write_nocancel:entry
-/TRACED/
-{{
-    self->write_buf = arg1;
-}}
-
-
-syscall::sendto:entry,
-syscall::sendto_nocancel:entry
-/TRACED/
-{{
-    self->sendto_buf = arg1;
-}}
-
-syscall::recvfrom:entry,
-syscall::recvfrom_nocancel:entry
-/TRACED/
-{{
-    self->recvfrom_buf = arg1;
-}}
-
-syscall::read:return,
-syscall::read_nocancel:return
-/TRACED && arg1 > 0 && self->read_buf/
-{{
-    this->nbytes = arg1 < {io_size} ? arg1 : {io_size};
-    printf("MACTRACE_IO %d %d read %d %d ", pid, tid, self->read_fd, (int)arg1);
-    tracemem(copyin(self->read_buf, this->nbytes), {io_size}, this->nbytes);
-    printf("\\n");
-    self->read_buf = 0;
-}}
-
-
-syscall::write:return,
-syscall::write_nocancel:return
-/TRACED && arg1 > 0 && self->write_buf/
-{{
-    this->nbytes = arg1 < {io_size} ? arg1 : {io_size};
-    printf("MACTRACE_IO %d %d write %d %d ", pid, tid, self->write_fd, (int)arg1);
-    tracemem(copyin(self->write_buf, this->nbytes), {io_size}, this->nbytes);
-    printf("\\n");
-    self->write_buf = 0;
-}}
-
-
-syscall::sendto:return,
-syscall::sendto_nocancel:return
-/TRACED && arg1 > 0 && self->sendto_buf/
-{{
-    this->nbytes = arg1 < {io_size} ? arg1 : {io_size};
-    printf("MACTRACE_IO %d %d sendto %d %d ", pid, tid, self->sendto_fd, (int)arg1);
-    tracemem(copyin(self->sendto_buf, this->nbytes), {io_size}, this->nbytes);
-    printf("\\n");
-    self->sendto_buf = 0;
-}}
-
-syscall::recvfrom:return,
-syscall::recvfrom_nocancel:return
-/TRACED && arg1 > 0 && self->recvfrom_buf/
-{{
-    this->nbytes = arg1 < {io_size} ? arg1 : {io_size};
-    printf("MACTRACE_IO %d %d recvfrom %d %d ", pid, tid, self->recvfrom_fd, (int)arg1);
-    tracemem(copyin(self->recvfrom_buf, this->nbytes), {io_size}, this->nbytes);
-    printf("\\n");
-    self->recvfrom_buf = 0;
-}}
-
-/* sendmsg entry — capture buffer data immediately (not deferred to return).
- * For sendmsg, the buffer is valid at entry (user is sending this data).
- * Capturing at entry avoids byte-32 corruption caused by probe interaction
- * in large DTrace scripts on ARM64. */
-syscall::sendmsg:entry,
-syscall::sendmsg_nocancel:entry
-/TRACED/
-{{
-    this->mh_raw = copyin(arg1, 32);
-    this->iov_p = *(uint64_t *)((uintptr_t)this->mh_raw + 16);
-    this->iov_cnt = *(int32_t *)((uintptr_t)this->mh_raw + 24);
-    self->sendmsg_captured = 0;
-}}
-
-/* Extract destination address from sendmsg msghdr.msg_name */
-syscall::sendmsg:entry,
-syscall::sendmsg_nocancel:entry
-/TRACED && this->mh_raw != 0/
-{{
-    this->name_p = *(uint64_t *)this->mh_raw;
-    this->name_len = *(uint32_t *)((uintptr_t)this->mh_raw + 8);
-}}
-
-syscall::sendmsg:entry,
-syscall::sendmsg_nocancel:entry
-/TRACED && this->name_p != 0 && this->name_len >= 4 && this->name_len <= 128/
-{{
-    printf("MACTRACE_SOCKADDR %d %d sendmsg_dest 0 0 %d %d %d ",
-        pid, tid, walltimestamp/1000, self->sendmsg_fd, *(uint8_t *)((uintptr_t)copyin(this->name_p, this->name_len) + 1));
-    tracemem(copyin(this->name_p, this->name_len), 128, this->name_len);
-    printf("\\n");
-}}
-
-syscall::sendmsg:entry,
-syscall::sendmsg_nocancel:entry
-/TRACED && this->iov_cnt > 0 && this->iov_p != 0/
-{{
-    this->iv_raw = copyin(this->iov_p, 16);
-    this->base = *(uint64_t *)this->iv_raw;
-    this->len = *(uint64_t *)((uintptr_t)this->iv_raw + 8);
-    this->nbytes = this->len < {io_size} ? this->len : {io_size};
-    /* Round copyin to 64-byte boundary — ARM64 DTrace corrupts byte 32 */
-    this->copyin_sz = (this->nbytes + 63) & ~63;
-    printf("MACTRACE_IO %d %d sendmsg %d %d ", pid, tid, self->sendmsg_fd, (int)this->len);
-    tracemem(copyin(this->base, this->copyin_sz), {io_size}, this->nbytes);
-    printf("\\n");
-    self->sendmsg_captured = 1;
-}}
-
-/* sendmsg return — fallback when entry-time capture failed */
-syscall::sendmsg:return,
-syscall::sendmsg_nocancel:return
-/TRACED && arg1 > 0 && self->sendmsg_captured == 0/
-{{
-    printf("MACTRACE_IO %d %d sendmsg %d %d\\n", pid, tid, self->sendmsg_fd, (int)arg1);
-}}
-
-/* recvmsg entry — save buffer pointer (split); kernel fills buffer by return */
-syscall::recvmsg:entry,
-syscall::recvmsg_nocancel:entry
-/TRACED/
-{{
-    this->mh_raw = copyin(arg1, 32);
-    this->iov_p = *(uint64_t *)((uintptr_t)this->mh_raw + 16);
-    this->iov_cnt = *(int32_t *)((uintptr_t)this->mh_raw + 24);
-    self->recvmsg_msghdr = arg1;
-    self->recvmsg_buf_hi = 0;
-    self->recvmsg_buf_lo = 0;
-    self->recvmsg_buflen = 0;
-}}
-
-syscall::recvmsg:entry,
-syscall::recvmsg_nocancel:entry
-/TRACED && this->iov_cnt > 0 && this->iov_p != 0/
-{{
-    this->iv_raw = copyin(this->iov_p, 16);
-    this->base = *(uint64_t *)this->iv_raw;
-    this->len = *(uint64_t *)((uintptr_t)this->iv_raw + 8);
-    self->recvmsg_buf_hi = (uint32_t)(this->base >> 32);
-    self->recvmsg_buf_lo = (uint32_t)(this->base & 0xffffffff);
-    self->recvmsg_buflen = this->len;
-}}
-
-/* recvmsg return — reassemble pointer and capture */
-syscall::recvmsg:return,
-syscall::recvmsg_nocancel:return
-/TRACED && arg1 > 0 && (self->recvmsg_buf_hi != 0 || self->recvmsg_buf_lo != 0) && self->recvmsg_buflen > 0/
-{{
-    this->buf = ((uint64_t)self->recvmsg_buf_hi << 32) | (uint64_t)self->recvmsg_buf_lo;
-    this->nbytes = arg1 < {io_size} ? (int)arg1 : {io_size};
-    /* Round copyin size to 64-byte boundary — DTrace ARM64 corrupts byte 32 */
-    this->copyin_sz = (this->nbytes + 63) & ~63;
-    printf("MACTRACE_IO %d %d recvmsg %d %d ", pid, tid, self->recvmsg_fd, (int)arg1);
-    tracemem(copyin(this->buf, this->copyin_sz), {io_size}, this->nbytes);
-    printf("\\n");
-    self->recvmsg_buf_hi = 0;
-    self->recvmsg_buf_lo = 0;
-    self->recvmsg_buflen = 0;
-}}
-
-/* recvmsg return — fallback when buffer extraction failed */
-syscall::recvmsg:return,
-syscall::recvmsg_nocancel:return
-/TRACED && arg1 > 0 && self->recvmsg_buf_hi == 0 && self->recvmsg_buf_lo == 0/
-{{
-    printf("MACTRACE_IO %d %d recvmsg %d %d\\n", pid, tid, self->recvmsg_fd, (int)arg1);
-}}
-
-
-/* recvmsg return -- extract source address from msghdr.msg_name (filled by kernel).
- * For UDP (SOCK_DGRAM), each datagram carries its own source address.
- * Emitted as recvmsg_src pseudo-event, attached to the recvmsg event by the parser. */
-syscall::recvmsg:return,
-syscall::recvmsg_nocancel:return
-/TRACED && arg1 > 0 && self->recvmsg_msghdr != 0/
-{{
-    this->rm_mh = copyin(self->recvmsg_msghdr, 16);
-    this->rm_name_p = *(uint64_t *)this->rm_mh;
-    this->rm_name_len = *(uint32_t *)((uintptr_t)this->rm_mh + 8);
-    self->recvmsg_msghdr = 0;
-}}
-
-syscall::recvmsg:return,
-syscall::recvmsg_nocancel:return
-/TRACED && this->rm_name_p != 0 && this->rm_name_len >= 4 && this->rm_name_len <= 128/
-{{
-    printf("MACTRACE_SOCKADDR %d %d recvmsg_src 0 0 %d %d %d ",
-        pid, tid, walltimestamp/1000, self->recvmsg_fd,
-        *(uint8_t *)((uintptr_t)copyin(this->rm_name_p, this->rm_name_len) + 1));
-    tracemem(copyin(this->rm_name_p, this->rm_name_len), 128, this->rm_name_len);
-    printf("\\n");
-}}
-'''
+            io_capture_probes = self._build_io_capture_probes(io_size)
             dtrace_script = dtrace_script.replace("$RAWIO_PRAGMA$", "#pragma D option rawbytes")
             dtrace_script += io_capture_probes
         else:
@@ -2903,6 +2759,8 @@ Shell metacharacters:
     parser.add_argument("--throttle", action="store_true",
                         help="Throttle traced program (macOS taskpolicy -b: background I/O + CPU). "
                              "Reduces DTrace drops for heavy workloads like npm install")
+    parser.add_argument("--trace", type=str, default=None, metavar="SPEC",
+                        help="Filter which syscall probes to load. Reduces DTrace overhead and drops. Comma-separated list of categories, aliases, or individual syscall names. Categories: file, network, necp, process, memory, signal, mac, poll. Aliases: net (network+necp), fs (file), io (file+network+necp), xio (io+process), exec (process), all (default). Syscalls: connect,sendto,... (loads the owning handler). Examples: --trace=net  --trace=net,process  --trace=connect,sendto,recvfrom")
     parser.add_argument("command", nargs=argparse.REMAINDER,
                         help="Command to trace. Pipelines and shell metacharacters "
                              "(|, &, ;, >, etc.) must be wrapped: "
@@ -2992,9 +2850,33 @@ Shell metacharacters:
         switchrate=args.switchrate,
         cleanrate=args.cleanrate,
         cache_size=cache_size,
-        cache_dir=cache_dir
+        cache_dir=cache_dir,
+        trace_spec=args.trace
     )
     
+    # ── DIF resource reporting ────────────────────────────────────────
+    dif_count = count_dif_programs(tracer._dtrace_script)
+    dif_budget = 250  # approximate max at default difo_maxsize=256KB
+    dif_pct = min(100, int(dif_count / dif_budget * 100))
+    is_filtered = args.trace and args.trace.lower() != 'all'
+    if is_filtered:
+        # Build a descriptive label for what's loaded
+        spec_parts = []
+        if tracer._trace_cats:
+            spec_parts.extend(sorted(tracer._trace_cats))
+        if tracer._trace_syscalls:
+            spec_parts.extend(sorted(tracer._trace_syscalls))
+        label = ', '.join(spec_parts) if spec_parts else args.trace
+        print(f"DTrace probes: {dif_count} loaded ({label}), ~{dif_pct}% of DIF budget", file=sys.stderr)
+    elif args.verbose:
+        print(f"DTrace probes: {dif_count} loaded (all), ~{dif_pct}% of DIF budget", file=sys.stderr)
+    if args.capture_io:
+        # IO capture adds ~30% more probes
+        io_extra = int(dif_count * 0.15)  # rough estimate for IO capture probes
+        combined_pct = min(100, int((dif_count + io_extra) / dif_budget * 100))
+        if combined_pct > 90:
+            print(f"  ⚠️  With -d (I/O capture), estimated ~{combined_pct}% of DIF budget", file=sys.stderr)
+
     if args.pid is not None:
         # Attach to already-running process (like strace -p)
         result = tracer.trace_pid(args.pid, timeout=args.timeout)
@@ -3048,7 +2930,7 @@ Shell metacharacters:
         for syscall, count in tracer.all_syscall_counts.items():
             # Check if this syscall (or its _nocancel variant) is explicitly traced
             base_name = syscall.replace("_nocancel", "")
-            if syscall not in tracer.TRACED_SYSCALLS and base_name not in tracer.TRACED_SYSCALLS:
+            if syscall not in tracer._traced_syscalls and base_name not in tracer._traced_syscalls:
                 untraced[syscall] = count
         
         if untraced:

@@ -6,6 +6,7 @@ from ._constants import parse_open_flags
 
 @register
 class FileOpenHandler(SyscallHandler):
+    categories = ["file"]
     syscalls = [
         "open", "open_nocancel",
         "openat", "openat_nocancel",

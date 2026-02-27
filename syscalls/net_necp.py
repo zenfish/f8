@@ -5,6 +5,7 @@ from . import SyscallHandler, register
 
 @register
 class NetNecpHandler(SyscallHandler):
+    categories = ["necp"]
     syscalls = [
         "necp_open", "necp_client_action",
         "necp_session_open", "necp_session_action",

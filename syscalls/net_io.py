@@ -5,6 +5,7 @@ from . import SyscallHandler, register
 
 @register
 class NetIOHandler(SyscallHandler):
+    categories = ["network"]
     syscalls = [
         "sendto", "sendto_nocancel",
         "recvfrom", "recvfrom_nocancel",

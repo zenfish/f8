@@ -5,6 +5,7 @@ from . import SyscallHandler, register
 
 @register
 class ProcessHandler(SyscallHandler):
+    categories = ["process"]
     syscalls = [
         "fork", "execve", "posix_spawn", "exit",
         "wait4", "wait4_nocancel",

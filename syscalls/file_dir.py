@@ -5,6 +5,7 @@ from . import SyscallHandler, register
 
 @register
 class FileDirHandler(SyscallHandler):
+    categories = ["file"]
     syscalls = [
         "chdir", "fchdir", "mkdir", "rmdir",
         "getdirentries64", "getattrlistbulk",

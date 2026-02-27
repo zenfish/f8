@@ -6,6 +6,7 @@ from ._constants import parse_fcntl_cmd
 
 @register
 class FileFdHandler(SyscallHandler):
+    categories = ["file"]
     syscalls = [
         "dup", "dup2",
         "fcntl", "fcntl_nocancel",

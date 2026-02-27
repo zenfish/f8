@@ -5,6 +5,7 @@ from . import SyscallHandler, register
 
 @register
 class NetConnectHandler(SyscallHandler):
+    categories = ["network"]
     syscalls = [
         "connect", "connect_nocancel",
         "bind",

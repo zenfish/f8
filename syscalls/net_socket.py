@@ -6,6 +6,7 @@ from ._constants import AF_NAMES, SOCK_NAMES, SHUT_NAMES, parse_sockopt_level, p
 
 @register
 class NetSocketHandler(SyscallHandler):
+    categories = ["network"]
     syscalls = [
         "socket", "socketpair", "listen", "shutdown",
         "setsockopt", "getsockopt",

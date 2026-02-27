@@ -5,6 +5,7 @@ from . import SyscallHandler, register
 
 @register
 class FileStatHandler(SyscallHandler):
+    categories = ["file"]
     syscalls = [
         "stat64", "lstat64", "fstat64", "fstatat64",
         "access", "faccessat",

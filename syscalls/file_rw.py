@@ -5,6 +5,7 @@ from . import SyscallHandler, register
 
 @register
 class FileRWHandler(SyscallHandler):
+    categories = ["file"]
     syscalls = [
         "read", "read_nocancel",
         "write", "write_nocancel",

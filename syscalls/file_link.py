@@ -5,6 +5,7 @@ from . import SyscallHandler, register
 
 @register
 class FileLinkHandler(SyscallHandler):
+    categories = ["file"]
     syscalls = ["unlink", "rename", "link", "symlink", "readlink"]
 
     dtrace = r'''

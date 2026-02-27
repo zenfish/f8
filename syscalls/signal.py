@@ -6,6 +6,7 @@ from ._constants import signal_name
 
 @register
 class SignalHandler(SyscallHandler):
+    categories = ["signal"]
     syscalls = ["kill", "sigaction", "sigprocmask"]
 
     # Only kill has explicit DTrace probes (sigaction/sigprocmask are

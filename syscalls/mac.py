@@ -5,6 +5,7 @@ from . import SyscallHandler, register
 
 @register
 class MacHandler(SyscallHandler):
+    categories = ["mac", "process"]
     syscalls = [
         "__mac_execve", "__mac_syscall",
         "__mac_get_file", "__mac_set_file",

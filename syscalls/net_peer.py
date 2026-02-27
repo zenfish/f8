@@ -5,6 +5,7 @@ from . import SyscallHandler, register
 
 @register
 class NetPeerHandler(SyscallHandler):
+    categories = ["network"]
     syscalls = ["getpeername", "getsockname"]
 
     dtrace = r'''

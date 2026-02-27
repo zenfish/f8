@@ -6,6 +6,7 @@ from . import SyscallHandler, register
 @register
 class FileCloseHandler(SyscallHandler):
     syscalls = ["close", "close_nocancel"]
+    categories = ["file"]
 
     dtrace = r'''
 syscall::close:entry,

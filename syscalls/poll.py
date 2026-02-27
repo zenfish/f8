@@ -5,6 +5,7 @@ from . import SyscallHandler, register
 
 @register
 class PollHandler(SyscallHandler):
+    categories = ["poll"]
     syscalls = [
         "select", "select_nocancel",
         "poll", "poll_nocancel",

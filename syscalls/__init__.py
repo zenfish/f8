@@ -179,5 +179,197 @@ def _discover_handlers():
     ALL_DTRACE_PROBES = "\n".join(parts)
 
 
+# ── Category aliases for --trace filtering ──────────────────────────
+
+CATEGORY_ALIASES = {
+    'net': ['network', 'necp'],
+    'fs': ['file'],
+    'io': ['file', 'network', 'necp'],
+    'xio': ['file', 'network', 'necp', 'process'],
+    'exec': ['process'],
+    'all': None,  # sentinel — means all handlers
+}
+
+
+def resolve_trace_spec(spec: str):
+    """Parse a --trace spec string into categories and individual syscalls.
+
+    Tokens are interpreted as:
+      1. Category alias (e.g. 'net' → network,necp)
+      2. Known category id (e.g. 'file', 'network', 'signal')
+      3. Individual syscall name (e.g. 'connect', 'sendto')
+
+    Args:
+        spec: comma-separated names, e.g. "net,mmap,execve"
+
+    Returns:
+        (categories: frozenset|None, syscalls: frozenset|None)
+        categories=None AND syscalls=None means "all handlers"
+    """
+    tokens = [t.strip().lower() for t in spec.split(',') if t.strip()]
+    if not tokens or 'all' in tokens:
+        return None, None  # all handlers
+
+    # Collect all known category ids from handlers
+    known_categories = set()
+    for h in _ALL_HANDLERS:
+        known_categories.update(getattr(h, 'categories', []))
+
+    categories = set()
+    syscalls = set()
+
+    for token in tokens:
+        if token in CATEGORY_ALIASES:
+            expanded = CATEGORY_ALIASES[token]
+            if expanded is None:
+                return None, None
+            categories.update(expanded)
+        elif token in known_categories:
+            categories.add(token)
+        elif token in HANDLER_REGISTRY:
+            # It's a known syscall name
+            syscalls.add(token)
+        else:
+            # Unknown — treat as potential syscall (will just not match anything)
+            syscalls.add(token)
+
+    return (frozenset(categories) if categories else None,
+            frozenset(syscalls) if syscalls else None)
+
+
+def resolve_trace_categories(spec: str):
+    """Parse a --trace spec string into a set of category names.
+
+    Backward-compatible wrapper around resolve_trace_spec.
+    Individual syscall tokens are resolved to their handler's categories.
+
+    Args:
+        spec: comma-separated category names/aliases, e.g. "net,process"
+
+    Returns:
+        frozenset of category names, or None meaning "all"
+    """
+    cats, syscalls = resolve_trace_spec(spec)
+    if cats is None and syscalls is None:
+        return None
+    result = set(cats) if cats else set()
+    # Add categories for individual syscalls
+    if syscalls:
+        for sc in syscalls:
+            handler = HANDLER_REGISTRY.get(sc)
+            if handler:
+                result.update(getattr(handler, 'categories', []))
+    return frozenset(result) if result else None
+
+
+def _filter_handlers(categories, syscalls=None):
+    """Return handlers matching the given categories and/or individual syscalls.
+
+    Args:
+        categories: frozenset of category names, or None for all.
+        syscalls: frozenset of individual syscall names, or None.
+
+    Returns:
+        list of handler instances
+    """
+    if categories is None and syscalls is None:
+        return list(_ALL_HANDLERS)
+    
+    result = []
+    seen = set()
+    
+    # Add handlers matching categories
+    if categories:
+        for h in _ALL_HANDLERS:
+            if any(c in categories for c in getattr(h, 'categories', [])):
+                if id(h) not in seen:
+                    result.append(h)
+                    seen.add(id(h))
+    
+    # Add handlers for individual syscalls
+    if syscalls:
+        for sc in syscalls:
+            handler = HANDLER_REGISTRY.get(sc)
+            if handler and id(handler) not in seen:
+                result.append(handler)
+                seen.add(id(handler))
+    
+    return result
+
+
+def get_dtrace_probes(categories=None, syscalls=None):
+    """Return concatenated DTrace probe text for the given categories/syscalls.
+
+    When individual syscalls are specified, the *entire handler* that owns
+    those syscalls is loaded (DTrace clause granularity = handler, not syscall).
+
+    Args:
+        categories: frozenset of category names, or None for all.
+        syscalls: frozenset of individual syscall names, or None.
+
+    Returns:
+        str of D-language probe text
+    """
+    parts = []
+    for handler in _filter_handlers(categories, syscalls):
+        if handler.dtrace:
+            parts.append(handler.dtrace)
+    return "\n".join(parts)
+
+
+def get_handler_registry(categories=None, syscalls=None):
+    """Return {syscall_name: handler} for the given categories/syscalls.
+
+    Args:
+        categories: frozenset of category names, or None for all.
+        syscalls: frozenset of individual syscall names, or None.
+
+    Returns:
+        dict mapping syscall name to handler instance
+    """
+    if categories is None and syscalls is None:
+        return dict(HANDLER_REGISTRY)
+    handlers = _filter_handlers(categories, syscalls)
+    handler_set = set(id(h) for h in handlers)
+    return {name: h for name, h in HANDLER_REGISTRY.items()
+            if id(h) in handler_set}
+
+
+def get_active_categories(categories=None):
+    """Return the set of category names that are active.
+
+    Args:
+        categories: frozenset of category names, or None for all.
+
+    Returns:
+        sorted list of category name strings
+    """
+    if categories is None:
+        cats = set()
+        for h in _ALL_HANDLERS:
+            cats.update(getattr(h, 'categories', []))
+        return sorted(cats)
+    return sorted(categories)
+
+
+
+def count_dif_programs(dtrace_text: str) -> int:
+    """Count the number of DIF programs (probe clauses) in a DTrace script.
+
+    Each syscall:: probe reference creates a DIF program. This is an
+    approximation — combined probe specs (entry,return on one line) count
+    as one clause but produce two DIF programs.
+
+    Args:
+        dtrace_text: D-language script text
+
+    Returns:
+        Estimated number of DIF programs
+    """
+    import re
+    # Count individual syscall:: references (each is a DIF program)
+    return len(re.findall(r'syscall::\w+', dtrace_text))
+
+
 # Auto-discover on import
 _discover_handlers()

@@ -5,6 +5,7 @@ from . import SyscallHandler, register
 
 @register
 class InfoHandler(SyscallHandler):
+    categories = ["process"]
     syscalls = [
         "getpid", "getppid",
         "getuid", "geteuid",

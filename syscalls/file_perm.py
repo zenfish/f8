@@ -5,6 +5,7 @@ from . import SyscallHandler, register
 
 @register
 class FilePermHandler(SyscallHandler):
+    categories = ["file"]
     syscalls = ["chmod", "fchmod", "truncate", "ftruncate"]
 
     dtrace = r'''

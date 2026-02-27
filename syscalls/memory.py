@@ -6,6 +6,7 @@ from ._constants import parse_prot_flags, parse_mmap_flags
 
 @register
 class MemoryHandler(SyscallHandler):
+    categories = ["memory"]
     syscalls = ["mmap", "munmap", "mprotect"]
 
     dtrace = r'''
