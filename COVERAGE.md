@@ -153,3 +153,136 @@ $ mactrace --trace help network
     sendmsg, sendmsg_nocancel, sendmsg_x, sendto, sendto_nocancel,
     setsockopt, shutdown, socket, socketpair
 ```
+
+## Complete Syscall Reference
+
+Every syscall mactrace traces, what it does, and what fields appear in the JSON output.
+Syscalls marked with `_nocancel` are non-cancellable variants (identical semantics, won't be
+interrupted by thread cancellation). The `-c` flag enables I/O data capture (raw bytes in hex).
+
+**All syscalls also capture:** return value, errno (with symbolic name), timestamp, PID, TID.
+
+#### File Operations (42 syscalls)
+
+| Syscall | What it does | What we capture |
+|---------|-------------|-----------------|
+| `access` | Check file access permissions | path, mode (R_OK etc.) |
+| `chdir` | Change working directory | path |
+| `chmod` | Change file permissions | path, mode |
+| `close`\[`_nocancel`\] | Close file descriptor | fd |
+| `dup` | Duplicate fd | old fd → new fd (return value) |
+| `dup2` | Duplicate fd to specific number | old fd, new fd |
+| `faccessat` | Check access relative to dirfd | dirfd, path, mode, flags |
+| `fchdir` | Change working directory by fd | fd |
+| `fchmod` | Change fd permissions | fd, mode |
+| `fcntl`\[`_nocancel`\] | File descriptor control | fd, command (F_GETFL etc.) |
+| `fstat64` | Get file status by fd | fd |
+| `fstatat64` | Get file status relative to dirfd | dirfd, path, flags |
+| `fsync`\[`_nocancel`\] | Flush fd to disk | fd |
+| `ftruncate` | Truncate file by fd | fd, length |
+| `getattrlistbulk` | Bulk read directory attributes | dirfd, buffer size |
+| `getdirentries64` | Read directory entries | fd, byte count |
+| `ioctl` | Device I/O control | fd, request code |
+| `link` | Create hard link | source path, link path |
+| `lstat64` | Get symlink status by path | path |
+| `mkdir` | Create directory | path, mode |
+| `open`\[`_nocancel`\] | Open file or device | path, flags (O_RDONLY etc.), mode |
+| `openat`\[`_nocancel`\] | Open file relative to directory fd | dirfd, path, flags, mode |
+| `pread`\[`_nocancel`\] | Read at offset | fd, byte count, offset |
+| `pwrite`\[`_nocancel`\] | Write at offset | fd, byte count, offset |
+| `read`\[`_nocancel`\] | Read from fd | fd, byte count; +data with `-c` |
+| `readlink` | Read symbolic link target | path, target buffer |
+| `rename` | Rename/move file | old path, new path |
+| `rmdir` | Remove directory | path |
+| `stat64` | Get file status by path | path |
+| `symlink` | Create symbolic link | target, link path |
+| `truncate` | Truncate file by path | path, length |
+| `unlink` | Delete file | path |
+| `write`\[`_nocancel`\] | Write to fd | fd, byte count; +data with `-c` |
+
+#### Network (29 syscalls)
+
+| Syscall | What it does | What we capture |
+|---------|-------------|-----------------|
+| `accept`\[`_nocancel`\] | Accept incoming connection | fd, peer sockaddr (family, address, port) |
+| `bind` | Bind socket to address | fd, sockaddr (family, address, port) |
+| `connect`\[`_nocancel`\] | Connect socket to address | fd, sockaddr (family, address, port) |
+| `connectx` | Extended connect (multipath TCP) | fd, destination sockaddr from sa_endpoints_t |
+| `getpeername` | Get remote socket address | fd, sockaddr |
+| `getsockname` | Get local socket address | fd, sockaddr |
+| `getsockopt` | Get socket option | fd, level, option name |
+| `listen` | Listen for connections | fd, backlog |
+| `necp_client_action` | NECP client policy action | fd, action code |
+| `necp_open` | Open NECP policy session | flags |
+| `necp_session_action` | NECP session action | fd, action code |
+| `necp_session_open` | Open NECP session | flags |
+| `recvfrom`\[`_nocancel`\] | Receive datagram with source | fd, byte count, flags, source sockaddr; +data with `-c` |
+| `recvmsg`\[`_nocancel`\] | Receive message (scatter/gather) | fd, flags, source sockaddr (if present); +data with `-c` |
+| `recvmsg_x` | Batch receive multiple messages | fd, message count, flags, total bytes |
+| `sendfile` | Zero-copy file→socket transfer | file_fd, socket_fd, offset, bytes_sent, flags |
+| `sendmsg`\[`_nocancel`\] | Send message (scatter/gather) | fd, flags, dest sockaddr (if present); +data with `-c` |
+| `sendmsg_x` | Batch send multiple messages | fd, message count, flags, total bytes |
+| `sendto`\[`_nocancel`\] | Send datagram to address | fd, byte count, flags, dest sockaddr; +data with `-c` |
+| `setsockopt` | Set socket option | fd, level, option name (SO_REUSEADDR etc.) |
+| `shutdown` | Shutdown socket half | fd, how (SHUT_RD/WR/RDWR) |
+| `socket` | Create socket | domain (AF_INET etc.), type (SOCK_STREAM etc.), protocol |
+| `socketpair` | Create connected socket pair | domain, type, protocol |
+
+#### MAC Framework (11 syscalls)
+
+| Syscall | What it does | What we capture |
+|---------|-------------|-----------------|
+| `__mac_execve` | Execute with MAC label | path |
+| `__mac_get_fd` | Get MAC label for fd | fd |
+| `__mac_get_file` | Get MAC label for file | path |
+| `__mac_get_link` | Get MAC label for symlink | path |
+| `__mac_get_pid` | Get MAC label for process | target PID |
+| `__mac_get_proc` | Get MAC label for current process | (none) |
+| `__mac_set_fd` | Set MAC label for fd | fd |
+| `__mac_set_file` | Set MAC label for file | path |
+| `__mac_set_link` | Set MAC label for symlink | path |
+| `__mac_set_proc` | Set MAC label for current process | (none) |
+| `__mac_syscall` | MAC framework policy check | policy name (Sandbox, AMFI, etc.), call number |
+
+#### Process (13 syscalls)
+
+| Syscall | What it does | What we capture |
+|---------|-------------|-----------------|
+| `execve` | Execute program | path |
+| `exit` | Terminate process | exit code |
+| `fork` | Create child process | child PID (return value) |
+| `getegid` | Get effective group ID | EGID (return value) |
+| `geteuid` | Get effective user ID | EUID (return value) |
+| `getgid` | Get group ID | GID (return value) |
+| `getpid` | Get process ID | PID (return value) |
+| `getppid` | Get parent process ID | parent PID (return value) |
+| `getuid` | Get user ID | UID (return value) |
+| `pipe` | Create pipe | read fd, write fd |
+| `posix_spawn` | Spawn new process | path |
+| `wait4`\[`_nocancel`\] | Wait for child process | target PID, options |
+
+#### Memory (3 syscalls)
+
+| Syscall | What it does | What we capture |
+|---------|-------------|-----------------|
+| `mmap` | Map memory (file or anonymous) | address, length, protection, flags, fd, offset |
+| `mprotect` | Change memory protection | address, length, protection flags |
+| `munmap` | Unmap memory region | address, length |
+
+#### Signals (3 syscalls)
+
+| Syscall | What it does | What we capture |
+|---------|-------------|-----------------|
+| `kill` | Send signal to process | target PID, signal number and name |
+| `sigaction` | Set signal handler | signal number and name |
+| `sigprocmask` | Block/unblock signals | how (SIG_BLOCK etc.) |
+
+#### Poll / Events (7 syscalls)
+
+| Syscall | What it does | What we capture |
+|---------|-------------|-----------------|
+| `kevent` | Register/wait for kernel events | kqueue fd, change count, event count |
+| `kevent64` | Register/wait for 64-bit kernel events | kqueue fd, change count, event count |
+| `kqueue` | Create kernel event queue | kqueue fd (return value) |
+| `poll`\[`_nocancel`\] | Wait for fd events | nfds, timeout |
+| `select`\[`_nocancel`\] | Wait for fd readiness | nfds, timeout |

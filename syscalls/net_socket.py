@@ -8,7 +8,7 @@ from ._constants import AF_NAMES, SOCK_NAMES, SHUT_NAMES, parse_sockopt_level, p
 class NetSocketHandler(SyscallHandler):
     categories = ["network"]
     syscalls = [
-        "socket", "socketpair", "listen", "shutdown",
+        "socket", "socket_delegate", "socketpair", "listen", "shutdown",
         "setsockopt", "getsockopt",
     ]
 
@@ -33,6 +33,26 @@ syscall::socket:return
         pid, tid, (int)arg1, errno, self->sock_ts,
         self->sock_domain, self->sock_type, self->sock_proto);
     self->sock_ts = 0;
+}
+
+/* socket_delegate: create socket in another process's context */
+syscall::socket_delegate:entry
+/TRACED/
+{
+    self->sdel_domain = arg0;
+    self->sdel_type = arg1;
+    self->sdel_proto = arg2;
+    self->sdel_target_pid = arg3;
+    self->sdel_ts = walltimestamp/1000;
+}
+
+syscall::socket_delegate:return
+/TRACED && self->sdel_ts/
+{
+    printf("MACTRACE_SYSCALL %d %d socket_delegate %d %d %d %d %d %d %d\n",
+        pid, tid, (int)arg1, errno, self->sdel_ts,
+        self->sdel_domain, self->sdel_type, self->sdel_proto, self->sdel_target_pid);
+    self->sdel_ts = 0;
 }
 
 syscall::socketpair:entry
@@ -124,7 +144,7 @@ syscall::getsockopt:return
 
     def parse_args(self, syscall, args):
         result = {}
-        if syscall == "socket":
+        if syscall in ("socket", "socket_delegate"):
             if len(args) >= 1:
                 domain = self.parse_int(args[0])
                 result["domain"] = AF_NAMES.get(domain, f"AF_{domain}")
@@ -133,6 +153,8 @@ syscall::getsockopt:return
                 result["type"] = SOCK_NAMES.get(stype, f"SOCK_{stype}")
             if len(args) >= 3:
                 result["protocol"] = self.parse_int(args[2])
+            if syscall == "socket_delegate" and len(args) >= 4:
+                result["target_pid"] = self.parse_int(args[3])
         elif syscall == "socketpair":
             if len(args) >= 1:
                 domain = self.parse_int(args[0])
@@ -170,7 +192,7 @@ syscall::getsockopt:return
 
     def update_fd_info(self, event, fd_tracker):
         syscall = event.syscall
-        if syscall == "socket" and event.return_value >= 0:
+        if syscall in ("socket", "socket_delegate") and event.return_value >= 0:
             domain = event.args.get("domain", "?")
             stype = event.args.get("type", "?")
             fd_tracker.set_socket(event.pid, event.return_value, f"socket({domain}/{stype})")

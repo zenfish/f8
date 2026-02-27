@@ -9,8 +9,10 @@ class NetConnectHandler(SyscallHandler):
     syscalls = [
         "connect", "connect_nocancel",
         "connectx",
+        "disconnectx",
         "bind",
         "accept", "accept_nocancel",
+        "peeloff",
     ]
 
     dtrace = r'''
@@ -156,12 +158,51 @@ syscall::connectx:return
         pid, tid, (int)arg1, errno, self->connx_ts, self->connx_fd);
     self->connx_ts = 0;
 }
+
+/* ── disconnectx (close a connectx association) ── */
+
+syscall::disconnectx:entry
+/TRACED/
+{
+    self->dconnx_fd = arg0;
+    self->dconnx_aid = arg1;
+    self->dconnx_cid = arg2;
+    self->dconnx_ts = walltimestamp/1000;
+}
+
+syscall::disconnectx:return
+/TRACED && self->dconnx_ts/
+{
+    printf("MACTRACE_SYSCALL %d %d disconnectx %d %d %d %d %d %d\n",
+        pid, tid, (int)arg1, errno, self->dconnx_ts,
+        self->dconnx_fd, (int)self->dconnx_aid, (int)self->dconnx_cid);
+    self->dconnx_ts = 0;
+}
+
+/* ── peeloff (SCTP: separate stream into new socket) ── */
+
+syscall::peeloff:entry
+/TRACED/
+{
+    self->peel_fd = arg0;
+    self->peel_aid = arg1;
+    self->peel_ts = walltimestamp/1000;
+}
+
+syscall::peeloff:return
+/TRACED && self->peel_ts/
+{
+    printf("MACTRACE_SYSCALL %d %d peeloff %d %d %d %d %d\n",
+        pid, tid, (int)arg1, errno, self->peel_ts,
+        self->peel_fd, (int)self->peel_aid);
+    self->peel_ts = 0;
+}
 '''
 
     def parse_args(self, syscall, args):
         """Parse fallback MACTRACE_SYSCALL args (when sockaddr capture fails)."""
         result = {}
-        if syscall in ("connect", "connect_nocancel", "connectx", "bind"):
+        if syscall in ("connect", "connect_nocancel", "connectx", "disconnectx", "bind"):
             if len(args) >= 1:
                 result["fd"] = self.parse_int(args[0])
             if len(args) >= 2:
@@ -169,11 +210,23 @@ syscall::connectx:return
         elif syscall in ("accept", "accept_nocancel"):
             if len(args) >= 1:
                 result["fd"] = self.parse_int(args[0])
+        elif syscall == "disconnectx":
+            if len(args) >= 1:
+                result["fd"] = self.parse_int(args[0])
+            if len(args) >= 2:
+                result["associd"] = self.parse_int(args[1])
+            if len(args) >= 3:
+                result["connid"] = self.parse_int(args[2])
+        elif syscall == "peeloff":
+            if len(args) >= 1:
+                result["fd"] = self.parse_int(args[0])
+            if len(args) >= 2:
+                result["associd"] = self.parse_int(args[1])
         return result
 
     def update_fd_info(self, event, fd_tracker):
         syscall = event.syscall
-        if syscall in ("connect", "connect_nocancel", "connectx"):
+        if syscall in ("connect", "connect_nocancel", "connectx", "disconnectx"):
             fd = event.args.get("fd")
             if fd is not None:
                 fd_tracker.mark_socket(event.pid, fd)
@@ -187,6 +240,9 @@ syscall::connectx:return
                 addr = event.args.get("display") or event.args.get("address")
                 desc = f"from {addr}" if addr else None
                 fd_tracker.set_socket(event.pid, event.return_value, desc)
+        elif syscall == "peeloff":
+            if event.return_value >= 0:
+                fd_tracker.set_socket(event.pid, event.return_value, "peeloff")
         elif syscall == "bind":
             fd = event.args.get("fd")
             if fd is not None:
