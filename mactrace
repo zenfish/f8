@@ -1364,7 +1364,7 @@ class MacTrace:
         # Include network IO if: no filter (all), or 'network' category, or any net-IO syscall requested
         include_net = (cats is None and syscalls is None) or \
                       (cats is not None and 'network' in cats) or \
-                      (syscalls is not None and bool(syscalls & {'sendto', 'sendto_nocancel', 'recvfrom', 'recvfrom_nocancel', 'sendmsg', 'sendmsg_nocancel', 'recvmsg', 'recvmsg_nocancel'}))
+                      (syscalls is not None and bool(syscalls & {'sendto', 'sendto_nocancel', 'recvfrom', 'recvfrom_nocancel', 'sendmsg', 'sendmsg_nocancel', 'recvmsg', 'recvmsg_nocancel', 'sendmsg_x', 'recvmsg_x', 'sendfile'}))
 
         parts = []
         parts.append(f"""

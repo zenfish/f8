@@ -8,6 +8,7 @@ class NetConnectHandler(SyscallHandler):
     categories = ["network"]
     syscalls = [
         "connect", "connect_nocancel",
+        "connectx",
         "bind",
         "accept", "accept_nocancel",
     ]
@@ -114,12 +115,53 @@ syscall::accept_nocancel:return
         pid, tid, (int)arg1, errno, self->accept_ts, self->accept_fd);
     self->accept_ts = 0;
 }
+
+/* ── connectx (extended connect with endpoints) ── */
+
+syscall::connectx:entry
+/TRACED/
+{
+    self->connx_fd = arg0;
+    self->connx_endpoints = arg1;
+    self->connx_flags = arg3;
+    self->connx_ts = walltimestamp/1000;
+}
+
+syscall::connectx:return
+/TRACED && self->connx_ts && self->connx_endpoints != 0/
+{
+    /* sa_endpoints_t: srcif(4) + pad(4) + srcaddr_ptr(8) + srcaddrlen(4) + pad(4) + dstaddr_ptr(8) + dstaddrlen(4) */
+    this->ep = (uint8_t *)copyin(self->connx_endpoints, 40);
+
+    /* Extract destination sockaddr pointer and length (offsets for arm64 LP64) */
+    this->dstaddr = *(uintptr_t *)(this->ep + 24);
+    this->dstlen  = *(uint32_t *)(this->ep + 32);
+
+    /* Emit sockaddr if destination is available */
+    this->sa = (struct sockaddr *)copyin(this->dstaddr,
+        this->dstlen > 128 ? 128 : this->dstlen);
+    this->family = this->sa->sa_family;
+
+    printf("MACTRACE_SOCKADDR %d %d connectx %d %d %d %d %d ",
+        pid, tid, (int)arg1, errno, self->connx_ts, self->connx_fd, this->family);
+    tracemem(this->sa, 128, this->dstlen > 128 ? 128 : this->dstlen);
+    printf("\n");
+    self->connx_ts = 0;
+}
+
+syscall::connectx:return
+/TRACED && self->connx_ts && self->connx_endpoints == 0/
+{
+    printf("MACTRACE_SYSCALL %d %d connectx %d %d %d %d\n",
+        pid, tid, (int)arg1, errno, self->connx_ts, self->connx_fd);
+    self->connx_ts = 0;
+}
 '''
 
     def parse_args(self, syscall, args):
         """Parse fallback MACTRACE_SYSCALL args (when sockaddr capture fails)."""
         result = {}
-        if syscall in ("connect", "connect_nocancel", "bind"):
+        if syscall in ("connect", "connect_nocancel", "connectx", "bind"):
             if len(args) >= 1:
                 result["fd"] = self.parse_int(args[0])
             if len(args) >= 2:
@@ -131,7 +173,7 @@ syscall::accept_nocancel:return
 
     def update_fd_info(self, event, fd_tracker):
         syscall = event.syscall
-        if syscall in ("connect", "connect_nocancel"):
+        if syscall in ("connect", "connect_nocancel", "connectx"):
             fd = event.args.get("fd")
             if fd is not None:
                 fd_tracker.mark_socket(event.pid, fd)

@@ -11,6 +11,8 @@ class NetIOHandler(SyscallHandler):
         "recvfrom", "recvfrom_nocancel",
         "sendmsg", "sendmsg_nocancel",
         "recvmsg", "recvmsg_nocancel",
+        "sendmsg_x", "recvmsg_x",
+        "sendfile",
     ]
 
     dtrace = r'''
@@ -130,6 +132,78 @@ syscall::recvmsg_nocancel:return
         pid, tid, (int)arg1, errno, self->recvmsg_ts, self->recvmsg_fd, self->recvmsg_flags);
     self->recvmsg_ts = 0;
 }
+
+/* ── sendmsg_x / recvmsg_x (batch multi-message I/O) ── */
+
+syscall::sendmsg_x:entry
+/TRACED/
+{
+    self->sendmsgx_fd = arg0;
+    self->sendmsgx_cnt = arg2;
+    self->sendmsgx_flags = arg3;
+    self->sendmsgx_ts = walltimestamp/1000;
+}
+
+syscall::sendmsg_x:return
+/TRACED && self->sendmsgx_ts/
+{
+    printf("MACTRACE_SYSCALL %d %d sendmsg_x %d %d %d %d %d 0x%x\n",
+        pid, tid, (int)arg1, errno, self->sendmsgx_ts,
+        self->sendmsgx_fd, self->sendmsgx_cnt, self->sendmsgx_flags);
+    self->sendmsgx_ts = 0;
+}
+
+syscall::recvmsg_x:entry
+/TRACED/
+{
+    self->recvmsgx_fd = arg0;
+    self->recvmsgx_cnt = arg2;
+    self->recvmsgx_flags = arg3;
+    self->recvmsgx_ts = walltimestamp/1000;
+}
+
+syscall::recvmsg_x:return
+/TRACED && self->recvmsgx_ts/
+{
+    printf("MACTRACE_SYSCALL %d %d recvmsg_x %d %d %d %d %d 0x%x\n",
+        pid, tid, (int)arg1, errno, self->recvmsgx_ts,
+        self->recvmsgx_fd, self->recvmsgx_cnt, self->recvmsgx_flags);
+    self->recvmsgx_ts = 0;
+}
+
+/* ── sendfile (zero-copy file → socket) ── */
+
+syscall::sendfile:entry
+/TRACED/
+{
+    self->sf_filefd = arg0;
+    self->sf_sockfd = arg1;
+    self->sf_offset = arg2;
+    self->sf_nbytesp = arg3;
+    self->sf_flags = arg5;
+    self->sf_ts = walltimestamp/1000;
+}
+
+syscall::sendfile:return
+/TRACED && self->sf_ts && self->sf_nbytesp != 0/
+{
+    /* Read actual bytes sent from *nbytes (off_t = 8 bytes) */
+    this->sent = *(int64_t *)copyin(self->sf_nbytesp, 8);
+    printf("MACTRACE_SYSCALL %d %d sendfile %d %d %d %d %d %lld %lld 0x%x\n",
+        pid, tid, (int)arg1, errno, self->sf_ts,
+        self->sf_filefd, self->sf_sockfd, (long long)self->sf_offset,
+        (long long)this->sent, self->sf_flags);
+    self->sf_ts = 0;
+}
+
+syscall::sendfile:return
+/TRACED && self->sf_ts && self->sf_nbytesp == 0/
+{
+    printf("MACTRACE_SYSCALL %d %d sendfile %d %d %d %d %d %lld 0 0x%x\n",
+        pid, tid, (int)arg1, errno, self->sf_ts,
+        self->sf_filefd, self->sf_sockfd, (long long)self->sf_offset, self->sf_flags);
+    self->sf_ts = 0;
+}
 '''
 
     def parse_args(self, syscall, args):
@@ -147,9 +221,32 @@ syscall::recvmsg_nocancel:return
                 result["fd"] = self.parse_int(args[0])
             if len(args) >= 2:
                 result["flags"] = args[1]
+        elif syscall in ("sendmsg_x", "recvmsg_x"):
+            if len(args) >= 1:
+                result["fd"] = self.parse_int(args[0])
+            if len(args) >= 2:
+                result["msg_count"] = self.parse_int(args[1])
+            if len(args) >= 3:
+                result["flags"] = args[2]
+        elif syscall == "sendfile":
+            if len(args) >= 1:
+                result["file_fd"] = self.parse_int(args[0])
+            if len(args) >= 2:
+                result["socket_fd"] = self.parse_int(args[1])
+            if len(args) >= 3:
+                result["offset"] = self.parse_int(args[2])
+            if len(args) >= 4:
+                result["bytes_sent"] = self.parse_int(args[3])
+            if len(args) >= 5:
+                result["flags"] = args[4]
         return result
 
     def update_fd_info(self, event, fd_tracker):
         fd = event.args.get("fd")
         if fd is not None:
             fd_tracker.mark_socket(event.pid, fd)
+        # sendfile uses two fds
+        if event.syscall == "sendfile":
+            sock_fd = event.args.get("socket_fd")
+            if sock_fd is not None:
+                fd_tracker.mark_socket(event.pid, sock_fd)
