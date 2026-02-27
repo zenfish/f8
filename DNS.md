@@ -148,39 +148,36 @@ entries take priority (they fire first for apps using `getaddrinfo`).
 - DNS lookup events are highlighted in the timeline with blue borders
 - Jump links connect DNS lookups to their timeline position
 
-## The DTrace self-> Truncation Bug
+## DTrace Pitfalls on macOS ARM64
 
-On macOS ARM64 (Apple Silicon), DTrace `self->` (thread-local) variables
-silently truncate 64-bit values to 32-bit. This affects any probe that
-needs to store a userspace pointer between clauses (e.g., entry → return).
+### self-> 64-bit Truncation
 
-**The problem:**
+DTrace `self->` (thread-local) variables silently truncate 64-bit values
+to 32-bit on macOS ARM64. The workaround is to split pointers into hi/lo
+halves (used for recvmsg return-time capture):
+
 ```d
-syscall::sendmsg:entry {
-    this->ptr = *(uint64_t *)copyin_buffer;  // 0x140088000 ✓ (clause-local)
-    self->ptr = this->ptr;                    // 0x40088000 ✗ (truncated!)
-}
+self->ptr_hi = (uint32_t)(this->ptr >> 32);
+self->ptr_lo = (uint32_t)(this->ptr & 0xffffffff);
+// ...later...
+this->ptr = ((uint64_t)self->ptr_hi << 32) | (uint64_t)self->ptr_lo;
 ```
 
-**The workaround — split into hi/lo halves:**
-```d
-syscall::sendmsg:entry {
-    this->ptr = *(uint64_t *)copyin_buffer;          // 0x140088000 ✓
-    self->ptr_hi = (uint32_t)(this->ptr >> 32);      // 0x00000001
-    self->ptr_lo = (uint32_t)(this->ptr & 0xffffffff); // 0x40088000
-}
+For sendmsg, mactrace avoids this entirely by capturing at entry time
+(the buffer is valid when the user sends it), keeping everything in
+clause-local `this->` variables.
 
-syscall::sendmsg:return {
-    this->ptr = ((uint64_t)self->ptr_hi << 32) | (uint64_t)self->ptr_lo;
-    // 0x140088000 ✓ — reassembled correctly
-}
+### tracemem Hexdump Parsing
+
+DTrace's `tracemem()` outputs hex dumps like:
+```
+        20: 64 72 04 61 72 70 61 00 00 0c 00 01 00 00 29 10  dr.arpa.......)^P
 ```
 
-This bug does NOT affect existing `read`/`write`/`sendto`/`recvfrom`
-probes because those syscalls pass the buffer pointer directly as `arg1`,
-which DTrace handles correctly. It only matters for `sendmsg`/`recvmsg`
-where the buffer pointer must be extracted via `copyin` from a struct
-and stored across probe clauses.
+The hex column and ASCII column are separated by two spaces. A naive
+regex that greedily matches hex pairs can bleed into the ASCII column
+when it starts with hex-valid characters (e.g., `70` from `70.247...`).
+mactrace's parser uses a two-space terminator in the regex to prevent this.
 
 ## Testing
 
