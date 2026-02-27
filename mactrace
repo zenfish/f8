@@ -1974,6 +1974,7 @@ syscall::recvmsg_nocancel:return
         
         # Pre-process: merge MACTRACE_IO/MACTRACE_SOCKADDR lines with following tracemem hexdump blocks
         # Always run this since SOCKADDR lines have hexdumps even without --capture-io
+        dtrace_output = self._merge_io_hexdumps(dtrace_output)
         
         # Parse DTrace output
         for line in dtrace_output:
@@ -2392,6 +2393,7 @@ syscall::recvmsg_nocancel:return
         lsof_thread.join(timeout=10)
         
         # Pre-process: merge hexdump blocks
+        dtrace_output = self._merge_io_hexdumps(dtrace_output)
         
         # Parse DTrace output
         for line in dtrace_output:
