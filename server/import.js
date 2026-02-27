@@ -711,40 +711,137 @@ if (Object.keys(processTree).length > 0 || processEvents.length > 0) {
     console.log(`  ${procCount.toLocaleString()} processes imported`);
 }
 
-// Extract DNS hostname → IP correlations from mDNSResponder traffic
+// ── DNS wire protocol parser (RFC 1035) ─────────────────────────────────
+
+/**
+ * Parse a DNS name from wire format at the given offset.
+ * Handles label-length encoding (no compression pointer support needed
+ * for queries; responses may use pointers but we only parse queries).
+ * Returns { name, nextOffset } or null on failure.
+ */
+function parseDnsName(buf, offset) {
+    const labels = [];
+    let pos = offset;
+    let jumps = 0;
+    while (pos < buf.length) {
+        const len = buf[pos];
+        if (len === 0) { pos++; break; }                 // Root label — end of name
+        if ((len & 0xC0) === 0xC0) {                      // Compression pointer
+            if (pos + 1 >= buf.length) return null;
+            const ptr = ((len & 0x3F) << 8) | buf[pos + 1];
+            if (++jumps > 10) return null;                 // Loop guard
+            if (labels.length === 0) pos += 2;             // Advance past pointer only on first jump
+            // For queries we shouldn't hit pointers, but handle gracefully
+            pos = ptr;
+            continue;
+        }
+        if (len > 63) return null;                         // Invalid label length
+        pos++;
+        if (pos + len > buf.length) return null;
+        labels.push(buf.toString('ascii', pos, pos + len));
+        pos += len;
+    }
+    if (labels.length === 0) return null;
+    return { name: labels.join('.'), nextOffset: pos };
+}
+
+/**
+ * Parse a DNS query packet and extract the queried hostname.
+ * Returns the hostname string or null if unparseable.
+ */
+function parseDnsQuery(buf) {
+    // DNS header: 12 bytes (ID, flags, qdcount, ancount, nscount, arcount)
+    if (buf.length < 13) return null;
+    const flags = buf.readUInt16BE(2);
+    const qr = (flags >> 15) & 1;        // 0 = query, 1 = response
+    if (qr !== 0) return null;            // We only want queries
+    const qdcount = buf.readUInt16BE(4);
+    if (qdcount < 1) return null;
+    const result = parseDnsName(buf, 12);
+    return result ? result.name : null;
+}
+
+/**
+ * Parse a DNS response packet and extract A/AAAA answer IPs.
+ * Returns array of IP strings, or empty array.
+ */
+function parseDnsResponse(buf) {
+    if (buf.length < 12) return [];
+    const flags = buf.readUInt16BE(2);
+    const qr = (flags >> 15) & 1;
+    if (qr !== 1) return [];              // Not a response
+    const qdcount = buf.readUInt16BE(4);
+    const ancount = buf.readUInt16BE(6);
+    if (ancount === 0) return [];
+
+    // Skip question section
+    let pos = 12;
+    for (let i = 0; i < qdcount; i++) {
+        const r = parseDnsName(buf, pos);
+        if (!r) return [];
+        pos = r.nextOffset + 4;           // Skip QTYPE (2) + QCLASS (2)
+    }
+
+    // Parse answer section for A (1) and AAAA (28) records
+    const ips = [];
+    for (let i = 0; i < ancount && pos < buf.length; i++) {
+        // Name (may be compressed)
+        if (pos >= buf.length) break;
+        if ((buf[pos] & 0xC0) === 0xC0) {
+            pos += 2;                     // Compression pointer
+        } else {
+            const r = parseDnsName(buf, pos);
+            if (!r) break;
+            pos = r.nextOffset;
+        }
+        if (pos + 10 > buf.length) break;
+        const rtype = buf.readUInt16BE(pos);
+        const rdlength = buf.readUInt16BE(pos + 8);
+        pos += 10;
+        if (pos + rdlength > buf.length) break;
+        if (rtype === 1 && rdlength === 4) {
+            // A record — IPv4
+            ips.push(`${buf[pos]}.${buf[pos+1]}.${buf[pos+2]}.${buf[pos+3]}`);
+        } else if (rtype === 28 && rdlength === 16) {
+            // AAAA record — IPv6
+            const parts = [];
+            for (let j = 0; j < 16; j += 2) {
+                parts.push(buf.readUInt16BE(pos + j).toString(16));
+            }
+            ips.push(parts.join(':'));
+        }
+        pos += rdlength;
+    }
+    return ips;
+}
+
+
+// ── DNS extraction from traces ──────────────────────────────────────────
+
 function extractDnsLookups() {
-    console.log('Extracting DNS lookups from mDNSResponder traffic...');
+    console.log('Extracting DNS lookups...');
     
-    // Find all sendto to mDNSResponder with captured data
-    const dnsEvents = [];
-    const connectEvents = [];
+    const correlations = new Map(); // hostname -> {ip, lookup_seq, connect_seq}
     
-    // Query for mDNSResponder sends
+    // ── Source 1: mDNSResponder IPC (system resolver) ──────────────
     const dnsRows = db.prepare(`
         SELECT seq, data_raw FROM events 
         WHERE trace_id = ? AND target = '/var/run/mDNSResponder'
         AND data_raw IS NOT NULL AND syscall LIKE '%send%'
         ORDER BY seq
     `).all(traceId);
-    dnsEvents.push(...dnsRows);
     
-    // Query for connect to IPs
-    const connRows = db.prepare(`
+    // Query for connect to IPs (used by both sources for correlation)
+    const connectEvents = db.prepare(`
         SELECT seq, target FROM events 
         WHERE trace_id = ? AND syscall = 'connect'
         AND target GLOB '[0-9]*.[0-9]*.[0-9]*.[0-9]*:*'
         ORDER BY seq
     `).all(traceId);
-    connectEvents.push(...connRows);
     
-    if (dnsEvents.length === 0) {
-        console.log('  No mDNSResponder traffic found');
-        return;
-    }
-    
-    // Parse DNS lookups from mDNSResponder IPC protocol
-    const lookups = [];
-    for (const ev of dnsEvents) {
+    // Parse mDNSResponder IPC protocol
+    const mdnsLookups = [];
+    for (const ev of dnsRows) {
         try {
             const bytes = Buffer.from(ev.data_raw, 'hex');
             if (bytes.length < 28) continue;
@@ -755,17 +852,16 @@ function extractDnsLookups() {
             // Op 8 = addrinfo_request, Op 7 = query_request
             if (op !== 8 && op !== 7) continue;
             
-            // Extract null-terminated strings after header (hostname is not at fixed offset)
+            // Extract null-terminated strings after header
             let pos = 28;
             let found = false;
             while (pos < bytes.length && !found) {
                 const end = bytes.indexOf(0, pos);
                 if (end < 0) break;
-                if (end === pos) { pos++; continue; } // Skip null bytes
+                if (end === pos) { pos++; continue; }
                 const str = bytes.toString('utf8', pos, end);
-                // Check if it looks like a hostname
                 if (str.length > 3 && /^[a-zA-Z0-9][a-zA-Z0-9.-]+[a-zA-Z]$/.test(str)) {
-                    lookups.push({ seq: ev.seq, hostname: str });
+                    mdnsLookups.push({ seq: ev.seq, hostname: str });
                     found = true;
                 }
                 pos = end + 1;
@@ -775,43 +871,146 @@ function extractDnsLookups() {
         }
     }
     
-    if (lookups.length === 0) {
-        console.log('  No DNS hostnames found in mDNSResponder traffic');
+    // Correlate mDNSResponder lookups with connect() calls
+    for (const lookup of mdnsLookups) {
+        if (correlations.has(lookup.hostname)) continue;
+        const conn = connectEvents.find(c => c.seq > lookup.seq && c.seq < lookup.seq + 1000);
+        if (conn) {
+            correlations.set(lookup.hostname, {
+                ip: conn.target,
+                lookup_seq: lookup.seq,
+                connect_seq: conn.seq,
+                source: 'mDNSResponder'
+            });
+        }
+    }
+    
+    if (mdnsLookups.length > 0) {
+        console.log(`  mDNSResponder: ${mdnsLookups.length} lookups, ${correlations.size} correlated`);
+    }
+    
+    // ── Source 2: Direct DNS wire protocol (port 53) ────────────────
+    // Catch apps that bypass the system resolver (dig, nslookup, Go apps,
+    // custom DNS clients, security tools).
+    //
+    // Look for sendto/write to port 53 targets, and also for sendmsg/write
+    // on sockets that were connect()'d to port 53.
+    
+    // Find sockets connected to port 53
+    const port53Connects = db.prepare(`
+        SELECT seq, target FROM events
+        WHERE trace_id = ? AND syscall IN ('connect', 'connect_nocancel')
+        AND target LIKE '%:53'
+        ORDER BY seq
+    `).all(traceId);
+    
+    // Find sendto to port 53 with captured data
+    const port53Sends = db.prepare(`
+        SELECT seq, target, data_raw FROM events
+        WHERE trace_id = ? AND data_raw IS NOT NULL
+        AND syscall IN ('sendto', 'sendto_nocancel')
+        AND target LIKE '%:53'
+        ORDER BY seq
+    `).all(traceId);
+    
+    // Find write/send on sockets connected to port 53 (for TCP DNS or connected UDP)
+    // We need fd tracking for this — check if any connect-to-:53 events exist
+    // and look for subsequent writes on the same fd
+    const port53Fds = new Set();
+    for (const c of port53Connects) {
+        // Extract fd from connect event args
+        const fdMatch = c.target?.match(/^(\d+\.\d+\.\d+\.\d+):53$/);
+        if (fdMatch) port53Fds.add(c.seq); // Track the seq for correlation
+    }
+    
+    // Also look for recvfrom from port 53 (DNS responses with answer data)
+    const port53Recvs = db.prepare(`
+        SELECT seq, target, data_raw FROM events
+        WHERE trace_id = ? AND data_raw IS NOT NULL
+        AND syscall IN ('recvfrom', 'recvfrom_nocancel')
+        AND target LIKE '%:53'
+        ORDER BY seq
+    `).all(traceId);
+    
+    let port53Count = 0;
+    
+    // Parse DNS queries from sendto data
+    for (const ev of port53Sends) {
+        try {
+            const bytes = Buffer.from(ev.data_raw, 'hex');
+            const hostname = parseDnsQuery(bytes);
+            if (!hostname || correlations.has(hostname)) continue;
+            
+            const txid = bytes.readUInt16BE(0);
+            
+            // Look for matching response (same txid) in recvfrom
+            let resolvedIp = null;
+            for (const recv of port53Recvs) {
+                if (recv.seq <= ev.seq) continue;
+                if (recv.seq > ev.seq + 500) break;  // Don't look too far ahead
+                try {
+                    const rbytes = Buffer.from(recv.data_raw, 'hex');
+                    if (rbytes.length >= 2 && rbytes.readUInt16BE(0) === txid) {
+                        const ips = parseDnsResponse(rbytes);
+                        if (ips.length > 0) {
+                            resolvedIp = ips[0];  // Take first A/AAAA answer
+                            break;
+                        }
+                    }
+                } catch (e) { /* skip */ }
+            }
+            
+            // Also try to correlate with a connect() to the resolved IP
+            let connectSeq = null;
+            if (resolvedIp) {
+                const conn = connectEvents.find(c => 
+                    c.seq > ev.seq && c.target.startsWith(resolvedIp + ':'));
+                if (conn) connectSeq = conn.seq;
+            }
+            
+            const dnsServer = ev.target;  // e.g. "8.8.8.8:53"
+            correlations.set(hostname, {
+                ip: resolvedIp ? `${resolvedIp}:0` : dnsServer,
+                lookup_seq: ev.seq,
+                connect_seq: connectSeq,
+                source: 'port53'
+            });
+            port53Count++;
+        } catch (e) {
+            // Skip malformed packets
+        }
+    }
+    
+    // Also check connect-to-:53 events for DNS-over-TCP / connected UDP
+    // These won't have query data in sendto, but we can note the DNS server
+    for (const c of port53Connects) {
+        // The target itself is the DNS server — note it for debugging
+        // but we can't extract the query hostname without the wire data
+    }
+    
+    if (port53Count > 0) {
+        console.log(`  Port 53 (direct DNS): ${port53Count} lookups parsed from wire protocol`);
+    }
+    
+    // ── Insert all correlations ─────────────────────────────────────
+    if (correlations.size === 0) {
+        console.log('  No DNS lookups found');
         return;
     }
     
-    // Correlate with connect() calls
     const dnsInsert = db.prepare(`
         INSERT INTO dns_lookups (trace_id, hostname, ip, lookup_seq, connect_seq)
         VALUES (?, ?, ?, ?, ?)
     `);
     
-    const correlations = new Map(); // hostname -> {ip, lookup_seq, connect_seq}
-    
-    for (const lookup of lookups) {
-        // Skip if we already have this hostname
-        if (correlations.has(lookup.hostname)) continue;
-        
-        // Find next connect() to an IP within 1000 events
-        const conn = connectEvents.find(c => c.seq > lookup.seq && c.seq < lookup.seq + 1000);
-        if (conn) {
-            const ip = conn.target.split(':')[0]; // Extract IP without port
-            correlations.set(lookup.hostname, {
-                ip: conn.target,
-                lookup_seq: lookup.seq,
-                connect_seq: conn.seq
-            });
-        }
-    }
-    
-    // Insert unique correlations
     for (const [hostname, info] of correlations) {
         dnsInsert.run(traceId, hostname, info.ip, info.lookup_seq, info.connect_seq);
     }
     
     console.log(`  Found ${correlations.size} hostname → IP correlations`);
     for (const [hostname, info] of correlations) {
-        console.log(`    ${hostname} → ${info.ip}`);
+        const src = info.source === 'port53' ? ' [port 53]' : '';
+        console.log(`    ${hostname} → ${info.ip}${src}`);
     }
 }
 
