@@ -1401,17 +1401,109 @@ syscall::recvfrom_nocancel:return
     self->recvfrom_buf = 0;
 }}
 
-/* sendmsg/recvmsg - metadata only (iovec is complex to parse in DTrace) */
+/* sendmsg/recvmsg — chase msghdr → iovec → buffer pointer chain.
+ *
+ * DTrace self-> variables truncate to 32-bit on macOS ARM64, so we split
+ * 64-bit buffer pointers into hi/lo 32-bit halves and reassemble on return.
+ * Raw *(uint64_t *) reads from copyin buffers preserve full 64-bit values
+ * in this-> (clause-local) variables.
+ *
+ * msghdr layout (LP64): msg_iov at +16 (8 bytes), msg_iovlen at +24 (4 bytes)
+ * iovec layout (LP64):  iov_base at +0 (8 bytes), iov_len at +8 (8 bytes)
+ */
+
+/* sendmsg entry — chase msghdr→iov[0]→buffer, split pointer for self-> */
+syscall::sendmsg:entry,
+syscall::sendmsg_nocancel:entry
+/TRACED/
+{{
+    this->mh_raw = copyin(arg1, 32);
+    this->iov_p = *(uint64_t *)((uintptr_t)this->mh_raw + 16);
+    this->iov_cnt = *(int32_t *)((uintptr_t)this->mh_raw + 24);
+    self->sendmsg_buf_hi = 0;
+    self->sendmsg_buf_lo = 0;
+    self->sendmsg_buflen = 0;
+}}
+
+syscall::sendmsg:entry,
+syscall::sendmsg_nocancel:entry
+/TRACED && this->iov_cnt > 0 && this->iov_p != 0/
+{{
+    this->iv_raw = copyin(this->iov_p, 16);
+    this->base = *(uint64_t *)this->iv_raw;
+    this->len = *(uint64_t *)((uintptr_t)this->iv_raw + 8);
+    self->sendmsg_buf_hi = (uint32_t)(this->base >> 32);
+    self->sendmsg_buf_lo = (uint32_t)(this->base & 0xffffffff);
+    self->sendmsg_buflen = this->len;
+}}
+
+/* sendmsg return — reassemble pointer and capture */
 syscall::sendmsg:return,
 syscall::sendmsg_nocancel:return
-/TRACED && arg1 > 0/
+/TRACED && arg1 > 0 && (self->sendmsg_buf_hi != 0 || self->sendmsg_buf_lo != 0) && self->sendmsg_buflen > 0/
+{{
+    this->buf = ((uint64_t)self->sendmsg_buf_hi << 32) | (uint64_t)self->sendmsg_buf_lo;
+    this->nbytes = self->sendmsg_buflen < {io_size} ? self->sendmsg_buflen : {io_size};
+    printf("MACTRACE_IO %d %d sendmsg %d %d ", pid, tid, self->sendmsg_fd, (int)self->sendmsg_buflen);
+    tracemem(copyin(this->buf, this->nbytes), {io_size}, this->nbytes);
+    printf("\\n");
+    self->sendmsg_buf_hi = 0;
+    self->sendmsg_buf_lo = 0;
+    self->sendmsg_buflen = 0;
+}}
+
+/* sendmsg return — fallback when buffer extraction failed */
+syscall::sendmsg:return,
+syscall::sendmsg_nocancel:return
+/TRACED && arg1 > 0 && self->sendmsg_buf_hi == 0 && self->sendmsg_buf_lo == 0/
 {{
     printf("MACTRACE_IO %d %d sendmsg %d %d\\n", pid, tid, self->sendmsg_fd, (int)arg1);
 }}
 
+/* recvmsg entry — save buffer pointer (split); kernel fills buffer by return */
+syscall::recvmsg:entry,
+syscall::recvmsg_nocancel:entry
+/TRACED/
+{{
+    this->mh_raw = copyin(arg1, 32);
+    this->iov_p = *(uint64_t *)((uintptr_t)this->mh_raw + 16);
+    this->iov_cnt = *(int32_t *)((uintptr_t)this->mh_raw + 24);
+    self->recvmsg_buf_hi = 0;
+    self->recvmsg_buf_lo = 0;
+    self->recvmsg_buflen = 0;
+}}
+
+syscall::recvmsg:entry,
+syscall::recvmsg_nocancel:entry
+/TRACED && this->iov_cnt > 0 && this->iov_p != 0/
+{{
+    this->iv_raw = copyin(this->iov_p, 16);
+    this->base = *(uint64_t *)this->iv_raw;
+    this->len = *(uint64_t *)((uintptr_t)this->iv_raw + 8);
+    self->recvmsg_buf_hi = (uint32_t)(this->base >> 32);
+    self->recvmsg_buf_lo = (uint32_t)(this->base & 0xffffffff);
+    self->recvmsg_buflen = this->len;
+}}
+
+/* recvmsg return — reassemble pointer and capture */
 syscall::recvmsg:return,
 syscall::recvmsg_nocancel:return
-/TRACED && arg1 > 0/
+/TRACED && arg1 > 0 && (self->recvmsg_buf_hi != 0 || self->recvmsg_buf_lo != 0) && self->recvmsg_buflen > 0/
+{{
+    this->buf = ((uint64_t)self->recvmsg_buf_hi << 32) | (uint64_t)self->recvmsg_buf_lo;
+    this->nbytes = arg1 < {io_size} ? (int)arg1 : {io_size};
+    printf("MACTRACE_IO %d %d recvmsg %d %d ", pid, tid, self->recvmsg_fd, (int)arg1);
+    tracemem(copyin(this->buf, this->nbytes), {io_size}, this->nbytes);
+    printf("\\n");
+    self->recvmsg_buf_hi = 0;
+    self->recvmsg_buf_lo = 0;
+    self->recvmsg_buflen = 0;
+}}
+
+/* recvmsg return — fallback when buffer extraction failed */
+syscall::recvmsg:return,
+syscall::recvmsg_nocancel:return
+/TRACED && arg1 > 0 && self->recvmsg_buf_hi == 0 && self->recvmsg_buf_lo == 0/
 {{
     printf("MACTRACE_IO %d %d recvmsg %d %d\\n", pid, tid, self->recvmsg_fd, (int)arg1);
 }}
@@ -1981,6 +2073,7 @@ syscall::recvmsg_nocancel:return
 /* ============================================ */
 /* I/O DATA CAPTURE (--capture-io)              */
 /* ============================================ */
+
 syscall::read:entry,
 syscall::read_nocancel:entry
 /TRACED/
@@ -2089,16 +2182,109 @@ syscall::recvfrom_nocancel:return
     self->recvfrom_buf = 0;
 }}
 
+/* sendmsg/recvmsg — chase msghdr → iovec → buffer pointer chain.
+ *
+ * DTrace self-> variables truncate to 32-bit on macOS ARM64, so we split
+ * 64-bit buffer pointers into hi/lo 32-bit halves and reassemble on return.
+ * Raw *(uint64_t *) reads from copyin buffers preserve full 64-bit values
+ * in this-> (clause-local) variables.
+ *
+ * msghdr layout (LP64): msg_iov at +16 (8 bytes), msg_iovlen at +24 (4 bytes)
+ * iovec layout (LP64):  iov_base at +0 (8 bytes), iov_len at +8 (8 bytes)
+ */
+
+/* sendmsg entry — chase msghdr→iov[0]→buffer, split pointer for self-> */
+syscall::sendmsg:entry,
+syscall::sendmsg_nocancel:entry
+/TRACED/
+{{
+    this->mh_raw = copyin(arg1, 32);
+    this->iov_p = *(uint64_t *)((uintptr_t)this->mh_raw + 16);
+    this->iov_cnt = *(int32_t *)((uintptr_t)this->mh_raw + 24);
+    self->sendmsg_buf_hi = 0;
+    self->sendmsg_buf_lo = 0;
+    self->sendmsg_buflen = 0;
+}}
+
+syscall::sendmsg:entry,
+syscall::sendmsg_nocancel:entry
+/TRACED && this->iov_cnt > 0 && this->iov_p != 0/
+{{
+    this->iv_raw = copyin(this->iov_p, 16);
+    this->base = *(uint64_t *)this->iv_raw;
+    this->len = *(uint64_t *)((uintptr_t)this->iv_raw + 8);
+    self->sendmsg_buf_hi = (uint32_t)(this->base >> 32);
+    self->sendmsg_buf_lo = (uint32_t)(this->base & 0xffffffff);
+    self->sendmsg_buflen = this->len;
+}}
+
+/* sendmsg return — reassemble pointer and capture */
 syscall::sendmsg:return,
 syscall::sendmsg_nocancel:return
-/TRACED && arg1 > 0/
+/TRACED && arg1 > 0 && (self->sendmsg_buf_hi != 0 || self->sendmsg_buf_lo != 0) && self->sendmsg_buflen > 0/
+{{
+    this->buf = ((uint64_t)self->sendmsg_buf_hi << 32) | (uint64_t)self->sendmsg_buf_lo;
+    this->nbytes = self->sendmsg_buflen < {io_size} ? self->sendmsg_buflen : {io_size};
+    printf("MACTRACE_IO %d %d sendmsg %d %d ", pid, tid, self->sendmsg_fd, (int)self->sendmsg_buflen);
+    tracemem(copyin(this->buf, this->nbytes), {io_size}, this->nbytes);
+    printf("\\n");
+    self->sendmsg_buf_hi = 0;
+    self->sendmsg_buf_lo = 0;
+    self->sendmsg_buflen = 0;
+}}
+
+/* sendmsg return — fallback when buffer extraction failed */
+syscall::sendmsg:return,
+syscall::sendmsg_nocancel:return
+/TRACED && arg1 > 0 && self->sendmsg_buf_hi == 0 && self->sendmsg_buf_lo == 0/
 {{
     printf("MACTRACE_IO %d %d sendmsg %d %d\\n", pid, tid, self->sendmsg_fd, (int)arg1);
 }}
 
+/* recvmsg entry — save buffer pointer (split); kernel fills buffer by return */
+syscall::recvmsg:entry,
+syscall::recvmsg_nocancel:entry
+/TRACED/
+{{
+    this->mh_raw = copyin(arg1, 32);
+    this->iov_p = *(uint64_t *)((uintptr_t)this->mh_raw + 16);
+    this->iov_cnt = *(int32_t *)((uintptr_t)this->mh_raw + 24);
+    self->recvmsg_buf_hi = 0;
+    self->recvmsg_buf_lo = 0;
+    self->recvmsg_buflen = 0;
+}}
+
+syscall::recvmsg:entry,
+syscall::recvmsg_nocancel:entry
+/TRACED && this->iov_cnt > 0 && this->iov_p != 0/
+{{
+    this->iv_raw = copyin(this->iov_p, 16);
+    this->base = *(uint64_t *)this->iv_raw;
+    this->len = *(uint64_t *)((uintptr_t)this->iv_raw + 8);
+    self->recvmsg_buf_hi = (uint32_t)(this->base >> 32);
+    self->recvmsg_buf_lo = (uint32_t)(this->base & 0xffffffff);
+    self->recvmsg_buflen = this->len;
+}}
+
+/* recvmsg return — reassemble pointer and capture */
 syscall::recvmsg:return,
 syscall::recvmsg_nocancel:return
-/TRACED && arg1 > 0/
+/TRACED && arg1 > 0 && (self->recvmsg_buf_hi != 0 || self->recvmsg_buf_lo != 0) && self->recvmsg_buflen > 0/
+{{
+    this->buf = ((uint64_t)self->recvmsg_buf_hi << 32) | (uint64_t)self->recvmsg_buf_lo;
+    this->nbytes = arg1 < {io_size} ? (int)arg1 : {io_size};
+    printf("MACTRACE_IO %d %d recvmsg %d %d ", pid, tid, self->recvmsg_fd, (int)arg1);
+    tracemem(copyin(this->buf, this->nbytes), {io_size}, this->nbytes);
+    printf("\\n");
+    self->recvmsg_buf_hi = 0;
+    self->recvmsg_buf_lo = 0;
+    self->recvmsg_buflen = 0;
+}}
+
+/* recvmsg return — fallback when buffer extraction failed */
+syscall::recvmsg:return,
+syscall::recvmsg_nocancel:return
+/TRACED && arg1 > 0 && self->recvmsg_buf_hi == 0 && self->recvmsg_buf_lo == 0/
 {{
     printf("MACTRACE_IO %d %d recvmsg %d %d\\n", pid, tid, self->recvmsg_fd, (int)arg1);
 }}
