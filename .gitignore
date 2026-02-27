@@ -45,3 +45,4 @@ tests/e2e/programs/test_fileops
 tests/e2e/programs/test_forkexec
 tests/e2e/programs/test_network
 tests/e2e/programs/*.dSYM/
+server/mactrace.db*
