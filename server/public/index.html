@@ -989,7 +989,7 @@
         const parts = [countryName];
         if (geo.city) parts.push(geo.city);
         if (geo.region) parts.push(geo.region);
-        if (geo.timezone) parts.push(`🕐 ${geo.timezone}`);
+        // timezone removed — clock icon added no value
         const tipText = parts.join(' · ');
         return `<span class="geo-tooltip"><img class="geo-flag" src="https://flagcdn.com/w40/${cc}.png" alt="${ccUpper}" title="${tipText}" onerror="this.style.display='none'"><span class="geo-tip-text">${tipText}</span></span>`;
     }
