@@ -1415,6 +1415,7 @@
     // Geo-flag tooltip positioning — uses fixed positioning to escape
     // overflow:auto containers. Shows on hover over .geo-tooltip elements.
     document.addEventListener('mouseenter', (e) => {
+        if (!e.target.closest) return;
         const tooltip = e.target.closest('.geo-tooltip');
         if (!tooltip) return;
         const tip = tooltip.querySelector('.geo-tip-text');
@@ -1426,6 +1427,7 @@
         tip.style.display = 'block';
     }, true);
     document.addEventListener('mouseleave', (e) => {
+        if (!e.target.closest) return;
         const tooltip = e.target.closest('.geo-tooltip');
         if (!tooltip) return;
         const tip = tooltip.querySelector('.geo-tip-text');
