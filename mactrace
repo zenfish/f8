@@ -2738,10 +2738,14 @@ Shell metacharacters:
                         help="Attach to and trace an already-running process by PID (like strace -p)")
     parser.add_argument("-e", "--untraced", action="store_true", 
                         help="Show untraced syscalls summary to stderr")
-    parser.add_argument("-d", "--capture-io", action="store_true",
+    parser.add_argument("-c", "--capture-io", action="store_true",
                         help="Capture actual I/O data via tracemem (attached to syscall events as hex)")
     parser.add_argument("--io-size", type=int, default=1*1024*1024,
                         help="Max bytes to capture per I/O op (default: 1M, max ~4M due to dtrace limits)")
+    parser.add_argument("-d", "--dynamic-max", type=int, default=None, const=524288,
+                        nargs='?', metavar="N",
+                        help="Temporarily raise kern.dtrace.difo_maxsize before tracing "
+                             "(default: 524288). Restored on exit.")
     parser.add_argument("--cache", type=str, default=None,
                         help="Copy local files up to SIZE to cache dir (e.g., 10M, 500k, 1G)")
     parser.add_argument("--strsize", type=int, default=MacTrace.DEFAULT_STRSIZE,
@@ -2840,6 +2844,47 @@ Shell metacharacters:
             print(f"Error: Invalid --cache size '{args.cache}': {e}", file=sys.stderr)
             sys.exit(1)
         
+    # ── Dynamic DIF budget (kern.dtrace.difo_maxsize) ────────────────
+    original_difo_maxsize = None
+    if args.dynamic_max is not None:
+        import subprocess as _sp
+        # Read current value
+        try:
+            _result = _sp.run(['/usr/sbin/sysctl', '-n', 'kern.dtrace.difo_maxsize'],
+                              capture_output=True, text=True)
+            current_max = int(_result.stdout.strip())
+        except (ValueError, OSError):
+            current_max = 262144  # kernel default
+
+        target_max = args.dynamic_max
+
+        # Inform user of current state vs -d default
+        if current_max != 524288:
+            print(f"kern.dtrace.difo_maxsize: default 524288, currently {current_max}", file=sys.stderr)
+
+        if target_max == current_max:
+            if args.verbose:
+                print(f"kern.dtrace.difo_maxsize already {current_max}", file=sys.stderr)
+        else:
+            original_difo_maxsize = current_max
+            try:
+                _sp.run(['/usr/sbin/sysctl', f'kern.dtrace.difo_maxsize={target_max}'],
+                        capture_output=True, check=True)
+            except _sp.CalledProcessError as e:
+                print(f"Error: Failed to set kern.dtrace.difo_maxsize={target_max}: {e.stderr.strip()}", file=sys.stderr)
+                sys.exit(1)
+            print(f"kern.dtrace.difo_maxsize: {current_max} → {target_max}", file=sys.stderr)
+
+            # Restore on exit
+            import atexit
+            def _restore_difo():
+                try:
+                    _sp.run(['/usr/sbin/sysctl', f'kern.dtrace.difo_maxsize={original_difo_maxsize}'],
+                            capture_output=True)
+                except Exception:
+                    pass
+            atexit.register(_restore_difo)
+
     tracer = MacTrace(
         verbose=args.verbose,
         capture_io=args.capture_io,
@@ -2856,7 +2901,9 @@ Shell metacharacters:
     
     # ── DIF resource reporting ────────────────────────────────────────
     dif_count = count_dif_programs(tracer._dtrace_script)
-    dif_budget = 250  # approximate max at default difo_maxsize=256KB
+    # Budget scales linearly with difo_maxsize (250 probes at 256KB default)
+    _effective_max = args.dynamic_max if args.dynamic_max is not None else 262144
+    dif_budget = int(250 * _effective_max / 262144)
     dif_pct = min(100, int(dif_count / dif_budget * 100))
     is_filtered = args.trace and args.trace.lower() != 'all'
     if is_filtered:
