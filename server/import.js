@@ -809,10 +809,25 @@ function parseDnsResponse(buf) {
                 parts.push(buf.readUInt16BE(pos + j).toString(16));
             }
             ips.push(parts.join(':'));
+        } else if (rtype === 12) {
+            // PTR record — domain name (for reverse DNS lookups)
+            const r = parseDnsName(buf, pos);
+            if (r) ips.push('PTR:' + r.name);
         }
         pos += rdlength;
     }
     return ips;
+}
+
+/**
+ * Extract IP from an in-addr.arpa reverse DNS name.
+ * "4.0.41.198.in-addr.arpa" → "198.41.0.4"
+ * Returns null if not an in-addr.arpa name.
+ */
+function reverseArpaToIp(hostname) {
+    const m = hostname.match(/^(\d+)\.(\d+)\.(\d+)\.(\d+)\.in-addr\.arpa\.?$/i);
+    if (m) return `${m[4]}.${m[3]}.${m[2]}.${m[1]}`;
+    return null;
 }
 
 
@@ -913,6 +928,16 @@ function extractDnsLookups() {
         ORDER BY seq
     `).all(traceId);
     
+    // Find sendmsg with captured data — sendmsg doesn't expose the
+    // destination in the target field (it's inside msghdr), so we
+    // identify DNS by checking if the buffer is a valid DNS query.
+    const sendmsgSends = db.prepare(`
+        SELECT seq, pid, data_raw FROM events
+        WHERE trace_id = ? AND data_raw IS NOT NULL
+        AND syscall IN ('sendmsg', 'sendmsg_nocancel')
+        ORDER BY seq
+    `).all(traceId);
+    
     // Find write/send on sockets connected to port 53 (for TCP DNS or connected UDP)
     // We need fd tracking for this — check if any connect-to-:53 events exist
     // and look for subsequent writes on the same fd
@@ -929,6 +954,14 @@ function extractDnsLookups() {
         WHERE trace_id = ? AND data_raw IS NOT NULL
         AND syscall IN ('recvfrom', 'recvfrom_nocancel')
         AND target LIKE '%:53'
+        ORDER BY seq
+    `).all(traceId);
+    
+    // Also look for recvmsg DNS responses (same approach as sendmsg)
+    const recvmsgRecvs = db.prepare(`
+        SELECT seq, pid, data_raw FROM events
+        WHERE trace_id = ? AND data_raw IS NOT NULL
+        AND syscall IN ('recvmsg', 'recvmsg_nocancel')
         ORDER BY seq
     `).all(traceId);
     
@@ -975,6 +1008,72 @@ function extractDnsLookups() {
                 connect_seq: connectSeq,
                 source: 'port53'
             });
+            port53Count++;
+        } catch (e) {
+            // Skip malformed packets
+        }
+    }
+    
+    // Parse DNS queries from sendmsg data (dig, Go resolver, etc.)
+    // sendmsg doesn't expose the target address, so we identify DNS packets
+    // by structure: valid header + parseable question section, length > 12.
+    for (const ev of sendmsgSends) {
+        try {
+            const bytes = Buffer.from(ev.data_raw, 'hex');
+            if (bytes.length <= 12) continue;  // Too short for DNS
+            const hostname = parseDnsQuery(bytes);
+            if (!hostname) continue;
+            
+            // For reverse DNS (PTR), extract the actual IP from in-addr.arpa
+            const reverseIp = reverseArpaToIp(hostname);
+            // Use the forward hostname or the reverse IP as the key
+            const displayName = reverseIp ? hostname : hostname;
+            if (correlations.has(displayName)) continue;
+            
+            const txid = bytes.readUInt16BE(0);
+            
+            // Look for matching response in recvmsg (same pid, same txid)
+            let resolvedIp = null;
+            let ptrName = null;
+            for (const recv of recvmsgRecvs) {
+                if (recv.seq <= ev.seq) continue;
+                if (recv.seq > ev.seq + 500) break;
+                if (recv.pid !== ev.pid) continue;  // Same process
+                try {
+                    const rbytes = Buffer.from(recv.data_raw, 'hex');
+                    if (rbytes.length >= 2 && rbytes.readUInt16BE(0) === txid) {
+                        const answers = parseDnsResponse(rbytes);
+                        for (const ans of answers) {
+                            if (ans.startsWith('PTR:')) {
+                                ptrName = ans.slice(4);
+                            } else if (!resolvedIp) {
+                                resolvedIp = ans;
+                            }
+                        }
+                        break;
+                    }
+                } catch (e) { /* skip */ }
+            }
+            
+            // For PTR lookups: show "PTR-name → original-IP"
+            // For forward lookups: show "hostname → resolved-IP"
+            if (reverseIp) {
+                // Reverse DNS: the "hostname" is the PTR result, the "IP" is the queried IP
+                const label = ptrName || hostname;
+                correlations.set(label, {
+                    ip: reverseIp + ':0',
+                    lookup_seq: ev.seq,
+                    connect_seq: null,
+                    source: 'port53'
+                });
+            } else {
+                correlations.set(hostname, {
+                    ip: resolvedIp ? resolvedIp + ':0' : 'unknown:53',
+                    lookup_seq: ev.seq,
+                    connect_seq: null,
+                    source: 'port53'
+                });
+            }
             port53Count++;
         } catch (e) {
             // Skip malformed packets
