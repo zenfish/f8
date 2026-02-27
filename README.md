@@ -316,37 +316,21 @@ The output is JSON with the following structure:
 
 ## Traced Syscalls
 
-### File Operations
-- open, openat, close, read, pread, write, pwrite
-- stat64, lstat64, fstat64, access
-- unlink, rename, mkdir, rmdir, chdir
-- chmod, fchmod, chown, truncate, ftruncate
-- link, symlink, readlink
-- fsync, dup, dup2, fcntl, ioctl
-- getdirentries64, getattrlist, setattrlist
-- getxattr, setxattr, listxattr, removexattr
+mactrace traces 108 of the 454 named macOS syscalls across 7 categories. Use `--trace help` for live details, or see **[COVERAGE.md](COVERAGE.md)** for the full breakdown, cross-version data, and the coverage gathering script.
 
-### Network Operations
-- socket, connect, bind, listen, accept
-- sendto, recvfrom, sendmsg, recvmsg
-- shutdown, setsockopt, getsockopt
-- socketpair, getpeername, getsockname
+| Category | Traced | Coverage | Key syscalls |
+|----------|-------:|---------:|--------------|
+| Network | 29 | 85% | connect, sendto/recvfrom, sendmsg/recvmsg, connectx, sendfile |
+| File | 42 | 100%* | open, read, write, stat, close, rename, chmod, xattr |
+| Process | 24 | 100%* | fork, exec, exit, wait, getpid/uid, posix_spawn |
+| Memory | 3 | 18% | mmap, mprotect, munmap |
+| Signal | 3 | 100% | kill, sigaction, sigprocmask |
+| MAC | 11 | 100% | __mac_syscall (Sandbox, AMFI), __mac_get/set_* |
+| Poll | 7 | 39% | select, poll, kqueue/kevent |
 
-### Process Operations
-- fork, execve, posix_spawn
-- exit, wait4, kill, pipe
-- getpid, getppid, getuid, geteuid, getgid, getegid
-- setuid, setgid
+*\*Core syscalls fully covered; Apple-specific extensions (guarded fds, vectored I/O, pthread internals) not yet traced.*
 
-### Memory Operations
-- mmap, munmap, mprotect
-
-### Signal Operations
-- sigaction, sigprocmask
-
-### Other
-- select, poll, kevent, kqueue
-- gettimeofday, clock_gettime
+Use `--trace=net` to load only network probes (reduces DTrace overhead by 56%). See `--trace help` for all categories and aliases.
 
 ## Process Tracking
 

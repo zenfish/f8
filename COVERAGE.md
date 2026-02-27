@@ -1,0 +1,155 @@
+# Syscall Coverage
+
+mactrace traces a subset of the macOS syscall table. This document tracks what we cover, what we don't, and how coverage varies across OS versions.
+
+## Current Coverage
+
+**Tested on:** macOS 15.7.3 (Sequoia, build 24G419), Apple Silicon (arm64)  
+**Kernel:** Darwin 24.6.0 (xnu-11417.140.6)  
+**DTrace syscall probes:** 558 total (454 named, 104 unnamed tombstones)
+
+| Category | Traced | Available | Coverage | Notes |
+|----------|-------:|----------:|---------:|-------|
+| Network | 29 | 34 | **85%** | Socket I/O, connect, DNS, NECP policy, sendfile |
+| File | 42 | 42¹ | **100%**¹ | Core file ops; many Apple extensions untraced |
+| Process | 24 | 24¹ | **100%**¹ | Core lifecycle; pthread/psynch internals untraced |
+| Memory | 3 | 17 | **18%** | Core mmap/mprotect; SysV shm, madvise untraced |
+| Signal | 3 | 3 | **100%** | kill, sigaction, sigprocmask |
+| MAC | 11 | 11 | **100%** | Mandatory Access Control (__mac_syscall, etc.) |
+| Poll/Event | 7 | 18 | **39%** | select/poll/kqueue; aio_* untraced |
+| **Total** | **108** | **454** | **24%** | |
+
+¹ Coverage % depends on how broadly you define the category. mactrace covers 100% of the *core* file and process syscalls (open, read, write, stat, fork, exec, exit, etc.) but macOS has many extended/Apple-specific variants (guarded file descriptors, vectored I/O, xattr, pthread internals) that aren't traced. The "Available" column above counts only syscalls in mactrace's own category definitions.
+
+### What's Not Traced (and Why)
+
+**Deliberately excluded** — these are internal plumbing, rarely interesting for tracing:
+- **pthread/psynch** (12 syscalls) — Mutex, rwlock, condvar kernel primitives. High frequency, low signal.
+- **bsdthread** (4) — Thread pool management. Internal to libdispatch.
+- **Audit** (9) — BSM audit framework. Rarely used in practice.
+- **Skywalk/Channel** (8) — Apple's kernel networking framework internals.
+- **kdebug** (4) — Kernel debug/trace facilities. Meta.
+- **SysV IPC** (9) — semaphore/message/shared memory. Mostly legacy.
+- **Coalition** (5) — Process coalition management. Scheduler internals.
+
+**Worth adding eventually:**
+- `readv`/`writev` (+ `preadv`/`pwritev`) — Vectored I/O. Used by databases.
+- `kevent_qos`/`kevent_id` — Modern kqueue variants. Used by libdispatch.
+- `madvise` — Memory advisory. Useful for understanding app memory behavior.
+- `waitid` — Modern wait variant. Increasingly used.
+- `getattrlist`/`setattrlist` — Apple's bulk attribute operations.
+
+### Network Coverage Detail
+
+29 of 34 network-related syscalls (85%):
+
+```
+Traced:                          Not traced:
+  accept, accept_nocancel          disconnectx
+  bind                             necp_match_policy
+  connect, connect_nocancel        peeloff
+  connectx                         pid_shutdown_sockets
+  getpeername                      socket_delegate
+  getsockname
+  getsockopt
+  listen
+  necp_client_action, necp_open
+  necp_session_action, necp_session_open
+  recvfrom, recvfrom_nocancel
+  recvmsg, recvmsg_nocancel
+  recvmsg_x
+  sendfile
+  sendmsg, sendmsg_nocancel
+  sendmsg_x
+  sendto, sendto_nocancel
+  setsockopt
+  shutdown
+  socket, socketpair
+```
+
+### The 104 Unnamed Syscalls
+
+DTrace lists 104 syscalls as `#N` (by number, no name). These are **tombstones** — dead syscalls that macOS inherited from BSD but later replaced or removed. The syscall number is preserved for ABI stability, but the implementation is `nosys()` (returns ENOSYS). They include:
+
+- **86 "old" BSD relics** — `#8 old creat`, `#19 old lseek`, `#71 old mmap`, `#99 old accept`, `#101 old send`, `#102 old recv`, `#206-212 old AppleTalk` (7 dead AT* calls), etc.
+- **2 reserved** — `#63` (internal), `#213` (reserved for AppleTalk)
+- **2 conditionally compiled** — `#164 funmount`, `#435 pid_hibernate` (iOS only)
+- **14 empty slots** — `nosys()` with no explanation
+
+These never fire and are excluded from coverage calculations.
+
+## Gathering Data for Your OS Version
+
+Run the coverage script to dump your system's syscall table:
+
+```bash
+sudo ./scripts/syscall-coverage.sh scripts/coverage-data/my-system.json
+```
+
+This produces a JSON file with:
+- OS version, build, kernel version, architecture
+- All named syscall probes
+- All unnamed (tombstone) syscall numbers
+- `kern.dtrace.difo_maxsize` value
+
+### Comparing Across Versions
+
+Coverage data files live in `scripts/coverage-data/`. To compare two OS versions:
+
+```bash
+# What syscalls were added?
+diff <(jq -r '.syscalls.named[]' old.json) <(jq -r '.syscalls.named[]' new.json)
+
+# Quick summary
+jq '.os.version, .counts' scripts/coverage-data/*.json
+```
+
+### Available Data
+
+| File | macOS | Build | Arch | Named | Unnamed | Total |
+|------|-------|-------|------|------:|--------:|------:|
+| `macos-15.7.3-arm64.json` | 15.7.3 | 24G419 | arm64 | 454 | 104 | 558 |
+
+*Contributions welcome — run the script on other macOS versions and submit the JSON.*
+
+## DTrace DIF Budget
+
+macOS DTrace has a compiled bytecode size limit per probe (`kern.dtrace.difo_maxsize`, default 256KB). mactrace's full probe set uses ~82% of this budget. The `--trace` flag lets you load only the categories you need:
+
+```
+--trace=net           111 probes  ~44% of budget
+--trace=fs            124 probes  ~50%
+--trace=exec           40 probes  ~16%
+--trace=io            189 probes  ~76%
+Default (all)         216 probes  ~86%
+```
+
+Use `-d` to temporarily double the DIF budget (sets `kern.dtrace.difo_maxsize=524288`, restored on exit).
+
+## Category Reference
+
+Use `mactrace --trace help` for live category info, or `--trace help <name>` for details:
+
+```
+$ mactrace --trace help
+Trace categories (7 categories, 108 traced syscalls):
+
+  file           42 syscalls  File system operations: open, read, write, stat, link, chmod, directory ops
+  mac            11 syscalls  Apple Mandatory Access Control framework
+  memory          3 syscalls  Virtual memory: mmap, mprotect, munmap
+  network        29 syscalls  Socket and network I/O: connect, send/recv, DNS, NECP, sendfile
+  poll            7 syscalls  Event multiplexing: select, poll, kqueue/kevent
+  process        24 syscalls  Process lifecycle and identity: fork, exec, exit, wait, getpid/uid
+  signal          3 syscalls  Signal delivery and handling: kill, sigaction, sigprocmask
+
+$ mactrace --trace help network
+  network
+  ───────
+  29 syscalls:
+    accept, accept_nocancel, bind, connect, connect_nocancel, connectx,
+    getpeername, getsockname, getsockopt, listen, necp_client_action,
+    necp_open, necp_session_action, necp_session_open, recvfrom,
+    recvfrom_nocancel, recvmsg, recvmsg_nocancel, recvmsg_x, sendfile,
+    sendmsg, sendmsg_nocancel, sendmsg_x, sendto, sendto_nocancel,
+    setsockopt, shutdown, socket, socketpair
+```

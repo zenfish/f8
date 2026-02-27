@@ -9,6 +9,7 @@ trace.json
 *.json
 !package.json
 !package-lock.json
+!scripts/coverage-data/*.json
 
 # Captured I/O data (binary trace artifacts)
 *.bin
