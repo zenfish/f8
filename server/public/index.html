@@ -332,6 +332,42 @@
             margin-left: 6px; 
             vertical-align: middle;
         }
+        /* Geo flag */
+        .geo-flag {
+            display: inline-block;
+            width: 20px;
+            height: 15px;
+            margin-left: 5px;
+            vertical-align: middle;
+            border-radius: 2px;
+            box-shadow: 0 0 1px rgba(0,0,0,0.3);
+            cursor: help;
+            position: relative;
+        }
+        .geo-tooltip {
+            position: relative;
+            display: inline-block;
+        }
+        .geo-tooltip .geo-tip-text {
+            visibility: hidden;
+            background: var(--c-card-bg);
+            border: 1px solid var(--c-card-border);
+            color: var(--c-text);
+            padding: 6px 10px;
+            border-radius: 4px;
+            font-size: 11px;
+            white-space: nowrap;
+            position: absolute;
+            z-index: 100;
+            bottom: 125%;
+            left: 50%;
+            transform: translateX(-50%);
+            box-shadow: 0 2px 8px rgba(0,0,0,0.15);
+            pointer-events: none;
+        }
+        .geo-tooltip:hover .geo-tip-text {
+            visibility: visible;
+        }
         
         .io-link {
             color: var(--c-primary);
@@ -942,6 +978,28 @@
         }
     }
     
+    // ── Geo flag rendering ──────────────────────────────────────────
+    // Uses flagcdn.com for flag images (no bundled assets).
+    // Country code mapping for display names.
+    const COUNTRY_NAMES = new Intl.DisplayNames(['en'], { type: 'region' });
+
+    function renderGeoFlag(geo) {
+        if (!geo || !geo.country) return '';
+        const cc = geo.country.toLowerCase();
+        const ccUpper = geo.country.toUpperCase();
+        const countryName = (() => {
+            try { return COUNTRY_NAMES.of(ccUpper) || ccUpper; }
+            catch { return ccUpper; }
+        })();
+        // Build tooltip lines
+        const parts = [countryName];
+        if (geo.city) parts.push(geo.city);
+        if (geo.region) parts.push(geo.region);
+        if (geo.timezone) parts.push(`🕐 ${geo.timezone}`);
+        const tipText = parts.join(' · ');
+        return `<span class="geo-tooltip"><img class="geo-flag" src="https://flagcdn.com/w40/${cc}.png" alt="${ccUpper}" onerror="this.style.display='none'"><span class="geo-tip-text">${tipText}</span></span>`;
+    }
+
     function renderSummary(t) {
         // Compute I/O stats
         let totalRead = 0, totalWrite = 0;
@@ -1002,11 +1060,12 @@
                         ${t.dnsLookups.map(d => {
                             const ip = d.ip ? d.ip.split(':')[0] : '—';
                             const seqLink = d.lookup_seq ? `<a href="#" class="dns-jump text-faint text-xxs" data-seq="${d.lookup_seq}" style="margin-left:6px" title="Jump to line #${d.lookup_seq}">#${d.lookup_seq}</a>` : '';
+                            const geoFlag = renderGeoFlag(d.geo);
                             return `
                             <li style="padding:4px 0;border-bottom:1px solid var(--c-card-border)">
                                 <span class="text-primary-dark font-semibold">${escapeHtml(d.hostname)}</span>
                                 <span class="arrow-sep">→</span>
-                                <span class="text-muted">${escapeHtml(ip)}</span>
+                                <span class="text-muted">${escapeHtml(ip)}</span>${geoFlag}
                                 ${seqLink}
                             </li>
                         `}).join('')}

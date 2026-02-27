@@ -12,8 +12,59 @@ import path from 'path';
 import { fileURLToPath } from 'url';
 import fs from 'fs';
 import { execSync, execFileSync } from 'child_process';
+import geoip from 'fast-geoip';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
+
+// ── IP Geolocation helpers ─────────────────────────────────────────────
+
+const PRIVATE_IP_RE = /^(127\.|10\.|172\.(1[6-9]|2\d|3[01])\.|192\.168\.|0\.|169\.254\.|::1|fe80:|fc00:|fd00:)/i;
+
+/**
+ * Look up geo data for an IP address.
+ * Returns { country, region, city, timezone, ll } or null for private/unknown IPs.
+ */
+async function geoLookup(ip) {
+    if (!ip || PRIVATE_IP_RE.test(ip)) return null;
+    try {
+        const geo = await geoip.lookup(ip);
+        if (!geo || !geo.country) return null;
+        return {
+            country: geo.country,       // 2-letter ISO code
+            region: geo.region || '',
+            city: geo.city || '',
+            timezone: geo.timezone || '',
+            ll: geo.ll || [0, 0],
+        };
+    } catch {
+        return null;
+    }
+}
+
+/**
+ * Enrich an array of DNS lookup rows with geo data for each IP.
+ */
+async function enrichDnsWithGeo(lookups) {
+    // Deduplicate IPs to avoid redundant lookups
+    const ipSet = new Set();
+    for (const d of lookups) {
+        if (d.ip) {
+            // ip field may be "addr:port" — extract just the address
+            const addr = d.ip.split(':')[0];
+            if (addr) ipSet.add(addr);
+        }
+    }
+    // Batch lookup all unique IPs in parallel
+    const geoCache = {};
+    await Promise.all([...ipSet].map(async (addr) => {
+        geoCache[addr] = await geoLookup(addr);
+    }));
+    // Attach geo to each row
+    return lookups.map(d => {
+        const addr = d.ip ? d.ip.split(':')[0] : '';
+        return { ...d, geo: geoCache[addr] || null };
+    });
+}
 
 // Parse arguments
 const args = process.argv.slice(2);
@@ -75,7 +126,7 @@ app.get('/api/traces', (req, res) => {
 });
 
 // Get single trace metadata
-app.get('/api/traces/:id', (req, res) => {
+app.get('/api/traces/:id', async (req, res) => {
     const trace = queryOne('SELECT * FROM traces WHERE id = ?', [req.params.id]);
     if (!trace) return res.status(404).json({ error: 'Trace not found' });
     
@@ -94,11 +145,12 @@ app.get('/api/traces/:id', (req, res) => {
         [req.params.id]
     );
     
-    // Get DNS lookups for this trace
-    const dnsLookups = query(
+    // Get DNS lookups for this trace, enriched with geo data
+    const rawDns = query(
         'SELECT hostname, ip FROM dns_lookups WHERE trace_id = ?',
         [req.params.id]
     );
+    const dnsLookups = await enrichDnsWithGeo(rawDns);
     
     // Count exec'd/spawn'd programs
     const execCount = queryOne(
@@ -115,13 +167,13 @@ app.get('/api/traces/:id', (req, res) => {
     res.json({ ...trace, categories, errorCount, topSyscalls, dnsLookups, execCount, pidCount });
 });
 
-// Get DNS lookups for a trace
-app.get('/api/traces/:id/dns', (req, res) => {
+// Get DNS lookups for a trace (with geo enrichment)
+app.get('/api/traces/:id/dns', async (req, res) => {
     const lookups = query(
         'SELECT hostname, ip, lookup_seq, connect_seq FROM dns_lookups WHERE trace_id = ? ORDER BY hostname',
         [req.params.id]
     );
-    res.json(lookups);
+    res.json(await enrichDnsWithGeo(lookups));
 });
 
 // Get events with filtering/pagination
@@ -262,7 +314,7 @@ app.get('/api/traces/:id/io/:filename', (req, res) => {
 });
 
 // Get aggregated object stats (files or network hosts)
-app.get('/api/traces/:id/objects', (req, res) => {
+app.get('/api/traces/:id/objects', async (req, res) => {
     try {
     const traceId = req.params.id;
     const type = req.query.type || 'files';
@@ -336,7 +388,7 @@ app.get('/api/traces/:id/objects', (req, res) => {
     res.json({
         trace: { id: trace.id, command: trace.command, io_dir: trace.io_dir },
         type,
-        dnsLookups: type === 'network' ? dnsLookups : undefined,
+        dnsLookups: type === 'network' ? await enrichDnsWithGeo(dnsLookups) : undefined,
         objects: result
     });
     } catch (err) {
