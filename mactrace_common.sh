@@ -70,13 +70,11 @@ resolve_path() {
     # Explicit relative (./ or ../) — use as-is
     [[ "$path" == ./* || "$path" == ../* ]] && { echo "$path"; return; }
 
-    # If env var is set and file exists at that location, use it
+    # If env var is set, use it as prefix (whether or not file exists yet —
+    # callers may be computing a path for output, not just reading)
     if [[ -n "$prefix" ]]; then
-        local candidate="$prefix/$path"
-        if [[ -e "$candidate" ]]; then
-            echo "$candidate"
-            return
-        fi
+        echo "$prefix/$path"
+        return
     fi
 
     # Fall back to original path
