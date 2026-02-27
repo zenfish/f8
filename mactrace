@@ -647,6 +647,13 @@ class MacTrace:
                 if dest:
                     event.args.update(dest)
             
+            # Attach recvmsg source address from msg_name extraction
+            if event.syscall.startswith('recvmsg') and hasattr(self, '_pending_recvmsg_src'):
+                src_key = (event.pid, event.tid, event.args.get('fd'))
+                src = self._pending_recvmsg_src.pop(src_key, None)
+                if src:
+                    event.args.update(src)
+            
         except (ValueError, IndexError) as e:
             if self.verbose:
                 print(f"Warning: Failed to parse syscall: {full_line} ({e})", file=sys.stderr)
@@ -1169,6 +1176,26 @@ class MacTrace:
                     except ValueError:
                         pass
                 return
+
+            # recvmsg_src is a pseudo-event: store the source address
+            # to be attached to the next recvmsg SYSCALL event for this pid/tid/fd
+            if syscall == 'recvmsg_src':
+                fd = int(parts[7])
+                family = int(parts[8]) if len(parts) > 8 else 0
+                hex_data = parts[9] if len(parts) > 9 else ''
+                if hex_data:
+                    try:
+                        sockaddr_bytes = bytes.fromhex(hex_data)
+                        addr_info = self._decode_sockaddr(sockaddr_bytes, family)
+                        # Store for attachment to next recvmsg event
+                        key = (pid, tid, fd)
+                        if not hasattr(self, '_pending_recvmsg_src'):
+                            self._pending_recvmsg_src = {}
+                        self._pending_recvmsg_src[key] = addr_info
+                    except ValueError:
+                        pass
+                return
+
             retval_str = parts[4]
             if retval_str.startswith("0x") or retval_str.startswith("-0x"):
                 retval = int(retval_str, 16)
@@ -1337,12 +1364,6 @@ syscall::read_nocancel:entry
     self->read_buf = arg1;
 }}
 
-syscall::pread:entry,
-syscall::pread_nocancel:entry
-/TRACED/
-{{
-    self->pread_buf = arg1;
-}}
 
 syscall::write:entry,
 syscall::write_nocancel:entry
@@ -1351,12 +1372,6 @@ syscall::write_nocancel:entry
     self->write_buf = arg1;
 }}
 
-syscall::pwrite:entry,
-syscall::pwrite_nocancel:entry
-/TRACED/
-{{
-    self->pwrite_buf = arg1;
-}}
 
 syscall::sendto:entry,
 syscall::sendto_nocancel:entry
@@ -1384,16 +1399,6 @@ syscall::read_nocancel:return
     self->read_buf = 0;
 }}
 
-syscall::pread:return,
-syscall::pread_nocancel:return
-/TRACED && arg1 > 0 && self->pread_buf/
-{{
-    this->nbytes = arg1 < {io_size} ? arg1 : {io_size};
-    printf("MACTRACE_IO %d %d pread %d %d ", pid, tid, self->pread_fd, (int)arg1);
-    tracemem(copyin(self->pread_buf, this->nbytes), {io_size}, this->nbytes);
-    printf("\\n");
-    self->pread_buf = 0;
-}}
 
 /* Write: capture buffer on return (we saved buf ptr on entry) */
 syscall::write:return,
@@ -1407,16 +1412,6 @@ syscall::write_nocancel:return
     self->write_buf = 0;
 }}
 
-syscall::pwrite:return,
-syscall::pwrite_nocancel:return
-/TRACED && arg1 > 0 && self->pwrite_buf/
-{{
-    this->nbytes = arg1 < {io_size} ? arg1 : {io_size};
-    printf("MACTRACE_IO %d %d pwrite %d %d ", pid, tid, self->pwrite_fd, (int)arg1);
-    tracemem(copyin(self->pwrite_buf, this->nbytes), {io_size}, this->nbytes);
-    printf("\\n");
-    self->pwrite_buf = 0;
-}}
 
 /* Network: sendto/recvfrom */
 syscall::sendto:return,
@@ -1506,6 +1501,7 @@ syscall::recvmsg_nocancel:entry
     this->mh_raw = copyin(arg1, 32);
     this->iov_p = *(uint64_t *)((uintptr_t)this->mh_raw + 16);
     this->iov_cnt = *(int32_t *)((uintptr_t)this->mh_raw + 24);
+    self->recvmsg_msghdr = arg1;
     self->recvmsg_buf_hi = 0;
     self->recvmsg_buf_lo = 0;
     self->recvmsg_buflen = 0;
@@ -1546,6 +1542,31 @@ syscall::recvmsg_nocancel:return
 /TRACED && arg1 > 0 && self->recvmsg_buf_hi == 0 && self->recvmsg_buf_lo == 0/
 {{
     printf("MACTRACE_IO %d %d recvmsg %d %d\\n", pid, tid, self->recvmsg_fd, (int)arg1);
+}}
+
+
+/* recvmsg return -- extract source address from msghdr.msg_name (filled by kernel).
+ * For UDP (SOCK_DGRAM), each datagram carries its own source address.
+ * Emitted as recvmsg_src pseudo-event, attached to the recvmsg event by the parser. */
+syscall::recvmsg:return,
+syscall::recvmsg_nocancel:return
+/TRACED && arg1 > 0 && self->recvmsg_msghdr != 0/
+{{
+    this->rm_mh = copyin(self->recvmsg_msghdr, 16);
+    this->rm_name_p = *(uint64_t *)this->rm_mh;
+    this->rm_name_len = *(uint32_t *)((uintptr_t)this->rm_mh + 8);
+    self->recvmsg_msghdr = 0;
+}}
+
+syscall::recvmsg:return,
+syscall::recvmsg_nocancel:return
+/TRACED && this->rm_name_p != 0 && this->rm_name_len >= 4 && this->rm_name_len <= 128/
+{{
+    printf("MACTRACE_SOCKADDR %d %d recvmsg_src 0 0 %d %d %d ",
+        pid, tid, walltimestamp/1000, self->recvmsg_fd,
+        *(uint8_t *)((uintptr_t)copyin(this->rm_name_p, this->rm_name_len) + 1));
+    tracemem(copyin(this->rm_name_p, this->rm_name_len), 128, this->rm_name_len);
+    printf("\\n");
 }}
 '''
             dtrace_script = dtrace_script.replace("$RAWIO_PRAGMA$", "#pragma D option rawbytes")
@@ -2122,12 +2143,6 @@ syscall::read_nocancel:entry
     self->read_buf = arg1;
 }}
 
-syscall::pread:entry,
-syscall::pread_nocancel:entry
-/TRACED/
-{{
-    self->pread_buf = arg1;
-}}
 
 syscall::write:entry,
 syscall::write_nocancel:entry
@@ -2136,12 +2151,6 @@ syscall::write_nocancel:entry
     self->write_buf = arg1;
 }}
 
-syscall::pwrite:entry,
-syscall::pwrite_nocancel:entry
-/TRACED/
-{{
-    self->pwrite_buf = arg1;
-}}
 
 syscall::sendto:entry,
 syscall::sendto_nocancel:entry
@@ -2168,16 +2177,6 @@ syscall::read_nocancel:return
     self->read_buf = 0;
 }}
 
-syscall::pread:return,
-syscall::pread_nocancel:return
-/TRACED && arg1 > 0 && self->pread_buf/
-{{
-    this->nbytes = arg1 < {io_size} ? arg1 : {io_size};
-    printf("MACTRACE_IO %d %d pread %d %d ", pid, tid, self->pread_fd, (int)arg1);
-    tracemem(copyin(self->pread_buf, this->nbytes), {io_size}, this->nbytes);
-    printf("\\n");
-    self->pread_buf = 0;
-}}
 
 syscall::write:return,
 syscall::write_nocancel:return
@@ -2190,16 +2189,6 @@ syscall::write_nocancel:return
     self->write_buf = 0;
 }}
 
-syscall::pwrite:return,
-syscall::pwrite_nocancel:return
-/TRACED && arg1 > 0 && self->pwrite_buf/
-{{
-    this->nbytes = arg1 < {io_size} ? arg1 : {io_size};
-    printf("MACTRACE_IO %d %d pwrite %d %d ", pid, tid, self->pwrite_fd, (int)arg1);
-    tracemem(copyin(self->pwrite_buf, this->nbytes), {io_size}, this->nbytes);
-    printf("\\n");
-    self->pwrite_buf = 0;
-}}
 
 syscall::sendto:return,
 syscall::sendto_nocancel:return
@@ -2288,6 +2277,7 @@ syscall::recvmsg_nocancel:entry
     this->mh_raw = copyin(arg1, 32);
     this->iov_p = *(uint64_t *)((uintptr_t)this->mh_raw + 16);
     this->iov_cnt = *(int32_t *)((uintptr_t)this->mh_raw + 24);
+    self->recvmsg_msghdr = arg1;
     self->recvmsg_buf_hi = 0;
     self->recvmsg_buf_lo = 0;
     self->recvmsg_buflen = 0;
@@ -2328,6 +2318,31 @@ syscall::recvmsg_nocancel:return
 /TRACED && arg1 > 0 && self->recvmsg_buf_hi == 0 && self->recvmsg_buf_lo == 0/
 {{
     printf("MACTRACE_IO %d %d recvmsg %d %d\\n", pid, tid, self->recvmsg_fd, (int)arg1);
+}}
+
+
+/* recvmsg return -- extract source address from msghdr.msg_name (filled by kernel).
+ * For UDP (SOCK_DGRAM), each datagram carries its own source address.
+ * Emitted as recvmsg_src pseudo-event, attached to the recvmsg event by the parser. */
+syscall::recvmsg:return,
+syscall::recvmsg_nocancel:return
+/TRACED && arg1 > 0 && self->recvmsg_msghdr != 0/
+{{
+    this->rm_mh = copyin(self->recvmsg_msghdr, 16);
+    this->rm_name_p = *(uint64_t *)this->rm_mh;
+    this->rm_name_len = *(uint32_t *)((uintptr_t)this->rm_mh + 8);
+    self->recvmsg_msghdr = 0;
+}}
+
+syscall::recvmsg:return,
+syscall::recvmsg_nocancel:return
+/TRACED && this->rm_name_p != 0 && this->rm_name_len >= 4 && this->rm_name_len <= 128/
+{{
+    printf("MACTRACE_SOCKADDR %d %d recvmsg_src 0 0 %d %d %d ",
+        pid, tid, walltimestamp/1000, self->recvmsg_fd,
+        *(uint8_t *)((uintptr_t)copyin(this->rm_name_p, this->rm_name_len) + 1));
+    tracemem(copyin(this->rm_name_p, this->rm_name_len), 128, this->rm_name_len);
+    printf("\\n");
 }}
 '''
             dtrace_script = dtrace_script.replace("$RAWIO_PRAGMA$", "#pragma D option rawbytes")
