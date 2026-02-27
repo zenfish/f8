@@ -179,23 +179,59 @@ def _discover_handlers():
     ALL_DTRACE_PROBES = "\n".join(parts)
 
 
-# ── Category aliases for --trace filtering ──────────────────────────
+# ── Category metadata for --trace filtering ─────────────────────────
+
+CATEGORY_DESCRIPTIONS = {
+    'file': 'File system operations: open, read, write, stat, link, chmod, directory ops',
+    'network': 'Socket and network I/O: connect, send/recv, DNS, socket options, '
+               'plus Apple NECP network policy (routing, VPN, per-app rules)',
+    'process': 'Process lifecycle and identity: fork, exec, exit, wait, getpid/uid, '
+               'plus MAC framework policy checks (__mac_syscall)',
+    'memory': 'Virtual memory: mmap, mprotect, munmap',
+    'signal': 'Signal delivery and handling: kill, sigaction, sigprocmask',
+    'mac': 'Apple Mandatory Access Control framework: __mac_syscall (Sandbox, AMFI), '
+           '__mac_get/set for file, process, and fd labels. Cross-cutting security '
+           'policy layer — also included in process category',
+    'poll': 'Event multiplexing: select, poll, kqueue/kevent',
+}
 
 CATEGORY_ALIASES = {
-    'net': ['network', 'necp'],
+    'net': ['network'],
     'fs': ['file'],
-    'io': ['file', 'network', 'necp'],
-    'xio': ['file', 'network', 'necp', 'process'],
+    'io': ['file', 'network'],
+    'xio': ['file', 'network', 'process'],
     'exec': ['process'],
     'all': None,  # sentinel — means all handlers
 }
+
+
+def get_category_info():
+    """Return dict of category → {description, syscalls, handlers} from live registry."""
+    from collections import defaultdict
+    info = {}
+    cat_syscalls = defaultdict(set)
+    cat_handlers = defaultdict(set)
+    
+    for syscall_name, handler in HANDLER_REGISTRY.items():
+        handler_name = type(handler).__name__
+        for cat in handler.categories:
+            cat_syscalls[cat].add(syscall_name)
+            cat_handlers[cat].add(handler_name)
+    
+    for cat in sorted(cat_syscalls.keys()):
+        info[cat] = {
+            'description': CATEGORY_DESCRIPTIONS.get(cat, '(no description)'),
+            'syscalls': sorted(cat_syscalls[cat]),
+            'handlers': sorted(cat_handlers[cat]),
+        }
+    return info
 
 
 def resolve_trace_spec(spec: str):
     """Parse a --trace spec string into categories and individual syscalls.
 
     Tokens are interpreted as:
-      1. Category alias (e.g. 'net' → network,necp)
+      1. Category alias (e.g. 'net' → network)
       2. Known category id (e.g. 'file', 'network', 'signal')
       3. Individual syscall name (e.g. 'connect', 'sendto')
 

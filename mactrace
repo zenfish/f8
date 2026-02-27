@@ -2677,6 +2677,25 @@ def filter_wrapper_processes(result: 'TraceResult', original_command: List[str],
     )
 
 
+def _print_category_detail(cat: str, info: dict):
+    """Print detailed info for a single --trace category."""
+    syscalls = info['syscalls']
+    desc = info['description']
+    
+    print(f"  {cat}")
+    print(f"  {'─' * len(cat)}")
+    print(f"  {desc}")
+    print(f"  {len(syscalls)} syscalls:")
+    
+    # Print syscalls in columns
+    col_width = max(len(s) for s in syscalls) + 2
+    cols = max(1, 72 // col_width)
+    for i in range(0, len(syscalls), cols):
+        row = syscalls[i:i+cols]
+        print(f"    {''.join(s.ljust(col_width) for s in row).rstrip()}")
+    print()
+
+
 def main():
     parser = argparse.ArgumentParser(
         description="mactrace - strace-like utility for macOS using DTrace",
@@ -2763,13 +2782,64 @@ Shell metacharacters:
                         help="Throttle traced program (macOS taskpolicy -b: background I/O + CPU). "
                              "Reduces DTrace drops for heavy workloads like npm install")
     parser.add_argument("--trace", type=str, default=None, metavar="SPEC",
-                        help="Filter which syscall probes to load. Reduces DTrace overhead and drops. Comma-separated list of categories, aliases, or individual syscall names. Categories: file, network, necp, process, memory, signal, mac, poll. Aliases: net (network+necp), fs (file), io (file+network+necp), xio (io+process), exec (process), all (default). Syscalls: connect,sendto,... (loads the owning handler). Examples: --trace=net  --trace=net,process  --trace=connect,sendto,recvfrom")
+                        help="Filter which syscall probes to load. Reduces DTrace overhead and drops. Comma-separated list of categories, aliases, or individual syscall names. Use --trace help for categories/aliases, --trace help <name> for details. Examples: --trace=net  --trace=net,process  --trace=connect,sendto,recvfrom")
     parser.add_argument("command", nargs=argparse.REMAINDER,
                         help="Command to trace. Pipelines and shell metacharacters "
                              "(|, &, ;, >, etc.) must be wrapped: "
                              "sudo mactrace sh -c 'cmd1 | cmd2'")
     
     args = parser.parse_args()
+    
+    # ── --trace help [category] ───────────────────────────────────────
+    if args.trace and args.trace.split()[0].lower() == 'help':
+        from syscalls import get_category_info, CATEGORY_ALIASES, CATEGORY_DESCRIPTIONS
+        cat_info = get_category_info()
+        
+        # Parse target: --trace "help network" or --trace help <command captures "network">
+        help_parts = args.trace.split(maxsplit=1)
+        target = help_parts[1].lower() if len(help_parts) > 1 else None
+        if not target and args.command:
+            target = args.command[0].lower()
+        
+        if target:
+            # Resolve alias → categories
+            if target in CATEGORY_ALIASES and CATEGORY_ALIASES[target] is not None:
+                cats = CATEGORY_ALIASES[target]
+                print(f"Alias '{target}' → {', '.join(cats)}")
+                print()
+                for cat in cats:
+                    if cat in cat_info:
+                        _print_category_detail(cat, cat_info[cat])
+            elif target in cat_info:
+                _print_category_detail(target, cat_info[target])
+            else:
+                print(f"Unknown category or alias: '{target}'")
+                print(f"Categories: {', '.join(sorted(cat_info.keys()))}")
+                print(f"Aliases: {', '.join(k for k, v in sorted(CATEGORY_ALIASES.items()) if v is not None)}")
+        else:
+            # List all categories
+            total_syscalls = set()
+            for info in cat_info.values():
+                total_syscalls.update(info['syscalls'])
+            
+            print(f"Trace categories ({len(cat_info)} categories, {len(total_syscalls)} traced syscalls):")
+            print()
+            for cat, info in sorted(cat_info.items()):
+                print(f"  {cat:12s}  {len(info['syscalls']):3d} syscalls  {info['description']}")
+            
+            print()
+            print("Aliases:")
+            for alias, cats in sorted(CATEGORY_ALIASES.items()):
+                if cats is not None:
+                    print(f"  {alias:12s}  → {', '.join(cats)}")
+                else:
+                    print(f"  {alias:12s}  → all categories")
+            
+            print()
+            print("Usage: --trace help <category>  for syscall details")
+            print("       --trace help <alias>     to expand an alias")
+        
+        sys.exit(0)
     
     if not args.command and args.pid is None:
         parser.print_help()
@@ -2936,7 +3006,7 @@ Shell metacharacters:
         io_extra = int(dif_count * 0.15)  # rough estimate for IO capture probes
         combined_pct = min(100, int((dif_count + io_extra) / dif_budget * 100))
         if combined_pct > 90:
-            print(f"  ⚠️  With -d (I/O capture), estimated ~{combined_pct}% of DIF budget", file=sys.stderr)
+            print(f"  ⚠️  With -c (I/O capture), estimated ~{combined_pct}% of DIF budget", file=sys.stderr)
 
     if args.pid is not None:
         # Attach to already-running process (like strace -p)
