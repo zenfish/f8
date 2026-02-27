@@ -1006,6 +1006,7 @@ class MacTrace:
                 # Append collected hex to line
                 if hex_bytes:
                     merged_line = merged_line + " " + "".join(hex_bytes)
+
                 
                 result.append(merged_line)
             else:
@@ -1056,8 +1057,6 @@ class MacTrace:
                         event.args['data'] = data_hex
                         event.args['data_len'] = len(data_bytes)
                     matched_event = event
-                    if self.verbose:
-                        is_sendmsg = 'sendmsg' in syscall
                     break
             
             # Warn if I/O was truncated (actual bytes > capture limit)
