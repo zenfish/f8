@@ -640,6 +640,13 @@ class MacTrace:
                 event.args['data'] = pending[0]
                 event.args['data_len'] = pending[1]
             
+            # Attach sendmsg destination address from msg_name extraction
+            if event.syscall.startswith('sendmsg') and hasattr(self, '_pending_sendmsg_dest'):
+                dest_key = (event.pid, event.tid, event.args.get('fd'))
+                dest = self._pending_sendmsg_dest.pop(dest_key, None)
+                if dest:
+                    event.args.update(dest)
+            
         except (ValueError, IndexError) as e:
             if self.verbose:
                 print(f"Warning: Failed to parse syscall: {full_line} ({e})", file=sys.stderr)
@@ -1143,6 +1150,25 @@ class MacTrace:
             pid = int(parts[1])
             tid = int(parts[2])
             syscall = parts[3]
+            
+            # sendmsg_dest is a pseudo-event: store the destination address
+            # to be attached to the next sendmsg SYSCALL event for this pid/tid/fd
+            if syscall == 'sendmsg_dest':
+                fd = int(parts[7])
+                family = int(parts[8]) if len(parts) > 8 else 0
+                hex_data = parts[9] if len(parts) > 9 else ''
+                if hex_data:
+                    try:
+                        sockaddr_bytes = bytes.fromhex(hex_data)
+                        addr_info = self._decode_sockaddr(sockaddr_bytes, family)
+                        # Store for attachment to next sendmsg event
+                        key = (pid, tid, fd)
+                        if not hasattr(self, '_pending_sendmsg_dest'):
+                            self._pending_sendmsg_dest = {}
+                        self._pending_sendmsg_dest[key] = addr_info
+                    except ValueError:
+                        pass
+                return
             retval_str = parts[4]
             if retval_str.startswith("0x") or retval_str.startswith("-0x"):
                 retval = int(retval_str, 16)
@@ -1427,6 +1453,25 @@ syscall::sendmsg_nocancel:entry
     this->iov_p = *(uint64_t *)((uintptr_t)this->mh_raw + 16);
     this->iov_cnt = *(int32_t *)((uintptr_t)this->mh_raw + 24);
     self->sendmsg_captured = 0;
+}}
+
+/* Extract destination address from sendmsg msghdr.msg_name */
+syscall::sendmsg:entry,
+syscall::sendmsg_nocancel:entry
+/TRACED && this->mh_raw != 0/
+{{
+    this->name_p = *(uint64_t *)this->mh_raw;
+    this->name_len = *(uint32_t *)((uintptr_t)this->mh_raw + 8);
+}}
+
+syscall::sendmsg:entry,
+syscall::sendmsg_nocancel:entry
+/TRACED && this->name_p != 0 && this->name_len >= 4 && this->name_len <= 128/
+{{
+    printf("MACTRACE_SOCKADDR %d %d sendmsg_dest 0 0 %d %d %d ",
+        pid, tid, walltimestamp/1000, self->sendmsg_fd, *(uint8_t *)((uintptr_t)copyin(this->name_p, this->name_len) + 1));
+    tracemem(copyin(this->name_p, this->name_len), 128, this->name_len);
+    printf("\\n");
 }}
 
 syscall::sendmsg:entry,
@@ -2190,6 +2235,25 @@ syscall::sendmsg_nocancel:entry
     this->iov_p = *(uint64_t *)((uintptr_t)this->mh_raw + 16);
     this->iov_cnt = *(int32_t *)((uintptr_t)this->mh_raw + 24);
     self->sendmsg_captured = 0;
+}}
+
+/* Extract destination address from sendmsg msghdr.msg_name */
+syscall::sendmsg:entry,
+syscall::sendmsg_nocancel:entry
+/TRACED && this->mh_raw != 0/
+{{
+    this->name_p = *(uint64_t *)this->mh_raw;
+    this->name_len = *(uint32_t *)((uintptr_t)this->mh_raw + 8);
+}}
+
+syscall::sendmsg:entry,
+syscall::sendmsg_nocancel:entry
+/TRACED && this->name_p != 0 && this->name_len >= 4 && this->name_len <= 128/
+{{
+    printf("MACTRACE_SOCKADDR %d %d sendmsg_dest 0 0 %d %d %d ",
+        pid, tid, walltimestamp/1000, self->sendmsg_fd, *(uint8_t *)((uintptr_t)copyin(this->name_p, this->name_len) + 1));
+    tracemem(copyin(this->name_p, this->name_len), 128, this->name_len);
+    printf("\\n");
 }}
 
 syscall::sendmsg:entry,
