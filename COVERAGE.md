@@ -162,7 +162,7 @@ interrupted by thread cancellation). The `-c` flag enables I/O data capture (raw
 
 **All syscalls also capture:** return value, errno (with symbolic name), timestamp, PID, TID.
 
-#### File Operations (42 syscalls)
+#### File Operations (48 syscalls)
 
 | Syscall | What it does | What we capture |
 |---------|-------------|-----------------|
@@ -190,6 +190,10 @@ interrupted by thread cancellation). The `-c` flag enables I/O data capture (raw
 | `openat`\[`_nocancel`\] | Open file relative to directory fd | dirfd, path, flags, mode |
 | `pread`\[`_nocancel`\] | Read at offset | fd, byte count, offset |
 | `pwrite`\[`_nocancel`\] | Write at offset | fd, byte count, offset |
+| `pwritev` | Vectored write at offset | fd, iov count, offset |
+| `readv`\[`_nocancel`\] | Vectored read (scatter) | fd, iov count |
+| `writev`\[`_nocancel`\] | Vectored write (gather) | fd, iov count |
+| `preadv` | Vectored read at offset | fd, iov count, offset |
 | `read`\[`_nocancel`\] | Read from fd | fd, byte count; +data with `-c` |
 | `readlink` | Read symbolic link target | path, target buffer |
 | `rename` | Rename/move file | old path, new path |
