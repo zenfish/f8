@@ -705,3 +705,112 @@ make test-cov
 ## License
 
 MIT
+
+## Vectored I/O Capture (`--iovec`)
+
+### Background
+
+Vectored (scatter/gather) I/O syscalls — `readv`, `writev`, `preadv`, `pwritev` — read or write
+multiple non-contiguous buffers in a single call. They're used heavily by:
+
+| Workload | Typical iovcnt | Why |
+|----------|---------------:|-----|
+| HTTP servers (nginx, Apache) | 2–4 | Header + body chunks |
+| Databases (PostgreSQL, MySQL) | 2–8 | WAL writes, scattered page flushes |
+| Logging frameworks | 2–3 | Timestamp + message + newline |
+| Network protocol stacks | 2–6 | Protocol headers + payload segments |
+| `printf`/stdio buffering | 1–3 | Format string assembly |
+| High-performance file I/O | 2–16 | Scattered buffer assembly |
+
+In practice, **iovcnt > 8 is rare**. The kernel limit is 1024 (`UIO_MAXIOV`), but almost
+nothing uses more than a handful.
+
+### The Problem
+
+DTrace's D language has **no loops**. For a regular `read(fd, buf, count)`, IO capture is
+simple: one `copyin(buf, count)` + `tracemem()`. For `writev(fd, iov, iovcnt)`, you need to:
+
+1. `copyin` the `struct iovec` array (16 bytes per entry on 64-bit: `void *iov_base` + `size_t iov_len`)
+2. Extract `iov_base` and `iov_len` from each entry
+3. `copyin` each individual buffer
+4. `tracemem` each buffer
+
+Without loops, step 2–4 must be **unrolled** at compile time for a fixed maximum N.
+
+### DIF Budget Math
+
+DTrace enforces a limit on the number of DIF (D Intermediate Format) programs — essentially
+compiled probe clauses. mactrace's budget is ~250 at the default `difo_maxsize` of 256KB
+(scales linearly with `-d`).
+
+**Current usage (v1.x):**
+
+| Configuration | DIF programs | % of budget |
+|---------------|------------:|------------:|
+| `--trace=file` | 136 | 54% |
+| `--trace=network` | 80 | 32% |
+| `--trace=all` | 234 | 93% |
+| `--trace=all -c` (IO capture) | ~270 | ~108% (needs `-d`) |
+
+**Cost of `--iovec N`** per syscall variant:
+
+Each unrolled iovec slot requires ~4 DIF actions:
+- 1 guard predicate (`iovcnt > i`)
+- 1 copyin of `iov[i].iov_base` + `iov[i].iov_len` from the iovec array
+- 1 copyin of the actual buffer data
+- 1 tracemem output
+
+So the cost is: **`num_syscall_variants × N × 4` DIF programs.**
+
+There are 6 vectored I/O syscall variants: `readv`, `readv_nocancel`, `writev`,
+`writev_nocancel`, `preadv`, `pwritev`.
+
+| --iovec N | All 6 syscalls | 2 syscalls (e.g. writev only) |
+|-----------|---------------:|------------------------------:|
+| 2 | 48 | 16 |
+| 4 | 96 | 32 |
+| 8 | 192 | 64 |
+| 16 | 384 | 128 |
+
+**Recommendations:**
+
+- **`--iovec 4`** — Good default. Covers HTTP servers, most database writes, logging.
+  With `--trace=file`: 136 + 96 = 232 (93%). Fits in default budget.
+- **`--iovec 8`** — Covers virtually all real-world workloads. Needs `--trace=file`
+  or `--iovec-syscalls` to stay within budget, OR `-d` to raise the DIF ceiling.
+- **`--iovec 16`** — Overkill for most use cases. Requires `-d 524288` (2× default)
+  or tight syscall filtering.
+
+If you're not sure: **start with `--iovec 4`**. If you see truncated iovec captures in the
+output (iovcnt > 4 in the metadata but only 4 buffers captured), bump it up.
+
+### Usage
+
+```bash
+# Capture vectored I/O with up to 4 buffers per call
+sudo mactrace --iovec 4 -o trace.json ./my_server
+
+# Only unroll for writev (cheapest — just 2 variants × N × 4 DIF programs)
+sudo mactrace --iovec 8 --iovec-syscalls=writev -o trace.json ./my_database
+
+# All vectored syscalls, 8 buffers, with raised DIF ceiling
+sudo mactrace --iovec 8 -d -o trace.json ./my_program
+```
+
+### Output Format
+
+Vectored IO capture emits one `MACTRACE_IOV` event per iovec buffer:
+
+```
+MACTRACE_IOV <pid> <tid> <syscall> <fd> <iov_index>/<iov_total> <bytes> <hex_data>
+```
+
+This lets the parser reconstruct the full scattered write/read in order, and attribute
+bytes to individual buffers.
+
+### Limitations
+
+- **Buffers beyond N are silently dropped.** The metadata (`iovcnt` in the syscall event)
+  always shows the real count, so you can detect truncation.
+- **Each slot adds DIF cost.** Use `--iovec-syscalls` to limit scope when budget is tight.
+- **IO capture (`-c`) is implied.** `--iovec` automatically enables buffer capture.
