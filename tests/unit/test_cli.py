@@ -117,6 +117,23 @@ class TestMactraceOutputNaming:
         assert 'expected one argument' not in stderr
 
 
+
+
+class TestMactraceDynamicMax:
+    """DIF auto-sizing: -d flag and help text."""
+
+    def test_help_shows_current_difo(self):
+        """Help text for -d should show 'currently: NNNNN', not a hardcoded default."""
+        _, stdout, _ = run_cli(MACTRACE, ['--help'], expect_exit=0)
+        assert 'currently:' in stdout, "Expected 'currently: NNNNN' in -d help text"
+        # argparse wraps long lines, normalize whitespace
+        assert 'overrides automatic DIF' in ' '.join(stdout.split())
+
+    def test_help_mentions_auto_adjust(self):
+        """Description should mention automatic DIF adjustment."""
+        _, stdout, _ = run_cli(MACTRACE, ['--help'], expect_exit=0)
+        assert 'automatically adjusted' in stdout
+
 # =============================================================================
 # mactrace_data CLI tests
 # =============================================================================

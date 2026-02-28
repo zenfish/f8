@@ -781,8 +781,10 @@ letting the parser reconstruct the full write in order.
 
 ### The Cost: DIF Budget
 
-Here's where the trade-off lives. DTrace compiles each probe clause into a DIF program,
-and there's a hard ceiling (~250 at default settings, scales with `-d`).
+DTrace compiles each probe clause into a DIF program, and the kernel has a
+size limit (`kern.dtrace.difo_maxsize`). **mactrace automatically adjusts this
+limit** to fit your tracing configuration, then restores it when done. You
+shouldn't need to think about this — but here's how it works under the hood.
 
 Capturing scattered buffers requires **unrolling** — DTrace has no loops, so each buffer
 slot is a separate compiled clause. The cost formula:
@@ -811,11 +813,12 @@ For context, current mactrace usage:
 So `--iovec 4` with `--trace=file` adds 96 → total 232 (93%). Fits.
 But `--iovec 8` with `--trace=all` adds 192 → total 426 (170%). Doesn't fit.
 
-**When you exceed the budget**, mactrace will tell you and suggest fixes:
-- Narrow your trace: `--trace=file` instead of `--trace=all`
-- Restrict iovec syscalls: `--iovec-syscalls=writev`
-- Raise the ceiling: `-d 524288` (doubles the budget to ~500)
-- Lower N: `--iovec 4` instead of `--iovec 8`
+In most cases, mactrace's automatic DIF sizing handles this transparently. If you
+hit limits on very large configurations, you can help by:
+- Narrowing your trace: `--trace=file` instead of `--trace=all`
+- Restricting iovec syscalls: `--iovec-syscalls=writev`
+- Lowering N: `--iovec 4` instead of `--iovec 8`
+- Manual override: `-d 524288` (forces a specific `difo_maxsize`)
 
 ### `--iovec-syscalls` (power user)
 
