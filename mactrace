@@ -2872,10 +2872,23 @@ def _print_category_detail(cat: str, info: dict):
     print()
 
 
+
+class CapitalizedHelpFormatter(argparse.RawDescriptionHelpFormatter):
+    """Capitalize section headers (options → Options, positional arguments → Arguments)."""
+    def start_section(self, heading):
+        super().start_section(heading.capitalize() if heading else heading)
+
 def main():
     parser = argparse.ArgumentParser(
-        description="mactrace - strace-like utility for macOS using DTrace",
-        formatter_class=argparse.RawDescriptionHelpFormatter,
+        description="""mactrace - strace-like utility for macOS using DTrace
+
+By default, all syscall categories are traced (file, network, process, memory,
+etc). DTrace can consume a great deal of resources and storage to run. Rather
+than capturing everything, it is often useful to focus in on certain aspects
+that you're interested in tracing (e.g. file I/O, network activity, etc.) or
+even a single system call or small group of system calls. The options below
+are meant to give you more flexibility in how the tool is used.""",
+        formatter_class=CapitalizedHelpFormatter,
         usage="%(prog)s [options] command [args ...]",
         epilog="""
 Requires root privileges.
