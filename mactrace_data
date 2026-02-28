@@ -271,6 +271,33 @@ def _fill_sizes(run):
 # Unified commands
 # =============================================================================
 
+
+def cmd_config(args):
+    """Show resolved configuration paths."""
+    db_path = get_db_path(args.db)
+    traces_dir = get_traces_dir(args.traces)
+    config = get_mactrace_config()
+    config_path = os.path.join(os.path.expanduser('~'), '.mactrace', 'config')
+    
+    print(f"Config file:  {config_path}", end='')
+    print(f" {'(exists)' if os.path.exists(config_path) else '(NOT FOUND)'}")
+    print(f"Database:     {db_path}", end='')
+    if os.path.exists(db_path):
+        print(f" ({format_size(os.path.getsize(db_path))})")
+    else:
+        print(" (NOT FOUND)")
+    print(f"Traces dir:   {traces_dir}", end='')
+    if os.path.isdir(traces_dir):
+        print(f" (exists)")
+    else:
+        print(" (NOT FOUND)")
+    
+    if config:
+        print(f"\nConfig values:")
+        for k, v in config.items():
+            print(f"  {k} = {v}")
+
+
 def cmd_list(args):
     """List all runs (unified view)."""
     runs = discover_runs(get_db_path(args.db), get_traces_dir(args.traces), skip_sizes=True)
@@ -340,6 +367,33 @@ def cmd_info(args):
     total = run['json_size'] + run['io_size']
     if total > 0:
         print(f"\n  Total on disk: {format_size(total)}")
+
+    # Show structured I/O meta if available
+    if run['io_dir']:
+        meta_path = os.path.join(run['io_dir'], 'meta.json')
+        if os.path.exists(meta_path):
+            try:
+                with open(meta_path) as f:
+                    meta = json_module.load(f)
+                if meta.get('format_version', 0) >= 2:
+                    io_sum = meta.get('io_summary', {})
+                    print(f"\n  I/O Summary (structured):")
+                    print(f"    Processes with I/O: {meta.get('process_count', 0)}")
+                    print(f"    Total reads:  {io_sum.get('total_reads', 0):>8,}  ({format_size(io_sum.get('total_read_bytes', 0))})")
+                    print(f"    Total writes: {io_sum.get('total_writes', 0):>8,}  ({format_size(io_sum.get('total_write_bytes', 0))})")
+                    procs = meta.get('processes', [])
+                    if procs:
+                        print(f"\n  Top processes by I/O:")
+                        for p in procs[:10]:
+                            name = p.get('name', 'unknown')
+                            if '/' in name:
+                                name = name.split('/')[-1]
+                            total = p.get('total_bytes', 0)
+                            print(f"    {p['pid']:<8} {name:<20} {format_size(total):>10}  ({p.get('reads', 0)}R/{p.get('writes', 0)}W)")
+                        if len(procs) > 10:
+                            print(f"    ... and {len(procs) - 10} more")
+            except (OSError, json_module.JSONDecodeError):
+                pass
 
     # If in DB, show category breakdown
     if run['has_db']:
@@ -843,20 +897,45 @@ def cmd_files_info(args):
         if exists:
             print(f"    Files: {run['io_count']}")
             print(f"    Size: {format_size(run['io_size'])}")
-            # Show first few files
-            try:
-                files = sorted(os.listdir(run['io_dir']))[:10]
-                if files:
-                    print(f"    Contents (first {min(10, len(files))}):")
-                    for f in files:
-                        fp = os.path.join(run['io_dir'], f)
-                        sz = os.path.getsize(fp) if os.path.isfile(fp) else 0
-                        print(f"      {f} ({format_size(sz)})")
-                    total_files = len(os.listdir(run['io_dir']))
-                    if total_files > 10:
-                        print(f"      ... and {total_files - 10} more")
-            except OSError:
-                pass
+            
+            # Check for structured layout (meta.json at top level)
+            meta_path = os.path.join(run['io_dir'], 'meta.json')
+            if os.path.exists(meta_path):
+                try:
+                    with open(meta_path) as mf:
+                        meta = json_module.load(mf)
+                    if meta.get('format_version', 0) >= 2:
+                        print(f"    Layout: structured (v{meta['format_version']})")
+                        print(f"    Process dirs: {meta.get('process_count', 0)}")
+                        procs = meta.get('processes', [])
+                        if procs:
+                            print(f"\n    Processes:")
+                            for p in procs[:15]:
+                                name = p.get('name', 'unknown')
+                                if '/' in name:
+                                    name = name.split('/')[-1]
+                                total = p.get('total_bytes', 0)
+                                print(f"      {p['dir']:<30}  {format_size(total):>8}  ({p.get('reads',0)}R/{p.get('writes',0)}W)")
+                            if len(procs) > 15:
+                                print(f"      ... and {len(procs) - 15} more")
+                except (OSError, json_module.JSONDecodeError):
+                    pass
+            else:
+                # Old flat layout — show first few files
+                print(f"    Layout: flat (legacy)")
+                try:
+                    files = sorted(os.listdir(run['io_dir']))[:10]
+                    if files:
+                        print(f"    Contents (first {min(10, len(files))}):")
+                        for fi in files:
+                            fp = os.path.join(run['io_dir'], fi)
+                            sz = os.path.getsize(fp) if os.path.isfile(fp) else 0
+                            print(f"      {fi} ({format_size(sz)})")
+                        total_files = len(os.listdir(run['io_dir']))
+                        if total_files > 10:
+                            print(f"      ... and {total_files - 10} more")
+                except OSError:
+                    pass
         else:
             print(f"    Status: MISSING")
     else:
@@ -954,6 +1033,9 @@ Examples:
 
     # --- Top-level commands ---
 
+    # config
+    subparsers.add_parser('config', aliases=['cfg'], help='Show resolved config paths')
+
     # list
     list_p = subparsers.add_parser('list', aliases=['ls'], help='List all runs (unified)')
     list_p.add_argument('-j', '--json', action='store_true', help='Output as JSON')
@@ -1012,7 +1094,9 @@ Examples:
         sys.exit(1)
 
     # Route to handler
-    if args.command in ('list', 'ls'):
+    if args.command in ('config', 'cfg'):
+        cmd_config(args)
+    elif args.command in ('list', 'ls'):
         cmd_list(args)
     elif args.command in ('info', 'show'):
         cmd_info(args)

@@ -43,6 +43,55 @@ if (!fs.existsSync(ioDir)) {
     console.log(`Created I/O directory: ${ioDir}`);
 }
 
+
+// ── Process name tracking (for structured I/O directories) ──────────────
+// Maps PID → process name for directory naming. Built from:
+// 1. process_events (exec paths)  2. execve syscalls  3. trace command
+const pidNames = new Map();
+const pidIoStats = new Map(); // PID → {reads, writes, read_bytes, write_bytes, fds: Set}
+
+function getProcessName(pid) {
+    return pidNames.get(pid) || 'unknown';
+}
+
+function sanitizeDirName(s, maxLen = 30) {
+    if (!s) return 'unknown';
+    s = s.split('/').pop() || s;
+    s = s.replace(/[^a-zA-Z0-9._-]/g, '_');
+    s = s.replace(/__+/g, '_').replace(/^[_.]/, '');
+    return (s.slice(0, maxLen) || 'unknown');
+}
+
+function getPidSubdir(pid) {
+    const name = sanitizeDirName(getProcessName(pid));
+    return `${pid}-${name}`;
+}
+
+function ensurePidDir(pid) {
+    const subdir = getPidSubdir(pid);
+    const dirPath = path.join(ioDir, subdir);
+    if (!fs.existsSync(dirPath)) {
+        fs.mkdirSync(dirPath, { recursive: true });
+    }
+    return dirPath;
+}
+
+function trackPidIo(pid, syscall, fd, bytes) {
+    if (!pidIoStats.has(pid)) {
+        pidIoStats.set(pid, { reads: 0, writes: 0, read_bytes: 0, write_bytes: 0, fds: new Set() });
+    }
+    const stats = pidIoStats.get(pid);
+    const isRead = syscall.includes('read') || syscall.includes('recv');
+    if (isRead) {
+        stats.reads++;
+        stats.read_bytes += bytes;
+    } else {
+        stats.writes++;
+        stats.write_bytes += bytes;
+    }
+    if (fd !== undefined) stats.fds.add(fd);
+}
+
 // Category detection — loaded from shared syscalls.json (single source of truth)
 const __dirname_import = path.dirname(fileURLToPath(import.meta.url));
 const syscallsJsonPath = path.join(__dirname_import, '..', 'syscalls.json');
@@ -86,7 +135,7 @@ function extractRawData(event, maxLen = 512) {
 // Track generated I/O files: Map<filename, {offsets: [], total_size: number}>
 const generatedIoFiles = new Map();
 
-// Generate .bin file from args.data if it doesn't exist
+// Generate .bin file from args.data, organized into per-PID subdirectories
 function generateIoFile(event, target) {
     const args = event.args || {};
     const data = args.data;
@@ -102,25 +151,24 @@ function generateIoFile(event, target) {
     if (!isRead && !isWrite) return null;
     const op = isRead ? 'read' : 'write';
     
-    // Get process name from fdInfo or use 'unknown'
-    const fdInfo = args.fd !== undefined ? getFdInfo(pid, args.fd) : null;
-    let procName = 'unknown';
-    // We'll use a simple approach - just use the target basename
+    // Target basename for filename
     const targetName = target ? sanitizeFilename(path.basename(target), 40) : 'unknown';
     
-    // Build filename: pid-proc-op-target.bin
-    const filename = `${pid}-${procName}-${op}-${targetName}.bin`;
-    const filepath = path.join(ioDir, filename);
+    // Build path: ioDir/PID-procname/op-target.bin
+    const pidDir = ensurePidDir(pid);
+    const filename = `${op}-${targetName}.bin`;
+    const relPath = `${getPidSubdir(pid)}/${filename}`;
+    const filepath = path.join(pidDir, filename);
     
-    // Convert hex to binary
-    const hexData = data;
-    const bytes = Buffer.from(hexData, 'hex');
+    // Track I/O stats for per-process meta.json
+    const bytes = Buffer.from(data, 'hex');
+    trackPidIo(pid, syscall, args.fd, bytes.length);
     
     // Track this file for metadata
-    let fileInfo = generatedIoFiles.get(filename);
+    let fileInfo = generatedIoFiles.get(relPath);
     if (!fileInfo) {
         fileInfo = { offsets: [], total_size: 0, filepath };
-        generatedIoFiles.set(filename, fileInfo);
+        generatedIoFiles.set(relPath, fileInfo);
     }
     
     // Record this chunk
@@ -136,7 +184,7 @@ function generateIoFile(event, target) {
         return null;
     }
     
-    return filename;
+    return relPath;
 }
 
 // Write metadata files for generated I/O
@@ -155,6 +203,90 @@ function writeIoMetadata() {
     }
     if (generatedIoFiles.size > 0) {
         console.log(`Generated ${generatedIoFiles.size} I/O files from captured data`);
+    }
+}
+
+// Write structured meta.json files (per-process + top-level)
+function writeStructuredMeta(traceName, traceCommand, targetPid, duration, eventCount) {
+    if (!ioDir) return;
+    
+    const processTree = trace.process_tree || {};
+    
+    // Per-process meta.json
+    let processCount = 0;
+    for (const [pid, stats] of pidIoStats) {
+        const pidSubdir = getPidSubdir(pid);
+        const pidDirPath = path.join(ioDir, pidSubdir);
+        if (!fs.existsSync(pidDirPath)) continue;
+        
+        const meta = {
+            format_version: 2,
+            pid: pid,
+            name: getProcessName(pid),
+            parent_pid: processTree[String(pid)] || null,
+            io_summary: {
+                reads: stats.reads,
+                writes: stats.writes,
+                read_bytes: stats.read_bytes,
+                write_bytes: stats.write_bytes,
+                total_bytes: stats.read_bytes + stats.write_bytes,
+            },
+            fds: Array.from(stats.fds).sort((a, b) => a - b),
+        };
+        
+        try {
+            fs.writeFileSync(path.join(pidDirPath, 'meta.json'), JSON.stringify(meta, null, 2));
+            processCount++;
+        } catch (e) {
+            console.error(`Warning: Could not write meta.json for PID ${pid}: ${e.message}`);
+        }
+    }
+    
+    // Top-level meta.json for the run
+    const topMeta = {
+        format_version: 2,
+        name: traceName,
+        command: traceCommand,
+        target_pid: targetPid,
+        duration_ms: duration,
+        event_count: eventCount,
+        process_count: processCount,
+        io_summary: {
+            total_processes_with_io: pidIoStats.size,
+            total_reads: 0,
+            total_writes: 0,
+            total_read_bytes: 0,
+            total_write_bytes: 0,
+        },
+        processes: [],
+    };
+    
+    // Aggregate and list processes
+    for (const [pid, stats] of pidIoStats) {
+        topMeta.io_summary.total_reads += stats.reads;
+        topMeta.io_summary.total_writes += stats.writes;
+        topMeta.io_summary.total_read_bytes += stats.read_bytes;
+        topMeta.io_summary.total_write_bytes += stats.write_bytes;
+        topMeta.processes.push({
+            pid,
+            name: getProcessName(pid),
+            parent_pid: processTree[String(pid)] || null,
+            dir: getPidSubdir(pid),
+            reads: stats.reads,
+            writes: stats.writes,
+            total_bytes: stats.read_bytes + stats.write_bytes,
+        });
+    }
+    topMeta.io_summary.total_bytes = topMeta.io_summary.total_read_bytes + topMeta.io_summary.total_write_bytes;
+    
+    // Sort processes by total bytes (largest first)
+    topMeta.processes.sort((a, b) => b.total_bytes - a.total_bytes);
+    
+    try {
+        fs.writeFileSync(path.join(ioDir, 'meta.json'), JSON.stringify(topMeta, null, 2));
+        console.log(`Wrote structured meta.json: ${processCount} process(es) with I/O`);
+    } catch (e) {
+        console.error(`Warning: Could not write top-level meta.json: ${e.message}`);
     }
 }
 
@@ -506,6 +638,20 @@ let ioFileCacheLogged = false;
 function findIoFile(pid, syscall, target, fd) {
     if (!ioDir) return null;
     
+    // First check PID subdirectory (new structured layout)
+    const pidSubdir = getPidSubdir(pid);
+    const pidDirPath = path.join(ioDir, pidSubdir);
+    if (fs.existsSync(pidDirPath)) {
+        const isRead = syscall.includes('read') || syscall.includes('recv');
+        const op = isRead ? 'read' : 'write';
+        const targetName = target ? sanitizeFilename(path.basename(target), 40) : 'unknown';
+        const expected = `${op}-${targetName}.bin`;
+        const expectedPath = path.join(pidDirPath, expected);
+        if (fs.existsSync(expectedPath)) {
+            return `${pidSubdir}/${expected}`;
+        }
+    }
+    
     // Build cache of I/O files on first call
     if (ioFileCache === null) {
         ioFileCache = new Map();
@@ -597,6 +743,24 @@ const insertStmt = db.prepare(`
     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 `);
 
+// Pre-scan: build PID→name map from process_events and trace command
+const processEventsForNames = trace.process_events || [];
+for (const pe of processEventsForNames) {
+    if (pe.event_type === 'exec' && pe.details && pe.details.path) {
+        pidNames.set(pe.pid, pe.details.path);
+    }
+}
+// Target PID gets the trace command name
+const traceCommand = trace.command || [];
+if (targetPid && traceCommand.length > 0) {
+    if (!pidNames.has(targetPid)) {
+        pidNames.set(targetPid, traceCommand[0]);
+    }
+}
+if (pidNames.size > 0) {
+    console.log(`Pre-scanned ${pidNames.size} process name(s)`);
+}
+
 console.log('Importing events...');
 let imported = 0;
 
@@ -606,6 +770,11 @@ db.exec('BEGIN TRANSACTION');
 
 for (const event of events) {
     trackFd(event);
+    
+    // Track process names from exec syscalls
+    if ((event.syscall || '').includes('exec') && event.args && event.args.path) {
+        pidNames.set(event.pid || 0, event.args.path);
+    }
     
     const category = event.category || getCategory(event.syscall || '');
     const target = extractTarget(event);
@@ -619,6 +788,10 @@ for (const event of events) {
     let ioPath = isIo ? findIoFile(event.pid || 0, syscall, target, fd) : null;
     if (!ioPath && isIo && (event.args || {}).data) {
         ioPath = generateIoFile(event, target);
+    }
+    // Track I/O stats for structured meta (even for pre-existing files)
+    if (isIo && !ioPath) {
+        trackPidIo(event.pid || 0, syscall, fd, event.return_value || 0);
     }
     const ioChunk = getNextChunkIndex(ioPath);
     const dataRaw = extractRawData(event);
@@ -656,6 +829,9 @@ console.log(`\n  ${imported.toLocaleString()} events imported`);
 
 // Write metadata for any generated I/O files
 writeIoMetadata();
+
+// Write structured per-process meta.json files
+writeStructuredMeta(traceName, command, targetPid, durationMs, events.length);
 
 // Import process tree and process events
 const processTree = trace.process_tree || {};
