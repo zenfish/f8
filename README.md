@@ -708,109 +708,113 @@ MIT
 
 ## Vectored I/O Capture (`--iovec`)
 
-### Background
+### What This Is
 
-Vectored (scatter/gather) I/O syscalls — `readv`, `writev`, `preadv`, `pwritev` — read or write
-multiple non-contiguous buffers in a single call. They're used heavily by:
+Some programs don't write data in one shot — they scatter it across multiple buffers and
+write them all at once. An HTTP server might write the headers from one buffer and the body
+from another in a single `writev()` call. Databases do this constantly.
 
-| Workload | Typical iovcnt | Why |
-|----------|---------------:|-----|
-| HTTP servers (nginx, Apache) | 2–4 | Header + body chunks |
-| Databases (PostgreSQL, MySQL) | 2–8 | WAL writes, scattered page flushes |
-| Logging frameworks | 2–3 | Timestamp + message + newline |
-| Network protocol stacks | 2–6 | Protocol headers + payload segments |
-| `printf`/stdio buffering | 1–3 | Format string assembly |
-| High-performance file I/O | 2–16 | Scattered buffer assembly |
+Without `--iovec`, mactrace traces these calls but only captures metadata (fd, byte count,
+number of buffers). With `--iovec`, it captures the **actual contents** of each buffer.
 
-In practice, **iovcnt > 8 is rare**. The kernel limit is 1024 (`UIO_MAXIOV`), but almost
-nothing uses more than a handful.
+### How Many Buffers?
 
-### The Problem
+`--iovec N` tells mactrace how many scattered buffers to capture per call. The question is:
+what should N be?
 
-DTrace's D language has **no loops**. For a regular `read(fd, buf, count)`, IO capture is
-simple: one `copyin(buf, count)` + `tracemem()`. For `writev(fd, iov, iovcnt)`, you need to:
+Here's what real software actually does:
 
-1. `copyin` the `struct iovec` array (16 bytes per entry on 64-bit: `void *iov_base` + `size_t iov_len`)
-2. Extract `iov_base` and `iov_len` from each entry
-3. `copyin` each individual buffer
-4. `tracemem` each buffer
+| What you're tracing | Typical buffers per call | Suggested N |
+|---------------------|-------------------------:|------------:|
+| HTTP servers (nginx, Apache) | 2–4 | 4 |
+| Databases (PostgreSQL, MySQL) | 2–8 | 8 |
+| Logging frameworks | 2–3 | 4 |
+| Network protocol stacks | 2–6 | 8 |
+| `printf`/stdio | 1–3 | 4 |
 
-Without loops, step 2–4 must be **unrolled** at compile time for a fixed maximum N.
-
-### DIF Budget Math
-
-DTrace enforces a limit on the number of DIF (D Intermediate Format) programs — essentially
-compiled probe clauses. mactrace's budget is ~250 at the default `difo_maxsize` of 256KB
-(scales linearly with `-d`).
-
-**Current usage (v1.x):**
-
-| Configuration | DIF programs | % of budget |
-|---------------|------------:|------------:|
-| `--trace=file` | 136 | 54% |
-| `--trace=network` | 80 | 32% |
-| `--trace=all` | 234 | 93% |
-| `--trace=all -c` (IO capture) | ~270 | ~108% (needs `-d`) |
-
-**Cost of `--iovec N`** per syscall variant:
-
-Each unrolled iovec slot requires ~4 DIF actions:
-- 1 guard predicate (`iovcnt > i`)
-- 1 copyin of `iov[i].iov_base` + `iov[i].iov_len` from the iovec array
-- 1 copyin of the actual buffer data
-- 1 tracemem output
-
-So the cost is: **`num_syscall_variants × N × 4` DIF programs.**
-
-There are 6 vectored I/O syscall variants: `readv`, `readv_nocancel`, `writev`,
-`writev_nocancel`, `preadv`, `pwritev`.
-
-| --iovec N | All 6 syscalls | 2 syscalls (e.g. writev only) |
-|-----------|---------------:|------------------------------:|
-| 2 | 48 | 16 |
-| 4 | 96 | 32 |
-| 8 | 192 | 64 |
-| 16 | 384 | 128 |
-
-**Recommendations:**
-
-- **`--iovec 4`** — Good default. Covers HTTP servers, most database writes, logging.
-  With `--trace=file`: 136 + 96 = 232 (93%). Fits in default budget.
-- **`--iovec 8`** — Covers virtually all real-world workloads. Needs `--trace=file`
-  or `--iovec-syscalls` to stay within budget, OR `-d` to raise the DIF ceiling.
-- **`--iovec 16`** — Overkill for most use cases. Requires `-d 524288` (2× default)
-  or tight syscall filtering.
-
-If you're not sure: **start with `--iovec 4`**. If you see truncated iovec captures in the
-output (iovcnt > 4 in the metadata but only 4 buffers captured), bump it up.
+**If you're not sure, use `--iovec 4`.** That covers the vast majority of real-world code.
+If you see truncated captures in the output (the syscall metadata says 6 buffers but you only
+got 4), bump it up. The kernel limit is 1024, but virtually nothing uses more than 8.
 
 ### Usage
 
 ```bash
-# Capture vectored I/O with up to 4 buffers per call
+# Capture scattered buffers (up to 4 per call)
 sudo mactrace --iovec 4 -o trace.json ./my_server
 
-# Only unroll for writev (cheapest — just 2 variants × N × 4 DIF programs)
-sudo mactrace --iovec 8 --iovec-syscalls=writev -o trace.json ./my_database
+# More headroom for database workloads
+sudo mactrace --iovec 8 --trace=file -o trace.json ./my_database
 
-# All vectored syscalls, 8 buffers, with raised DIF ceiling
-sudo mactrace --iovec 8 -d -o trace.json ./my_program
+# Only capture writev buffers (not readv/preadv/pwritev) — lightest option
+sudo mactrace --iovec 8 --iovec-syscalls=writev -o trace.json ./my_program
 ```
+
+`--iovec` implies `-c` (IO capture). You don't need to specify both.
 
 ### Output Format
 
-Vectored IO capture emits one `MACTRACE_IOV` event per iovec buffer:
+Each buffer is emitted as a separate event with its position in the scatter list:
 
 ```
-MACTRACE_IOV <pid> <tid> <syscall> <fd> <iov_index>/<iov_total> <bytes> <hex_data>
+MACTRACE_IOV <pid> <tid> <syscall> <fd> <index>/<total> <bytes> <hex_data>
 ```
 
-This lets the parser reconstruct the full scattered write/read in order, and attribute
-bytes to individual buffers.
+So a `writev` with 3 buffers produces 3 `MACTRACE_IOV` lines (`0/3`, `1/3`, `2/3`),
+letting the parser reconstruct the full write in order.
 
-### Limitations
+### The Cost: DIF Budget
 
-- **Buffers beyond N are silently dropped.** The metadata (`iovcnt` in the syscall event)
-  always shows the real count, so you can detect truncation.
-- **Each slot adds DIF cost.** Use `--iovec-syscalls` to limit scope when budget is tight.
-- **IO capture (`-c`) is implied.** `--iovec` automatically enables buffer capture.
+Here's where the trade-off lives. DTrace compiles each probe clause into a DIF program,
+and there's a hard ceiling (~250 at default settings, scales with `-d`).
+
+Capturing scattered buffers requires **unrolling** — DTrace has no loops, so each buffer
+slot is a separate compiled clause. The cost formula:
+
+```
+DIF cost = (number of syscall variants) × N × 4 programs per slot
+```
+
+mactrace has 6 vectored I/O syscall variants under the hood (readv, writev, preadv, pwritev,
+plus _nocancel versions of readv and writev). Using `--iovec-syscalls` reduces the variant count.
+
+| --iovec N | All variants (6) | writev only (2) | writev+readv (4) |
+|-----------|------------------:|-----------------:|------------------:|
+| 2 | 48 | 16 | 32 |
+| 4 | 96 | 32 | 64 |
+| 8 | 192 | 64 | 128 |
+| 16 | 384 | 128 | 256 |
+
+For context, current mactrace usage:
+
+| Configuration | DIF programs | % of budget |
+|---------------|------------:|------------:|
+| `--trace=file` | 136 | 54% |
+| `--trace=all` | 234 | 93% |
+
+So `--iovec 4` with `--trace=file` adds 96 → total 232 (93%). Fits.
+But `--iovec 8` with `--trace=all` adds 192 → total 426 (170%). Doesn't fit.
+
+**When you exceed the budget**, mactrace will tell you and suggest fixes:
+- Narrow your trace: `--trace=file` instead of `--trace=all`
+- Restrict iovec syscalls: `--iovec-syscalls=writev`
+- Raise the ceiling: `-d 524288` (doubles the budget to ~500)
+- Lower N: `--iovec 4` instead of `--iovec 8`
+
+### `--iovec-syscalls` (power user)
+
+By default, `--iovec` captures buffers for all vectored I/O syscalls. If you know you only
+care about writes (or only reads), you can restrict it:
+
+```bash
+# Only writev (2 variants instead of 6 — 3× cheaper)
+--iovec-syscalls=writev
+
+# writev + readv (4 variants)
+--iovec-syscalls=writev,readv
+
+# Just pwritev (1 variant — cheapest possible)
+--iovec-syscalls=pwritev
+```
+
+Valid values: `readv`, `writev`, `preadv`, `pwritev`. The `_nocancel` variants are
+included automatically when you name the base syscall.
