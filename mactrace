@@ -2900,7 +2900,7 @@ Output naming:
   -o make       ->  make.seconds-since-1970.json  (UNIX epoch auto-appended to prevent collisions)
   -o make.json  ->  make.json  (explicit .json = full control of output name)
 
-Full documentation: README.md  |  --trace help  |  --iovec-syscalls
+Full documentation: README.md  |  --trace help
 """
     )
     parser.add_argument("-o", "--output", help="Output name (default: stdout). -o make → make.EPOCH.json (auto). -o make.json → exact name. Relative paths use $MACTRACE_OUTPUT.")
