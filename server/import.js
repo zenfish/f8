@@ -470,7 +470,12 @@ db.exec('CREATE INDEX IF NOT EXISTS idx_dns_trace ON dns_lookups(trace_id)');
 db.exec('CREATE INDEX IF NOT EXISTS idx_dns_ip ON dns_lookups(trace_id, ip)');
 
 // Insert trace
-const traceName = path.basename(jsonFile, '.json');
+// Strip epoch timestamp suffix from filename for display name
+// "make.1740000000.json" → "make", "nmap.json" → "nmap"
+let traceName = path.basename(jsonFile, '.json');
+if (/\.\d{10}$/.test(traceName)) {
+    traceName = traceName.replace(/\.\d{10}$/, '');
+}
 db.prepare(`INSERT INTO traces (name, command, json_file, io_dir, target_pid, exit_code, duration_ms, event_count, start_time)
         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`)
     .run(traceName, command, path.resolve(jsonFile), ioDir ? path.resolve(ioDir) : null,

@@ -89,6 +89,12 @@ def open_db(db_path, must_exist=True):
 # Unified run discovery
 # =============================================================================
 
+
+def _strip_epoch(name):
+    """Strip epoch timestamp suffix: 'make.1740000000' → 'make'."""
+    import re
+    return re.sub(r'\.\d{10}$', '', name)
+
 def discover_runs(db_path, traces_dir, skip_sizes=False):
     """
     Build a unified list of tracing runs from DB and filesystem.
@@ -164,7 +170,7 @@ def discover_runs(db_path, traces_dir, skip_sizes=False):
                     continue
                 seen_json.add(real)
 
-                name = entry[:-5]  # strip .json
+                name = _strip_epoch(entry[:-5])  # strip .json and epoch
                 st = os.stat(full)
                 # Check for matching I/O directory
                 io_dir_candidate = os.path.join(traces_dir, name)

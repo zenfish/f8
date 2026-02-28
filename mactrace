@@ -6,8 +6,8 @@ Traces system calls for a command (or a running process) and all its
 children, outputting JSON suitable for timeline analysis.
 
 Requires: sudo (DTrace needs root privileges)
-Usage: sudo ./mactrace [-o output.json] command [args...]
-       sudo ./mactrace -p PID [-o output.json]
+Usage: sudo ./mactrace [-o name] command [args...]
+       sudo ./mactrace -p PID [-o name]
 
 Author: Mox (for Dan's PhD research)
 """
@@ -2921,7 +2921,7 @@ Shell metacharacters:
 
 """
     )
-    parser.add_argument("-o", "--output", help="Output file (default: stdout). Relative paths use $MACTRACE_OUTPUT.")
+    parser.add_argument("-o", "--output", help="Output name (default: stdout). Epoch timestamp auto-appended: -o make → make.EPOCH.json. Relative paths use $MACTRACE_OUTPUT.")
     parser.add_argument("-u", "--user", 
                         help="Run traced program as this user (name or UID). Default: auto-detect from $SUDO_USER")
     parser.add_argument("-t", "--timeout", type=int, help="Timeout in seconds")
@@ -3039,6 +3039,20 @@ Shell metacharacters:
     if os.geteuid() != 0:
         print("Error: mactrace requires root privileges. Run with sudo.", file=sys.stderr)
         sys.exit(1)
+    
+    # Inject epoch timestamp into output filename for uniqueness
+    # "make" → "make.1740000000.json", "make.json" → "make.1740000000.json"
+    if args.output:
+        import time as _time
+        _epoch = int(_time.time())
+        _out = args.output
+        # Strip .json extension if present (we'll re-add it)
+        if _out.endswith('.json'):
+            _out = _out[:-5]
+        # Only add timestamp if not already present (10-digit number at end)
+        if not re.search(r'\.\d{10}$', _out):
+            _out = f"{_out}.{_epoch}"
+        args.output = f"{_out}.json"
     
     # Check output file doesn't exist (fail fast, before tracing)
     if args.output:

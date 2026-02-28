@@ -169,21 +169,35 @@ Now you can run from anywhere and outputs go to `~/traces/`. Traced programs aut
 
 The config file is read using `SUDO_USER`, so it works even though sudo resets environment variables. See [ENVIRONMENT.md](ENVIRONMENT.md) for full config file syntax (supports `~`, `$VAR` expansion, comments).
 
+## Output Naming
+
+Output filenames automatically include a Unix epoch timestamp to prevent collisions:
+
+```bash
+sudo mactrace -o make ./configure      # → make.1740000000.json
+sudo mactrace -o make.json ./configure # → make.1740000000.json
+sudo mactrace -o make ./configure      # → make.1740000001.json (no collision)
+```
+
+The import and `mactrace_data` tools strip the epoch suffix for display:
+`make.1740000000.json` shows as **make** in listings and the web UI.
+
 ## Path Resolution
 
 All mactrace tools use consistent path resolution:
 
 - **Absolute paths** (`/path/to/file`) → used as-is
 - **Explicit relative** (`./file`, `../file`) → used as-is
-- **Simple filename** (`file.json`) → prefixed with appropriate env var
+- **Simple filename** (`make`) → prefixed with `$MACTRACE_OUTPUT`, epoch appended
 
 ```bash
 # With MACTRACE_OUTPUT="$HOME/traces":
-sudo mactrace -o myapp.json ./myapp   # Writes to ~/traces/myapp.json
-sudo mactrace -o ./myapp.json ./myapp # Writes to ./myapp.json (explicit)
+sudo mactrace -o make ./configure     # Writes to ~/traces/make.1740000000.json
+sudo mactrace -o ./make ./configure   # Writes to ./make.1740000000.json (explicit)
 
-# With MACTRACE_OUTPUT set, import finds the file:
-mactrace_import myapp.json            # Reads from ~/traces/myapp.json
+# Import and mactrace_data handle timestamped names transparently:
+mactrace_import make.1740000000.json  # Reads from ~/traces/make.1740000000.json
+mactrace_data list                    # Shows as "make"
 ```
 
 See [ENVIRONMENT.md](ENVIRONMENT.md) for full details.
