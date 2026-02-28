@@ -2880,45 +2880,26 @@ def main():
         epilog="""
 Requires root privileges.
 
-Trace a command:    sudo mactrace ls -la
-Trace a pipeline:   sudo mactrace sh -c 'echo hello | wc -c'
-Attach to a PID:    sudo mactrace -p 12345
+Examples:
+  # Network activity only (DNS, connections, transfers):
+  sudo mactrace -o curl --trace=net curl -fsSL https://example.com
 
-Configuration (in priority order):
-  1. Command-line flags
-  2. Environment variables (need sudo -E to preserve)
-  3. Config file: ~/.mactrace/config (works without sudo -E)
-  4. Defaults
+  # Exec + filesystem (see what a build spawns and touches):
+  sudo mactrace -o make --trace=exec,file make -j4
 
-Config file format (processed top-to-bottom):
-  # Comments start with #
-  MACTRACE_HOME=~/.mactrace       # ~ = sudo caller's home
-  MACTRACE_OUTPUT=~/traces
-  MACTRACE_DB=$MACTRACE_HOME/db   # $VAR expands to config value
+  # Capture I/O data with vectored I/O buffers:
+  sudo mactrace -o server -c --iovec 4 --trace=net,file ./server
 
-User selection:
-  -u flag > MACTRACE_USER > SUDO_USER (auto) > root
+  # Attach to a running process for 60 seconds:
+  sudo mactrace -p 12345 -o app -t 60
 
-Wrapper filtering (when -u or SUDO_USER is used):
-  By default, syscalls from wrapper processes (sudo, sh, bash) are
-  filtered out, keeping only the actual target command and its children.
-  Use --no-filter-wrapper to disable and trace everything.
+  # Trace a pipeline (wrap with sh -c):
+  sudo mactrace -o pipe sh -c 'curl -s example.com | wc -c'
 
-Path resolution for -o:
-  /absolute/path  -> used as-is
-  ./relative      -> used as-is
-  filename.json   -> $MACTRACE_OUTPUT/filename.json
+Output naming:
+  -o make  ->  make.EPOCH.json  (epoch auto-appended, no collisions)
 
-Shell metacharacters:
-  mactrace traces a single command and its children. Pipes, redirects,
-  backgrounding (&), semicolons, and other shell syntax are interpreted
-  by YOUR shell before mactrace sees them. To trace a pipeline or
-  compound command, wrap it with sh -c:
-
-    sudo mactrace sh -c 'echo hello | wc -c'
-    sudo mactrace sh -c 'curl -s example.com > /tmp/out'
-    sudo mactrace sh -c 'cmd1 && cmd2'
-
+Full documentation: README.md  |  --trace help  |  --iovec-syscalls
 """
     )
     parser.add_argument("-o", "--output", help="Output name (default: stdout). Epoch timestamp auto-appended: -o make → make.EPOCH.json. Relative paths use $MACTRACE_OUTPUT.")
