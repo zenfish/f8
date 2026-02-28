@@ -2882,27 +2882,28 @@ Requires root privileges.
 
 Examples:
   # Network activity only (DNS, connections, transfers):
-  sudo mactrace -o curl --trace=net curl -fsSL https://example.com
+  sudo mactrace --trace=net curl -fsSL https://example.com
 
   # Exec + filesystem (see what a build spawns and touches):
-  sudo mactrace -o make --trace=exec,file make -j4
+  sudo mactrace --trace=exec,file make -j4
 
-  # Capture I/O data with vectored I/O buffers:
+  # Capture I/O data with vectored I/O buffers, save to file:
   sudo mactrace -o server -c --iovec 4 --trace=net,file ./server
 
   # Attach to a running process for 60 seconds:
   sudo mactrace -p 12345 -o app -t 60
 
   # Trace a pipeline (wrap with sh -c):
-  sudo mactrace -o pipe sh -c 'curl -s example.com | wc -c'
+  sudo mactrace sh -c 'curl -s example.com | wc -c'
 
 Output naming:
-  -o make  ->  make.EPOCH.json  (epoch auto-appended, no collisions)
+  -o make       ->  make.seconds-since-1970.json  (UNIX epoch auto-appended to prevent collisions)
+  -o make.json  ->  make.json  (explicit .json = full control of output name)
 
 Full documentation: README.md  |  --trace help  |  --iovec-syscalls
 """
     )
-    parser.add_argument("-o", "--output", help="Output name (default: stdout). Epoch timestamp auto-appended: -o make → make.EPOCH.json. Relative paths use $MACTRACE_OUTPUT.")
+    parser.add_argument("-o", "--output", help="Output name (default: stdout). -o make → make.EPOCH.json (auto). -o make.json → exact name. Relative paths use $MACTRACE_OUTPUT.")
     parser.add_argument("-u", "--user", 
                         help="Run traced program as this user (name or UID). Default: auto-detect from $SUDO_USER")
     parser.add_argument("-t", "--timeout", type=int, help="Timeout in seconds")
@@ -3022,18 +3023,17 @@ Full documentation: README.md  |  --trace help  |  --iovec-syscalls
         sys.exit(1)
     
     # Inject epoch timestamp into output filename for uniqueness
-    # "make" → "make.1740000000.json", "make.json" → "make.1740000000.json"
+    # "make" → "make.1740000000.json" (auto epoch + .json)
+    # "make.json" → "make.json" (explicit .json = exact name, no epoch)
     if args.output:
-        import time as _time
-        _epoch = int(_time.time())
-        _out = args.output
-        # Strip .json extension if present (we'll re-add it)
-        if _out.endswith('.json'):
-            _out = _out[:-5]
-        # Only add timestamp if not already present (10-digit number at end)
-        if not re.search(r'\.\d{10}$', _out):
-            _out = f"{_out}.{_epoch}"
-        args.output = f"{_out}.json"
+        if not args.output.endswith('.json'):
+            import time as _time
+            _epoch = int(_time.time())
+            _out = args.output
+            # Only add timestamp if not already present (10-digit number at end)
+            if not re.search(r'\.\d{10}$', _out):
+                _out = f"{_out}.{_epoch}"
+            args.output = f"{_out}.json"
     
     # Check output file doesn't exist (fail fast, before tracing)
     if args.output:

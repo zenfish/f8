@@ -174,10 +174,13 @@ The config file is read using `SUDO_USER`, so it works even though sudo resets e
 Output filenames automatically include a Unix epoch timestamp to prevent collisions:
 
 ```bash
-sudo mactrace -o make ./configure      # → make.1740000000.json
-sudo mactrace -o make.json ./configure # → make.1740000000.json
+sudo mactrace -o make ./configure      # → make.1740000000.json (auto epoch)
 sudo mactrace -o make ./configure      # → make.1740000001.json (no collision)
+sudo mactrace -o make.json ./configure # → make.json (explicit .json = exact name)
 ```
+
+If you specify `.json` explicitly, the filename is used as-is — no epoch, no rewriting.
+Otherwise the epoch and `.json` are appended automatically.
 
 The import and `mactrace_data` tools strip the epoch suffix for display:
 `make.1740000000.json` shows as **make** in listings and the web UI.
