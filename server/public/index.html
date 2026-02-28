@@ -75,6 +75,26 @@
             /* DNS */
             --c-dns-border:     #3498db;
             --c-dns-cell:       #d4edfa;
+
+            /* Time bracket dividers (ColorBrewer BuGn 4-class sequential) */
+            --c-bracket-today:     #238b45;
+            --c-bracket-week:      #66c2a4;
+            --c-bracket-month:     #b2e2e2;
+            --c-bracket-older:     #edf8fb;
+
+            /* Trace card outlines (ColorBrewer Paired 12-class) */
+            --c-trace-0:  #a6cee3;
+            --c-trace-1:  #1f78b4;
+            --c-trace-2:  #b2df8a;
+            --c-trace-3:  #33a02c;
+            --c-trace-4:  #fb9a99;
+            --c-trace-5:  #e31a1c;
+            --c-trace-6:  #fdbf6f;
+            --c-trace-7:  #ff7f00;
+            --c-trace-8:  #cab2d6;
+            --c-trace-9:  #6a3d9a;
+            --c-trace-10: #ffff99;
+            --c-trace-11: #b15928;
         }
         
         * { box-sizing: border-box; margin: 0; padding: 0; }
@@ -608,6 +628,39 @@
         @keyframes spin { to { transform: rotate(360deg); } }
         
         .trace-list { list-style: none; }
+
+        /* Time bracket dividers */
+        .time-bracket {
+            display: flex;
+            align-items: center;
+            gap: 12px;
+            margin: 20px 0 12px;
+            font-size: 12px;
+            font-weight: 600;
+            text-transform: uppercase;
+            letter-spacing: 0.05em;
+        }
+        .time-bracket:first-child { margin-top: 0; }
+        .time-bracket .bracket-label {
+            white-space: nowrap;
+            padding: 3px 10px;
+            border-radius: 4px;
+            color: white;
+        }
+        .time-bracket .bracket-line {
+            flex: 1;
+            height: 2px;
+            border-radius: 1px;
+        }
+        .time-bracket.bracket-today .bracket-label  { background: var(--c-bracket-today); }
+        .time-bracket.bracket-today .bracket-line    { background: var(--c-bracket-today); opacity: 0.3; }
+        .time-bracket.bracket-week .bracket-label    { background: var(--c-bracket-week); color: #1a1a1a; }
+        .time-bracket.bracket-week .bracket-line     { background: var(--c-bracket-week); opacity: 0.4; }
+        .time-bracket.bracket-month .bracket-label   { background: var(--c-bracket-month); color: #1a1a1a; }
+        .time-bracket.bracket-month .bracket-line    { background: var(--c-bracket-month); opacity: 0.5; }
+        .time-bracket.bracket-older .bracket-label   { background: var(--c-bracket-older); color: #666; }
+        .time-bracket.bracket-older .bracket-line    { background: var(--c-bracket-older); opacity: 0.6; }
+
         .trace-list li {
             background: white;
             border-radius: 8px;
@@ -616,6 +669,7 @@
             box-shadow: 0 1px 3px rgba(0,0,0,0.1);
             cursor: pointer;
             transition: transform 0.1s;
+            border-left: 4px solid transparent;
         }
         .trace-list li:hover { transform: translateX(4px); }
         .trace-list .name { font-weight: 600; color: var(--c-card-title); }
@@ -867,17 +921,57 @@
                 traceSelect.appendChild(opt);
             });
             
-            traceList.innerHTML = traces.map(t => `
-                <li data-id="${t.id}">
+            // ── Time-bracketed trace list with colored outlines ──
+            const TRACE_COLORS = [
+                'var(--c-trace-0)',  'var(--c-trace-1)',  'var(--c-trace-2)',
+                'var(--c-trace-3)',  'var(--c-trace-4)',  'var(--c-trace-5)',
+                'var(--c-trace-6)',  'var(--c-trace-7)',  'var(--c-trace-8)',
+                'var(--c-trace-9)',  'var(--c-trace-10)', 'var(--c-trace-11)',
+            ];
+
+            const now = new Date();
+            const todayStart = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+            const weekStart = new Date(todayStart); weekStart.setDate(weekStart.getDate() - 7);
+            const monthStart = new Date(todayStart); monthStart.setMonth(monthStart.getMonth() - 1);
+
+            function getTimeBracket(dateStr) {
+                const d = new Date(dateStr);
+                if (d >= todayStart)  return 'today';
+                if (d >= weekStart)   return 'week';
+                if (d >= monthStart)  return 'month';
+                return 'older';
+            }
+
+            const bracketLabels = {
+                today: 'Today',
+                week:  'Last 7 Days',
+                month: 'Last 30 Days',
+                older: 'Older',
+            };
+
+            let html = '';
+            let currentBracket = null;
+            traces.forEach((t, i) => {
+                const bracket = getTimeBracket(t.imported_at);
+                if (bracket !== currentBracket) {
+                    currentBracket = bracket;
+                    html += `<div class="time-bracket bracket-${bracket}">
+                        <span class="bracket-label">${bracketLabels[bracket]}</span>
+                        <span class="bracket-line"></span>
+                    </div>`;
+                }
+                const color = TRACE_COLORS[i % TRACE_COLORS.length];
+                html += `<li data-id="${t.id}" style="border-left-color: ${color}">
                     <div class="name">${escapeHtml(t.name)} <span class="font-normal text-faint text-small">${formatTimestamp(t.imported_at)}</span></div>
                     <div class="command">${escapeHtml(t.command)}</div>
                     <div class="meta">
-                        ${t.event_count.toLocaleString()} events · 
-                        ${formatDuration(t.duration_ms)} · 
+                        ${t.event_count.toLocaleString()} events ·
+                        ${formatDuration(t.duration_ms)} ·
                         PID ${t.target_pid} → exit ${t.exit_code}
                     </div>
-                </li>
-            `).join('');
+                </li>`;
+            });
+            traceList.innerHTML = html;
             
         } catch (e) {
             loading.textContent = 'Error loading traces: ' + e.message;
