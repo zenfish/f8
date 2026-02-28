@@ -2956,7 +2956,41 @@ Full documentation: README.md  |  --trace help
                              "(|, &, ;, >, etc.) must be wrapped: "
                              "sudo mactrace sh -c 'cmd1 | cmd2'")
     
+    # Handle bare --iovec-syscalls (no argument) before argparse complains
+    if '--iovec-syscalls' in sys.argv and not any(
+        a.startswith('--iovec-syscalls=') for a in sys.argv
+    ):
+        idx = sys.argv.index('--iovec-syscalls')
+        # Check if next arg looks like a syscall list (not a command/flag)
+        next_arg = sys.argv[idx + 1] if idx + 1 < len(sys.argv) else None
+        valid_tokens = {'readv', 'writev', 'preadv', 'pwritev', 'help'}
+        if not next_arg or next_arg.startswith('-') or not all(
+            t.strip() in valid_tokens for t in next_arg.split(',')
+        ):
+            # Treat as bare --iovec-syscalls → inject 'help'
+            sys.argv.insert(idx + 1, 'help')
+    
     args = parser.parse_args()
+    
+    # ── --iovec-syscalls help ─────────────────────────────────────────
+    if getattr(args, 'iovec_syscalls', None) == 'help':
+        print("""Vectored I/O syscalls (--iovec-syscalls):
+
+  Syscall     Variants                Description
+  ─────────── ─────────────────────── ──────────────────────────────────
+  readv       readv, readv_nocancel   Read into multiple buffers (scatter)
+  writev      writev, writev_nocancel Write from multiple buffers (gather)
+  preadv      preadv                  Positional scatter read
+  pwritev     pwritev                 Positional gather write
+
+Usage:
+  --iovec 4 --iovec-syscalls=writev       Cheapest: 2 variants, ~34 DIF programs
+  --iovec 4 --iovec-syscalls=readv,writev Balanced: 4 variants, ~68 DIF programs
+  --iovec 4                               All 6 variants, ~102 DIF programs
+
+Each iovec slot costs ~4 DIF programs per syscall variant.
+The _nocancel variants are included automatically.""")
+        sys.exit(0)
     
     # ── --trace help [category] ───────────────────────────────────────
     if args.trace and args.trace.split()[0].lower() == 'help':
