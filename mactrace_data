@@ -1054,6 +1054,7 @@ Examples:
     del_p = subparsers.add_parser('delete', aliases=['rm', 'del'], help='Delete run(s)')
     del_p.add_argument('run_ids', type=int, nargs='*', help='Run number(s) to delete')
     del_p.add_argument('--all', action='store_true', help='Delete ALL data')
+    del_p.add_argument('-f', '--force', action='store_true', help="Don't prompt for confirmation")
 
     # --- db subcommand ---
     db_p = subparsers.add_parser('db', help='Database-only operations')
@@ -1067,6 +1068,7 @@ Examples:
 
     db_del_p = db_sub.add_parser('delete', aliases=['rm', 'del'], help='Delete from DB only')
     db_del_p.add_argument('trace_ids', type=int, nargs='+', help='DB trace ID(s)')
+    db_del_p.add_argument('-f', '--force', action='store_true', help="Don't prompt for confirmation")
 
     db_sub.add_parser('vacuum', help='Compact the database')
     db_sub.add_parser('stats', help='Show database statistics')
@@ -1083,6 +1085,7 @@ Examples:
 
     files_del_p = files_sub.add_parser('delete', aliases=['rm', 'del'], help='Delete files only')
     files_del_p.add_argument('run_ids', type=int, nargs='+', help='Run number(s)')
+    files_del_p.add_argument('-f', '--force', action='store_true', help="Don't prompt for confirmation")
 
     args = parser.parse_args()
 
