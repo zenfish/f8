@@ -347,6 +347,7 @@ class MacTrace:
     DEFAULT_CLEANRATE = "307hz"      # how often DTrace reclaims dead dynamic vars (prime avoids resonance)
 
     def __init__(self, verbose: bool = False, capture_io: bool = False,
+                 iovec_max: int = None, iovec_syscalls: set = None,
                  io_size: int = 1*1024*1024, strsize: int = None, bufsize: str = None, 
                  dynvarsize: str = None, switchrate: str = None, cleanrate: str = None,
                  cache_size: int = 0, cache_dir: str = None,
@@ -354,6 +355,11 @@ class MacTrace:
         self.verbose = verbose
         self.capture_io = capture_io
         self.io_size = io_size
+        self.iovec_max = iovec_max
+        self.iovec_syscalls = iovec_syscalls
+        # --iovec implies --capture-io
+        if self.iovec_max is not None:
+            self.capture_io = True
         # ── Trace filtering ──────────────────────────────────────────
         # Parse --trace spec into categories + individual syscalls
         if trace_spec and trace_spec.lower() != 'all':
@@ -582,6 +588,9 @@ class MacTrace:
                 # MACTRACE_IO pid tid syscall fd bytes <tracemem data>
                 # tracemem outputs hex bytes, parse and attach to corresponding syscall
                 self._parse_io_data(line, base_timestamp)
+            elif event_type == "MACTRACE_IOV":
+                # MACTRACE_IOV pid tid syscall fd idx/total bytes <hex>
+                self._parse_iov_data(line, base_timestamp)
                 
             elif event_type == "MACTRACE_SOCKADDR":
                 # MACTRACE_SOCKADDR pid tid syscall retval errno ts fd family <tracemem data>
@@ -977,7 +986,7 @@ class MacTrace:
             line = lines[i]
             stripped = line.strip()
             
-            if stripped.startswith("MACTRACE_IO") or stripped.startswith("MACTRACE_SOCKADDR"):
+            if stripped.startswith("MACTRACE_IO") or stripped.startswith("MACTRACE_IOV") or stripped.startswith("MACTRACE_SOCKADDR"):
                 # Found IO or SOCKADDR line - collect following hexdump
                 merged_line = stripped
                 i += 1
@@ -1170,6 +1179,68 @@ class MacTrace:
             
         return result
     
+
+    def _parse_iov_data(self, line: str, base_timestamp: int) -> None:
+        """Parse MACTRACE_IOV line and attach iovec buffer data to the syscall event.
+
+        Format: MACTRACE_IOV pid tid syscall fd idx/total bytes <hex_string>
+        Each vectored I/O call produces multiple IOV lines (one per buffer).
+        They are stored as a list of {index, total, data, data_len} dicts
+        in event.args['iov_buffers'].
+        """
+        try:
+            parts = line.split()
+            if len(parts) < 7:
+                return
+
+            pid = int(parts[1])
+            tid = int(parts[2])
+            syscall = parts[3]
+            fd = int(parts[4])
+            idx_total = parts[5]  # "0/3" format
+            nbytes = int(parts[6])
+
+            # Parse index/total
+            idx_parts = idx_total.split('/')
+            if len(idx_parts) != 2:
+                return
+            iov_index = int(idx_parts[0])
+            iov_total = int(idx_parts[1])
+
+            # Hex data at parts[7]
+            hex_data = parts[7] if len(parts) > 7 else ""
+            if hex_data:
+                try:
+                    data_bytes = bytes.fromhex(hex_data)
+                except ValueError:
+                    data_bytes = b''
+                if len(data_bytes) > nbytes:
+                    data_bytes = data_bytes[:nbytes]
+                data_hex = data_bytes.hex()
+            else:
+                data_bytes = b''
+                data_hex = ''
+
+            # Find the matching syscall event and attach the iovec buffer
+            for event in reversed(self.events):
+                if (event.pid == pid and event.tid == tid and
+                    event.syscall.startswith(syscall.replace('_nocancel', '')) and
+                    event.args.get('fd') == fd):
+                    if 'iov_buffers' not in event.args:
+                        event.args['iov_buffers'] = []
+                    event.args['iov_buffers'].append({
+                        'index': iov_index,
+                        'total': iov_total,
+                        'data': data_hex,
+                        'data_len': len(data_bytes),
+                    })
+                    break
+
+        except (ValueError, IndexError) as e:
+            if self.verbose:
+                print(f"Warning: Failed to parse IOV line: {line} ({e})",
+                      file=sys.stderr)
+
     def _parse_sockaddr_line(self, line: str, base_timestamp: int) -> None:
         """Parse MACTRACE_SOCKADDR line and create syscall event with address info."""
         # Format: MACTRACE_SOCKADDR pid tid syscall retval errno ts fd family <hex>
@@ -1603,6 +1674,103 @@ syscall::recvmsg_nocancel:return
         return '\n'.join(parts)
 
 
+
+    def _build_iovec_capture_probes(self, io_size: int, max_iovec: int,
+                                     iovec_syscalls: set = None) -> str:
+        """Generate unrolled DTrace probes to capture scattered iovec buffers.
+
+        For each vectored I/O syscall variant, generates max_iovec probe clauses
+        that extract individual buffers from the user-space iovec array.
+
+        Args:
+            io_size: Max bytes to capture per individual iovec buffer
+            max_iovec: Number of iovec slots to unroll (N from --iovec N)
+            iovec_syscalls: Set of base syscall names to capture for, or None for all.
+                           Valid: {'readv', 'writev', 'preadv', 'pwritev'}
+
+        Returns:
+            D-language probe text for iovec buffer capture
+        """
+        # Map base syscall names to their variants (name, nocancel_name_or_None)
+        # and the self-> variable prefix used in file_rw_vec.py
+        SYSCALL_VARIANTS = {
+            'readv':   [('readv', 'readv_nocancel')],
+            'writev':  [('writev', 'writev_nocancel')],
+            'preadv':  [('preadv', None)],
+            'pwritev': [('pwritev', None)],
+        }
+
+        # Determine which syscalls to generate for
+        if iovec_syscalls:
+            active = {s for s in iovec_syscalls if s in SYSCALL_VARIANTS}
+        else:
+            active = set(SYSCALL_VARIANTS.keys())
+
+        # Only include syscalls that are actually being traced
+        cats = self._trace_cats
+        syscalls = self._trace_syscalls
+        include_file = (cats is None and syscalls is None) or \
+                       (cats is not None and 'file' in cats) or \
+                       (syscalls is not None and bool(syscalls & {
+                           'readv', 'readv_nocancel', 'writev', 'writev_nocancel',
+                           'preadv', 'pwritev'}))
+        if not include_file:
+            return ''
+
+        parts = []
+        parts.append(f"""
+/* ============================================ */
+/* VECTORED I/O BUFFER CAPTURE (--iovec {max_iovec})     */
+/* ============================================ */
+/* Unrolled iovec buffer capture: up to {max_iovec} buffers per call.    */
+/* struct iovec {{ void *iov_base; size_t iov_len; }} = 16 bytes each   */
+/* Output: MACTRACE_IOV pid tid syscall fd idx/total len <hex>          */
+""")
+
+        IOV_ENTRY_SIZE = 16  # sizeof(struct iovec) on 64-bit
+
+        for base_name in sorted(active):
+            if base_name not in SYSCALL_VARIANTS:
+                continue
+            for variants in SYSCALL_VARIANTS[base_name]:
+                primary, nocancel = variants
+                prefix = primary  # self->readv_iov, self->readv_fd, etc.
+
+                # Build the probe name (combine primary + nocancel if exists)
+                if nocancel:
+                    probe_return = f"syscall::{primary}:return,\nsyscall::{nocancel}:return"
+                else:
+                    probe_return = f"syscall::{primary}:return"
+
+                parts.append(f"\n/* ── {primary} iovec capture ({max_iovec} slots) ── */\n")
+
+                for slot in range(max_iovec):
+                    offset = slot * IOV_ENTRY_SIZE
+                    parts.append(f"""
+{probe_return}
+/TRACED && arg1 > 0 && self->{prefix}_iovcnt > {slot} && self->{prefix}_iov/
+{{
+    this->iov_base_{slot} = *(uintptr_t *)copyin(self->{prefix}_iov + {offset}, 8);
+    this->iov_len_{slot} = *(size_t *)copyin(self->{prefix}_iov + {offset + 8}, 8);
+    this->iov_cap_{slot} = this->iov_len_{slot} < {io_size} ? this->iov_len_{slot} : {io_size};
+    printf("MACTRACE_IOV %d %d {primary} %d {slot}/%d %d ",
+        pid, tid, self->{prefix}_fd, self->{prefix}_iovcnt, (int)this->iov_len_{slot});
+    tracemem(copyin(this->iov_base_{slot}, this->iov_cap_{slot}), {io_size}, this->iov_cap_{slot});
+    printf("\\n");
+}}
+""")
+
+                # After all slots, clear the iov pointer (last clause)
+                parts.append(f"""
+{probe_return}
+/TRACED && self->{prefix}_iov/
+{{
+    self->{prefix}_iov = 0;
+}}
+""")
+
+        return '\n'.join(parts)
+
     def trace(self, command: List[str], timeout: Optional[int] = None,
               run_as_user: Optional[tuple] = None, throttle: bool = False) -> TraceResult:
         """
@@ -1639,6 +1807,10 @@ syscall::recvmsg_nocancel:return
             io_capture_probes = self._build_io_capture_probes(io_size)
             dtrace_script = dtrace_script.replace("$RAWIO_PRAGMA$", "#pragma D option rawbytes")
             dtrace_script += io_capture_probes
+            if self.iovec_max is not None:
+                iovec_probes = self._build_iovec_capture_probes(
+                    io_size, self.iovec_max, self.iovec_syscalls)
+                dtrace_script += iovec_probes
         else:
             dtrace_script = dtrace_script.replace("$RAWIO_PRAGMA$", "")
         
@@ -2202,6 +2374,10 @@ syscall::recvmsg_nocancel:return
             io_capture_probes = self._build_io_capture_probes(io_size)
             dtrace_script = dtrace_script.replace("$RAWIO_PRAGMA$", "#pragma D option rawbytes")
             dtrace_script += io_capture_probes
+            if self.iovec_max is not None:
+                iovec_probes = self._build_iovec_capture_probes(
+                    io_size, self.iovec_max, self.iovec_syscalls)
+                dtrace_script += iovec_probes
         else:
             dtrace_script = dtrace_script.replace("$RAWIO_PRAGMA$", "")
         
@@ -2760,6 +2936,16 @@ Shell metacharacters:
                         help="Capture actual I/O data via tracemem (attached to syscall events as hex)")
     parser.add_argument("--io-size", type=int, default=1*1024*1024,
                         help="Max bytes to capture per I/O op (default: 1M, max ~4M due to dtrace limits)")
+    parser.add_argument("--iovec", type=int, default=None, metavar="N",
+                        help="Capture up to N scattered buffers per readv/writev call. "
+                             "Implies --capture-io. Start with 4 if unsure; 8 covers virtually "
+                             "all real-world workloads. Each slot costs ~4 DIF programs per "
+                             "syscall variant — use --iovec-syscalls to limit scope.")
+    parser.add_argument("--iovec-syscalls", type=str, default=None, metavar="LIST",
+                        help="Comma-separated list of vectored I/O syscalls to capture "
+                             "buffers for (default: all). Valid: readv,writev,preadv,pwritev. "
+                             "The _nocancel variants are included automatically. "
+                             "Example: --iovec-syscalls=writev (cheapest — 2 variants)")
     parser.add_argument("-d", "--dynamic-max", type=int, default=None, const=524288,
                         nargs='?', metavar="N",
                         help="Temporarily raise kern.dtrace.difo_maxsize before tracing "
@@ -2969,9 +3155,26 @@ Shell metacharacters:
             _sig.signal(_sig.SIGTERM, _signal_restore)
             _sig.signal(_sig.SIGHUP, _signal_restore)
 
+    # ── iovec arg processing ──────────────────────────────────────
+    iovec_max = args.iovec
+    iovec_syscalls = None
+    if args.iovec_syscalls:
+        valid_iovec = {'readv', 'writev', 'preadv', 'pwritev'}
+        iovec_syscalls = set(s.strip() for s in args.iovec_syscalls.split(','))
+        bad = iovec_syscalls - valid_iovec
+        if bad:
+            parser.error(f"Invalid --iovec-syscalls: {', '.join(sorted(bad))}. "
+                         f"Valid: {', '.join(sorted(valid_iovec))}")
+        if iovec_max is None:
+            parser.error('--iovec-syscalls requires --iovec N')
+    if iovec_max is not None and iovec_max < 1:
+        parser.error('--iovec N must be >= 1')
+    if iovec_max is not None and iovec_max > 64:
+        parser.error(f'--iovec {iovec_max} is extreme. Max supported: 64.')
     tracer = MacTrace(
         verbose=args.verbose,
         capture_io=args.capture_io,
+        iovec_max=iovec_max, iovec_syscalls=iovec_syscalls,
         io_size=args.io_size,
         strsize=args.strsize,
         bufsize=args.bufsize,
@@ -3007,6 +3210,22 @@ Shell metacharacters:
         combined_pct = min(100, int((dif_count + io_extra) / dif_budget * 100))
         if combined_pct > 90:
             print(f"  ⚠️  With -c (I/O capture), estimated ~{combined_pct}% of DIF budget", file=sys.stderr)
+    if args.iovec is not None:
+        # Report iovec DIF cost
+        n_variants = len(tracer.iovec_syscalls or {'readv', 'writev', 'preadv', 'pwritev'})
+        # Account for _nocancel variants (readv and writev have them)
+        n_actual = 0
+        for s in (tracer.iovec_syscalls or {'readv', 'writev', 'preadv', 'pwritev'}):
+            n_actual += 2 if s in ('readv', 'writev') else 1
+        iovec_cost = n_actual * args.iovec * 4 + n_actual  # +n_actual for cleanup clauses
+        iovec_pct = int(iovec_cost / dif_budget * 100)
+        if dif_pct > 95:
+            print(f"  ❌  --iovec {args.iovec} adds ~{iovec_cost} DIF programs ({iovec_pct}% of budget) — over budget!", file=sys.stderr)
+            print(f"       Fix: narrow with --trace=file, --iovec-syscalls=writev, lower N, or raise ceiling with -d", file=sys.stderr)
+        elif dif_pct > 80:
+            print(f"  ⚠️  --iovec {args.iovec} adds ~{iovec_cost} DIF programs ({iovec_pct}% of budget) — tight", file=sys.stderr)
+        elif args.verbose:
+            print(f"  --iovec {args.iovec}: ~{iovec_cost} DIF programs ({iovec_pct}% of budget)", file=sys.stderr)
 
     if args.pid is not None:
         # Attach to already-running process (like strace -p)

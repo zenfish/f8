@@ -4,9 +4,8 @@ Scatter/gather I/O used by databases (PostgreSQL, MySQL), high-performance
 servers, and the OS itself. Captures fd, iov count, and total bytes
 transferred (return value). For preadv/pwritev, also captures offset.
 
-NOTE: Actual I/O data capture (-c) is NOT supported for vectored I/O.
-DTrace cannot easily walk user-space iovec arrays to extract scattered
-buffer contents. Use read/write tracing for data-level visibility.
+When --iovec is enabled, the saved iov pointer (self->*_iov) is used by
+the unrolled capture probes generated in _build_iovec_capture_probes().
 """
 
 from . import SyscallHandler, register
@@ -32,6 +31,7 @@ syscall::readv_nocancel:entry
 /TRACED/
 {
     self->readv_fd = arg0;
+    self->readv_iov = arg1;
     self->readv_iovcnt = (int)arg2;
     self->readv_ts = walltimestamp/1000;
 }
@@ -51,6 +51,7 @@ syscall::writev_nocancel:entry
 /TRACED/
 {
     self->writev_fd = arg0;
+    self->writev_iov = arg1;
     self->writev_iovcnt = (int)arg2;
     self->writev_ts = walltimestamp/1000;
 }
@@ -69,6 +70,7 @@ syscall::preadv:entry
 /TRACED/
 {
     self->preadv_fd = arg0;
+    self->preadv_iov = arg1;
     self->preadv_iovcnt = (int)arg2;
     self->preadv_off = arg3;
     self->preadv_ts = walltimestamp/1000;
@@ -87,6 +89,7 @@ syscall::pwritev:entry
 /TRACED/
 {
     self->pwritev_fd = arg0;
+    self->pwritev_iov = arg1;
     self->pwritev_iovcnt = (int)arg2;
     self->pwritev_off = arg3;
     self->pwritev_ts = walltimestamp/1000;
