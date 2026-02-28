@@ -215,3 +215,80 @@ class TestImportIdempotence:
         
         events = query_db(db_path, 'SELECT COUNT(*) as count FROM events')
         assert events[0]['count'] == 10  # 5 events × 2 imports
+
+
+
+
+class TestImportIovecWritev:
+    """Import trace with iov_buffers and verify roundtrip through the DB."""
+
+    @pytest.fixture(autouse=True)
+    def setup_db(self, tmp_path):
+        self.db_path = str(tmp_path / 'test.db')
+        self.json_path = os.path.join(FIXTURES_DIR, 'iovec_writev.json')
+        result = import_trace(self.json_path, self.db_path)
+        assert result.returncode == 0, f"Import failed: {result.stderr}"
+
+    def test_trace_created(self):
+        traces = query_db(self.db_path, "SELECT * FROM traces")
+        assert len(traces) == 1
+        assert traces[0]['name'] == 'iovec_writev'
+
+    def test_correct_event_count(self):
+        events = query_db(self.db_path, "SELECT COUNT(*) as count FROM events")
+        assert events[0]['count'] == 7
+
+    def test_writev_events_imported(self):
+        """writev events should be imported with correct syscall and return value."""
+        events = query_db(self.db_path,
+            "SELECT * FROM events WHERE syscall = 'writev' ORDER BY timestamp_us")
+        assert len(events) == 2, "Expected 2 writev events"
+        assert events[0]['return_value'] == 12
+        assert events[1]['return_value'] == 12
+
+    def test_readv_event_imported(self):
+        """readv event should be imported."""
+        events = query_db(self.db_path,
+            "SELECT * FROM events WHERE syscall = 'readv'")
+        assert len(events) == 1
+        assert events[0]['return_value'] == 12
+
+    def test_writev_details_has_iovcnt(self):
+        """Details column should include iovcnt for writev."""
+        events = query_db(self.db_path,
+            "SELECT details FROM events WHERE syscall = 'writev' ORDER BY timestamp_us")
+        assert 'iovcnt=3' in (events[0]['details'] or ''), \
+            f"Expected iovcnt=3 in details, got: {events[0]['details']}"
+
+    def test_truncated_writev_shows_captured_count(self):
+        """Truncated writev (iovcnt=6, 4 captured) should note that in details."""
+        events = query_db(self.db_path,
+            "SELECT details FROM events WHERE syscall = 'writev' ORDER BY timestamp_us")
+        # Second writev has iovcnt=6 with only 4 captured
+        assert 'iovcnt=6' in (events[1]['details'] or ''), \
+            f"Expected iovcnt=6, got: {events[1]['details']}"
+        assert '4 captured' in (events[1]['details'] or ''), \
+            f"Expected '4 captured' note, got: {events[1]['details']}"
+
+    def test_writev_data_raw_has_concatenated_hex(self):
+        """data_raw should have concatenated iov buffer hex data."""
+        events = query_db(self.db_path,
+            "SELECT data_raw FROM events WHERE syscall = 'writev' ORDER BY timestamp_us")
+        raw = events[0]['data_raw'] or ''
+        # HEAD(48454144) + BODY(424f4459) + TAIL(5441494c) = concatenated
+        assert '48454144' in raw, "Expected HEAD hex in data_raw"
+        assert '424f4459' in raw, "Expected BODY hex in data_raw"
+        assert '5441494c' in raw, "Expected TAIL hex in data_raw"
+
+    def test_writev_marked_as_io(self):
+        """writev events should have has_io=1."""
+        events = query_db(self.db_path,
+            "SELECT has_io FROM events WHERE syscall = 'writev'")
+        for e in events:
+            assert e['has_io'] == 1, "writev should be marked as I/O"
+
+    def test_readv_marked_as_io(self):
+        """readv events should have has_io=1."""
+        events = query_db(self.db_path,
+            "SELECT has_io FROM events WHERE syscall = 'readv'")
+        assert events[0]['has_io'] == 1, "readv should be marked as I/O"

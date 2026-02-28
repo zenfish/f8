@@ -199,3 +199,97 @@ class TestRenderTerminalLines:
         result = self.render(lines)
         # Should keep final progress line
         assert any("100%" in line for line in result)
+
+
+# ============================================================================
+# MACTRACE_IOV parsing
+# ============================================================================
+
+class TestParseIovData:
+    """Test parsing of MACTRACE_IOV lines (vectored I/O buffer capture)."""
+
+    def setup_method(self):
+        """Create a tracer with a writev event to attach IOV data to."""
+        self.tracer = MacTrace(verbose=False)
+        self.base_ts = 1000000
+        # Create a writev syscall event first
+        self.tracer._parse_line(
+            "MACTRACE_SYSCALL 1234 5678 writev 12 0 2000000 4 3", self.base_ts)
+
+    def _find_writev(self):
+        """Find the writev event."""
+        return [e for e in self.tracer.events if e.syscall == 'writev'][0]
+
+    def test_single_iov_buffer(self):
+        """A single MACTRACE_IOV line attaches one buffer."""
+        self.tracer._parse_iov_data(
+            "MACTRACE_IOV 1234 5678 writev 4 0/3 4 48454144", self.base_ts)
+        ev = self._find_writev()
+        assert 'iov_buffers' in ev.args
+        assert len(ev.args['iov_buffers']) == 1
+        buf = ev.args['iov_buffers'][0]
+        assert buf['index'] == 0
+        assert buf['total'] == 3
+        assert buf['data'] == '48454144'  # "HEAD"
+        assert buf['data_len'] == 4
+
+    def test_multiple_iov_buffers(self):
+        """Multiple MACTRACE_IOV lines accumulate on the same event."""
+        self.tracer._parse_iov_data(
+            "MACTRACE_IOV 1234 5678 writev 4 0/3 4 48454144", self.base_ts)
+        self.tracer._parse_iov_data(
+            "MACTRACE_IOV 1234 5678 writev 4 1/3 4 424f4459", self.base_ts)
+        self.tracer._parse_iov_data(
+            "MACTRACE_IOV 1234 5678 writev 4 2/3 4 5441494c", self.base_ts)
+        ev = self._find_writev()
+        bufs = ev.args['iov_buffers']
+        assert len(bufs) == 3
+        decoded = [bytes.fromhex(b['data']) for b in bufs]
+        assert decoded == [b'HEAD', b'BODY', b'TAIL']
+
+    def test_iov_index_and_total(self):
+        """index/total parsed correctly from 'idx/total' format."""
+        self.tracer._parse_iov_data(
+            "MACTRACE_IOV 1234 5678 writev 4 2/6 2 4141", self.base_ts)
+        buf = self._find_writev().args['iov_buffers'][0]
+        assert buf['index'] == 2
+        assert buf['total'] == 6
+
+    def test_data_trimmed_to_nbytes(self):
+        """Hex data longer than nbytes should be trimmed."""
+        # 8 hex bytes but nbytes=3 — trim to 3
+        self.tracer._parse_iov_data(
+            "MACTRACE_IOV 1234 5678 writev 4 0/1 3 4142434400", self.base_ts)
+        buf = self._find_writev().args['iov_buffers'][0]
+        assert buf['data_len'] == 3
+        assert buf['data'] == '414243'  # trimmed to "ABC"
+
+    def test_empty_hex_data(self):
+        """IOV line with no hex data still creates a buffer entry."""
+        self.tracer._parse_iov_data(
+            "MACTRACE_IOV 1234 5678 writev 4 0/1 0", self.base_ts)
+        buf = self._find_writev().args['iov_buffers'][0]
+        assert buf['data'] == ''
+        assert buf['data_len'] == 0
+
+    def test_malformed_index_ignored(self):
+        """Malformed index/total (no slash) is silently ignored."""
+        self.tracer._parse_iov_data(
+            "MACTRACE_IOV 1234 5678 writev 4 BADINDEX 4 48454144", self.base_ts)
+        ev = self._find_writev()
+        assert 'iov_buffers' not in ev.args
+
+    def test_short_line_ignored(self):
+        """Line with too few fields is silently ignored."""
+        self.tracer._parse_iov_data(
+            "MACTRACE_IOV 1234 5678 writev 4", self.base_ts)
+        ev = self._find_writev()
+        assert 'iov_buffers' not in ev.args
+
+    def test_no_matching_event(self):
+        """IOV line for non-existent event doesn't crash."""
+        # Different fd (99) — won't match the writev on fd 4
+        self.tracer._parse_iov_data(
+            "MACTRACE_IOV 1234 5678 writev 99 0/1 4 48454144", self.base_ts)
+        ev = self._find_writev()
+        assert 'iov_buffers' not in ev.args

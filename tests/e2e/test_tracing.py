@@ -164,3 +164,95 @@ class TestNetwork:
         connects = [e for e in events if e['syscall'] in ('connect', 'connect_nocancel')]
         targets = [c.get('args', {}).get('display', '') for c in connects]
         assert any('127.0.0.1' in t for t in targets)
+
+
+class TestIovec:
+    """Trace test_iovec with --iovec 4 and verify scattered buffer capture."""
+
+    @pytest.fixture(autouse=True)
+    def trace(self, compile_programs):
+        self.data = run_mactrace(
+            os.path.join(PROGRAMS_DIR, 'test_iovec'),
+            extra_args=['--iovec', '4', '--trace=file']
+        )
+
+    def test_exit_code_zero(self):
+        assert self.data['exit_code'] == 0
+
+    def test_writev_3_buffers_present(self):
+        """First writev should have 3 buffers captured."""
+        events = self.data['events']
+        writevs = [e for e in events if e['syscall'] in ('writev', 'writev_nocancel')
+                   and e['return_value'] == 12 and e['args'].get('iovcnt') == 3]
+        assert len(writevs) >= 1, "Expected writev with iovcnt=3, ret=12"
+        # Check iov_buffers were captured
+        wv = writevs[0]
+        assert 'iov_buffers' in wv['args'], "writev should have iov_buffers with --iovec"
+        bufs = wv['args']['iov_buffers']
+        assert len(bufs) == 3, f"Expected 3 iov buffers, got {len(bufs)}"
+
+    def test_writev_buffer_contents(self):
+        """Verify the actual buffer data matches HEAD/BODY/TAIL."""
+        events = self.data['events']
+        writevs = [e for e in events if e['syscall'] in ('writev', 'writev_nocancel')
+                   and e['args'].get('iovcnt') == 3 and 'iov_buffers' in e.get('args', {})]
+        assert len(writevs) >= 1
+        bufs = writevs[0]['args']['iov_buffers']
+        # Decode hex to check contents
+        decoded = [bytes.fromhex(b['data']) for b in bufs]
+        assert decoded[0] == b'HEAD'
+        assert decoded[1] == b'BODY'
+        assert decoded[2] == b'TAIL'
+
+    def test_writev_buffer_indices(self):
+        """Each buffer should have correct index/total metadata."""
+        events = self.data['events']
+        writevs = [e for e in events if e['syscall'] in ('writev', 'writev_nocancel')
+                   and e['args'].get('iovcnt') == 3 and 'iov_buffers' in e.get('args', {})]
+        assert len(writevs) >= 1
+        bufs = writevs[0]['args']['iov_buffers']
+        for i, buf in enumerate(bufs):
+            assert buf['index'] == i, f"Buffer {i} has wrong index: {buf['index']}"
+            assert buf['total'] == 3, f"Buffer {i} has wrong total: {buf['total']}"
+
+    def test_readv_3_buffers_present(self):
+        """readv should also have 3 buffers captured."""
+        events = self.data['events']
+        readvs = [e for e in events if e['syscall'] in ('readv', 'readv_nocancel')
+                  and e['return_value'] == 12 and e['args'].get('iovcnt') == 3]
+        assert len(readvs) >= 1, "Expected readv with iovcnt=3, ret=12"
+        bufs = readvs[0]['args'].get('iov_buffers', [])
+        assert len(bufs) == 3, f"Expected 3 iov buffers from readv, got {len(bufs)}"
+
+    def test_readv_data_matches_writev(self):
+        """readv should recover the same HEAD/BODY/TAIL data."""
+        events = self.data['events']
+        readvs = [e for e in events if e['syscall'] in ('readv', 'readv_nocancel')
+                  and e['args'].get('iovcnt') == 3 and 'iov_buffers' in e.get('args', {})]
+        assert len(readvs) >= 1
+        decoded = [bytes.fromhex(b['data']) for b in readvs[0]['args']['iov_buffers']]
+        assert decoded == [b'HEAD', b'BODY', b'TAIL']
+
+    def test_truncation_with_6_iovecs(self):
+        """writev with 6 iovecs should capture only 4 (--iovec 4) but report iovcnt=6."""
+        events = self.data['events']
+        writevs = [e for e in events if e['syscall'] in ('writev', 'writev_nocancel')
+                   and e['args'].get('iovcnt') == 6]
+        assert len(writevs) >= 1, "Expected writev with iovcnt=6"
+        wv = writevs[0]
+        assert wv['return_value'] == 12, "6 * 2 = 12 bytes"
+        bufs = wv['args'].get('iov_buffers', [])
+        # Should capture exactly 4 (truncated from 6)
+        assert len(bufs) == 4, f"Expected 4 captured buffers (truncated from 6), got {len(bufs)}"
+        # Verify first 4 are correct
+        decoded = [bytes.fromhex(b['data']) for b in bufs]
+        assert decoded == [b'AA', b'BB', b'CC', b'DD']
+
+    def test_truncated_buffers_report_correct_total(self):
+        """Even truncated buffers should report total=6 in metadata."""
+        events = self.data['events']
+        writevs = [e for e in events if e['syscall'] in ('writev', 'writev_nocancel')
+                   and e['args'].get('iovcnt') == 6 and 'iov_buffers' in e.get('args', {})]
+        assert len(writevs) >= 1
+        for buf in writevs[0]['args']['iov_buffers']:
+            assert buf['total'] == 6, f"Truncated buffer should still report total=6"

@@ -71,10 +71,16 @@ function sanitizeFilename(s, maxLen = 60) {
 
 function extractRawData(event, maxLen = 512) {
     const args = event.args || {};
-    const data = args.data;
-    if (!data || typeof data !== 'string') return null;
-    // Store raw hex, truncated
-    return data.slice(0, maxLen * 2); // 2 hex chars per byte
+    // Standard single-buffer I/O data
+    if (args.data && typeof args.data === "string") {
+        return args.data.slice(0, maxLen * 2);
+    }
+    // Vectored I/O: concatenate iov buffer hex data
+    if (args.iov_buffers && Array.isArray(args.iov_buffers)) {
+        const hex = args.iov_buffers.map(b => b.data || "").join("");
+        return hex.slice(0, maxLen * 2) || null;
+    }
+    return null;
 }
 
 // Track generated I/O files: Map<filename, {offsets: [], total_size: number}>
@@ -458,6 +464,15 @@ function extractDetails(event) {
         parts.push(args.raw_args.join(' '));
     }
     
+    // Vectored I/O (readv/writev/preadv/pwritev)
+    if (args.iovcnt !== undefined) {
+        parts.push(`iovcnt=${args.iovcnt}`);
+        if (args.iov_buffers) {
+            const captured = args.iov_buffers.length;
+            if (captured < args.iovcnt) parts.push(`(${captured} captured)`);
+        }
+    }
+    if (args.offset !== undefined && syscall.startsWith("p")) parts.push(`off=${args.offset}`);
     return parts.join(' ');
 }
 
@@ -597,7 +612,7 @@ for (const event of events) {
     const details = extractDetails(event);
     const syscall = event.syscall || '';
     const fd = (event.args || {}).fd;
-    const isIo = ['read', 'write', 'pread', 'pwrite', 'sendto', 'recvfrom']
+    const isIo = ['read', 'write', 'pread', 'pwrite', 'readv', 'writev', 'preadv', 'pwritev', 'sendto', 'recvfrom']
         .some(s => syscall.includes(s)) && (event.return_value || 0) > 0;
     
     // Try to find existing .bin file, or generate from args.data
