@@ -1,0 +1,1051 @@
+#!/usr/bin/env python3
+"""
+mactrace_data - Unified data management for mactrace.
+
+Manages trace data across the database, JSON files, and I/O binary files.
+
+Usage:
+    mactrace_data list                     List all runs (unified: DB + files)
+    mactrace_data info <N>                 Show details for run #N
+    mactrace_data delete <N>...            Delete run(s): DB + JSON + I/O files
+    mactrace_data delete --all             Delete everything (prompts first)
+    mactrace_data delete --all --force     Delete everything without prompting
+
+    mactrace_data db list [-j]             List DB traces
+    mactrace_data db info <id>             Show DB trace details
+    mactrace_data db delete <id>...        Delete from DB only
+    mactrace_data db vacuum                Compact the database
+    mactrace_data db stats                 Show database statistics
+
+    mactrace_data files list [-j]          List JSON + I/O files on disk
+    mactrace_data files info <N>           Show file details for run #N
+    mactrace_data files delete <N>...      Delete files only, keep DB
+
+Options:
+    -d, --db PATH      Database file (default: from config or ./mactrace.db)
+    -t, --traces PATH  Traces directory (default: from MACTRACE_OUTPUT config)
+    -f, --force        Don't prompt for confirmation on delete
+    -j, --json         Output as JSON
+    -v, --verbose      Show config resolution details
+    -h, --help         Show this help
+"""
+
+import argparse
+import glob
+import json as json_module
+import os
+import shutil
+import sqlite3
+import sys
+sys.dont_write_bytecode = True
+from datetime import datetime
+
+# Shared utilities
+from mactrace_lib import (
+    get_mactrace_config, get_config_value, resolve_input_path,
+    format_bytes as format_size, format_duration,
+)
+
+
+# =============================================================================
+# Configuration
+# =============================================================================
+
+def get_db_path(args_db=None):
+    """Determine database path from args, config, or default."""
+    if args_db:
+        return args_db
+    config = get_mactrace_config()
+    if 'MACTRACE_DB' in config:
+        return config['MACTRACE_DB']
+    if 'MACTRACE_DB' in os.environ:
+        return os.environ['MACTRACE_DB']
+    return 'mactrace.db'
+
+
+def get_traces_dir(args_traces=None):
+    """Determine traces directory from args, config, or default."""
+    if args_traces:
+        return args_traces
+    config = get_mactrace_config()
+    if 'MACTRACE_OUTPUT' in config:
+        return config['MACTRACE_OUTPUT']
+    if 'MACTRACE_OUTPUT' in os.environ:
+        return os.environ['MACTRACE_OUTPUT']
+    return './traces'
+
+
+def open_db(db_path, must_exist=True):
+    """Open database, return connection or None if it doesn't exist."""
+    if must_exist and not os.path.exists(db_path):
+        return None
+    db = sqlite3.connect(db_path)
+    db.row_factory = sqlite3.Row
+    db.execute('PRAGMA foreign_keys = ON')
+    return db
+
+
+# =============================================================================
+# Unified run discovery
+# =============================================================================
+
+def discover_runs(db_path, traces_dir, skip_sizes=False):
+    """
+    Build a unified list of tracing runs from DB and filesystem.
+
+    Each run is a dict with:
+        num:         1-based index for user reference
+        name:        trace name (from DB or filename)
+        command:     full command (from DB)
+        events:      event count (from DB, 0 if not imported)
+        duration_ms: trace duration (from DB)
+        date:        start time or file modification time
+        db_id:       DB trace ID (None if file-only)
+        json_file:   path to JSON file (None if DB-only)
+        io_dir:      path to I/O directory (None if none)
+        has_db:      bool
+        has_files:   bool (JSON or io_dir exists on disk)
+        json_size:   JSON file size in bytes (0 if absent)
+        io_size:     total I/O dir size in bytes (0 if absent)
+        io_count:    number of files in I/O dir (0 if absent)
+    """
+    runs = []
+    seen_json = set()  # track JSON files we've accounted for
+    seen_io = set()    # track I/O dirs we've accounted for
+
+    # --- Phase 1: DB traces ---
+    db = open_db(db_path, must_exist=True)
+    if db:
+        try:
+            cursor = db.execute('''
+                SELECT id, name, command, event_count, duration_ms, start_time,
+                       imported_at, json_file, io_dir
+                FROM traces ORDER BY id
+            ''')
+            for row in cursor.fetchall():
+                json_file = row['json_file']
+                io_dir = row['io_dir']
+                json_exists = json_file and os.path.exists(json_file)
+                io_exists = io_dir and os.path.isdir(io_dir)
+
+                json_sz = os.path.getsize(json_file) if json_exists and not skip_sizes else 0
+                io_sz, io_cnt = _dir_size(io_dir) if io_exists and not skip_sizes else (0, 0)
+
+                runs.append({
+                    'name': row['name'] or '-',
+                    'command': row['command'] or '-',
+                    'events': row['event_count'] or 0,
+                    'duration_ms': row['duration_ms'],
+                    'date': row['start_time'] or row['imported_at'] or '',
+                    'db_id': row['id'],
+                    'json_file': json_file if json_exists else json_file,
+                    'io_dir': io_dir if io_exists else io_dir,
+                    'has_db': True,
+                    'has_files': json_exists or io_exists,
+                    'json_size': json_sz,
+                    'io_size': io_sz,
+                    'io_count': io_cnt,
+                })
+                if json_file:
+                    seen_json.add(os.path.realpath(json_file) if os.path.exists(json_file) else json_file)
+                if io_dir:
+                    seen_io.add(os.path.realpath(io_dir) if os.path.exists(io_dir) else io_dir)
+        finally:
+            db.close()
+
+    # --- Phase 2: orphan files in traces directory ---
+    if traces_dir and os.path.isdir(traces_dir):
+        for entry in sorted(os.listdir(traces_dir)):
+            full = os.path.join(traces_dir, entry)
+
+            if entry.endswith('.json') and os.path.isfile(full):
+                real = os.path.realpath(full)
+                if real in seen_json:
+                    continue
+                seen_json.add(real)
+
+                name = entry[:-5]  # strip .json
+                st = os.stat(full)
+                # Check for matching I/O directory
+                io_dir_candidate = os.path.join(traces_dir, name)
+                io_exists = os.path.isdir(io_dir_candidate)
+                io_real = os.path.realpath(io_dir_candidate) if io_exists else None
+                io_sz, io_cnt = _dir_size(io_dir_candidate) if io_exists and not skip_sizes else (0, 0)
+
+                runs.append({
+                    'name': name,
+                    'command': '-',
+                    'events': 0,
+                    'duration_ms': None,
+                    'date': datetime.fromtimestamp(st.st_mtime).strftime('%Y-%m-%dT%H:%M:%S'),
+                    'db_id': None,
+                    'json_file': full,
+                    'io_dir': io_dir_candidate if io_exists else None,
+                    'has_db': False,
+                    'has_files': True,
+                    'json_size': st.st_size if not skip_sizes else 0,
+                    'io_size': io_sz,
+                    'io_count': io_cnt,
+                })
+                if io_real:
+                    seen_io.add(io_real)
+
+            elif os.path.isdir(full):
+                real = os.path.realpath(full)
+                if real in seen_io:
+                    continue
+                # Orphan I/O directory with no matching JSON or DB entry
+                json_candidate = full + '.json'
+                if os.path.exists(json_candidate):
+                    continue  # will be picked up by the .json branch
+                seen_io.add(real)
+                io_sz, io_cnt = _dir_size(full) if not skip_sizes else (1, 1)  # assume non-empty if not sizing
+
+                st = os.stat(full)
+                runs.append({
+                    'name': entry,
+                    'command': '-',
+                    'events': 0,
+                    'duration_ms': None,
+                    'date': datetime.fromtimestamp(st.st_mtime).strftime('%Y-%m-%dT%H:%M:%S'),
+                    'db_id': None,
+                    'json_file': None,
+                    'io_dir': full,
+                    'has_db': False,
+                    'has_files': True,
+                    'json_size': 0,
+                    'io_size': io_sz,
+                    'io_count': io_cnt,
+                })
+
+    # Assign 1-based run numbers
+    for i, run in enumerate(runs):
+        run['num'] = i + 1
+
+    return runs
+
+
+def _dir_size(path, quick=True):
+    """Return (total_bytes, file_count) for a directory.
+    
+    quick=True uses st_nlink (fast but approximate file count) and
+    du -sk (fast kernel-level size). Falls back to scandir on error.
+    """
+    if quick:
+        try:
+            import subprocess
+            # st_nlink - 2 gives approximate file count (. and .. don't count)
+            st = os.stat(path)
+            count = max(0, st.st_nlink - 2)
+            # du -sk is fast even for huge dirs (kernel-level)
+            result = subprocess.run(
+                ['du', '-sk', path],
+                capture_output=True, text=True, timeout=5
+            )
+            if result.returncode == 0:
+                total = int(result.stdout.split()[0]) * 1024
+                return total, count
+        except (OSError, subprocess.TimeoutExpired, ValueError, IndexError):
+            pass
+    # Fallback: walk directory (slow for large dirs)
+    total = 0
+    count = 0
+    try:
+        for entry in os.scandir(path):
+            if entry.is_file(follow_symlinks=False):
+                total += entry.stat().st_size
+                count += 1
+    except (OSError, PermissionError):
+        pass
+    return total, count
+
+
+def _fill_sizes(run):
+    """Compute actual sizes for a single run (on demand)."""
+    if run['json_file'] and os.path.exists(run['json_file']):
+        run['json_size'] = os.path.getsize(run['json_file'])
+    if run['io_dir'] and os.path.isdir(run['io_dir']):
+        run['io_size'], run['io_count'] = _dir_size(run['io_dir'])
+
+# =============================================================================
+# Unified commands
+# =============================================================================
+
+def cmd_list(args):
+    """List all runs (unified view)."""
+    runs = discover_runs(get_db_path(args.db), get_traces_dir(args.traces), skip_sizes=True)
+
+    if not runs:
+        print("No traces found (database or files).")
+        return
+
+    if getattr(args, 'json', False):
+        # For JSON output, compute sizes
+        runs = discover_runs(get_db_path(args.db), get_traces_dir(args.traces), skip_sizes=False)
+        print(json_module.dumps(runs, indent=2, default=str))
+        return
+
+    # Calculate column widths dynamically
+    max_name = max(len(r['name'][:25]) for r in runs)
+    max_name = max(max_name, 4)  # min width for "Name"
+
+    hdr = f"{'#':>4}  {'Name':<{max_name}}  {'Events':>10}  {'Duration':>10}  {'Date':<16}  {'DB':>2}  {'Files':>5}"
+    print(hdr)
+    print("-" * len(hdr))
+
+    for r in runs:
+        name = r['name'][:25]
+        events = f"{r['events']:,}" if r['events'] else '-'
+        duration = format_duration(r['duration_ms']) if r['duration_ms'] else '-'
+        date = (r['date'][:16] if r['date'] else '-')
+        db_mark = '\u2713' if r['has_db'] else '-'
+        files_mark = '\u2713' if r['has_files'] else '-'
+
+        print(f"{r['num']:>4}  {name:<{max_name}}  {events:>10}  {duration:>10}  {date:<16}  {db_mark:>2}  {files_mark:>5}")
+
+    print(f"\n{len(runs)} run(s)")
+
+
+def cmd_info(args):
+    """Show details for a unified run."""
+    runs = discover_runs(get_db_path(args.db), get_traces_dir(args.traces), skip_sizes=True)
+    run = _find_run(runs, args.run_id)
+    _fill_sizes(run)
+
+    print(f"Run #{run['num']}: {run['name']}")
+    print(f"  Command:     {run['command']}")
+    print(f"  Events:      {run['events']:,}")
+    if run['duration_ms']:
+        print(f"  Duration:    {format_duration(run['duration_ms'])}")
+    print(f"  Date:        {run['date'] or 'N/A'}")
+    print()
+    print(f"  Database:    {'yes (trace ID {})'.format(run['db_id']) if run['has_db'] else 'no'}")
+
+    if run['json_file']:
+        exists = os.path.exists(run['json_file'])
+        size_str = format_size(run['json_size']) if exists and run['json_size'] else 'missing'
+        print(f"  JSON file:   {run['json_file']} ({size_str})")
+    else:
+        print(f"  JSON file:   none")
+
+    if run['io_dir']:
+        exists = os.path.isdir(run['io_dir'])
+        if exists:
+            print(f"  I/O dir:     {run['io_dir']} ({run['io_count']} files, {format_size(run['io_size'])})")
+        else:
+            print(f"  I/O dir:     {run['io_dir']} (missing)")
+    else:
+        print(f"  I/O dir:     none")
+
+    total = run['json_size'] + run['io_size']
+    if total > 0:
+        print(f"\n  Total on disk: {format_size(total)}")
+
+    # If in DB, show category breakdown
+    if run['has_db']:
+        db = open_db(get_db_path(args.db))
+        if db:
+            try:
+                cursor = db.execute('''
+                    SELECT category, COUNT(*) as cnt
+                    FROM events WHERE trace_id = ?
+                    GROUP BY category ORDER BY cnt DESC
+                ''', (run['db_id'],))
+                cats = cursor.fetchall()
+                if cats:
+                    print(f"\n  Categories:")
+                    for row in cats:
+                        print(f"    {row['category'] or 'other':<12} {row['cnt']:>8,}")
+            finally:
+                db.close()
+
+
+def cmd_delete(args):
+    """Delete entire runs (DB + JSON + I/O files)."""
+    db_path = get_db_path(args.db)
+    traces_dir = get_traces_dir(args.traces)
+
+    if args.all:
+        _delete_all(db_path, traces_dir, args.force)
+        return
+
+    runs = discover_runs(db_path, traces_dir, skip_sizes=True)
+    targets = []
+    for rid in args.run_ids:
+        t = _find_run(runs, rid)
+        _fill_sizes(t)
+        targets.append(t)
+
+    if not targets:
+        print("No runs to delete.")
+        return
+
+    # Show what will be deleted
+    print("Runs to delete:")
+    total_events = 0
+    total_size = 0
+    for r in targets:
+        sz = r['json_size'] + r['io_size']
+        parts = []
+        if r['has_db']:
+            parts.append(f"{r['events']:,} events in DB")
+        if r['json_file'] and os.path.exists(r['json_file']):
+            parts.append(f"JSON {format_size(r['json_size'])}")
+        if r['io_dir'] and os.path.isdir(r['io_dir']):
+            parts.append(f"I/O dir {r['io_count']} files")
+        detail = ', '.join(parts) if parts else 'no data on disk'
+        print(f"  #{r['num']}: {r['name']} ({detail})")
+        total_events += r['events']
+        total_size += sz
+
+    if not args.force:
+        msg = f"\nDelete {len(targets)} run(s)"
+        parts = []
+        if total_events:
+            parts.append(f"{total_events:,} events")
+        if total_size:
+            parts.append(f"{format_size(total_size)} on disk")
+        if parts:
+            msg += f" ({', '.join(parts)})"
+        msg += "? [y/N] "
+        try:
+            confirm = input(msg)
+            if confirm.lower() not in ('y', 'yes'):
+                print("Cancelled.")
+                return
+        except (EOFError, KeyboardInterrupt):
+            print("\nCancelled.")
+            return
+
+    _perform_delete(db_path, targets)
+
+
+def _delete_all(db_path, traces_dir, force):
+    """Delete ALL data: database contents + all trace files."""
+    runs = discover_runs(db_path, traces_dir, skip_sizes=True)
+
+    if not runs:
+        print("Nothing to delete.")
+        return
+
+    # Summarize (avoid per-dir sizing on slow volumes)
+    db_count = sum(1 for r in runs if r['has_db'])
+    file_count = sum(1 for r in runs if r['has_files'])
+    total_events = sum(r['events'] for r in runs)
+    db_size = os.path.getsize(db_path) if os.path.exists(db_path) else 0
+    # Quick total: sum JSON file sizes (skip I/O dir sizing on slow volumes)
+    total_size = 0
+    for r in runs:
+        if r['json_file'] and os.path.exists(r['json_file']):
+            try:
+                total_size += os.path.getsize(r['json_file'])
+            except OSError:
+                pass
+
+    print("╔══════════════════════════════════════════════════╗")
+    print("║         ⚠️  DELETE ALL MACTRACE DATA  ⚠️          ║")
+    print("╠══════════════════════════════════════════════════╣")
+    print(f"║  Runs:        {len(runs):<35}║")
+    print(f"║  DB traces:   {db_count:<35}║")
+    print(f"║  File sets:   {file_count:<35}║")
+    print(f"║  Total events:{total_events:<35,}║")
+    print(f"║  DB size:     {format_size(db_size):<35}║")
+    print(f"║  Files size:  {format_size(total_size):<35}║")
+    print(f"║  TOTAL:       {format_size(db_size + total_size):<35}║")
+    print("╠══════════════════════════════════════════════════╣")
+    print("║  This will permanently destroy ALL trace data.  ║")
+    print("║  Database will be emptied. Files will be        ║")
+    print("║  deleted from disk. This cannot be undone.      ║")
+    print("╚══════════════════════════════════════════════════╝")
+
+    if not force:
+        try:
+            confirm = input('\nType "delete everything" to confirm: ')
+            if confirm.strip().lower() != 'delete everything':
+                print("Cancelled.")
+                return
+        except (EOFError, KeyboardInterrupt):
+            print("\nCancelled.")
+            return
+
+    _perform_delete(db_path, runs)
+
+    # Vacuum the DB after bulk delete
+    if os.path.exists(db_path):
+        try:
+            db = open_db(db_path)
+            if db:
+                before = os.path.getsize(db_path)
+                db.execute('VACUUM')
+                db.commit()
+                db.close()
+                after = os.path.getsize(db_path)
+                print(f"Vacuumed database: {format_size(before)} → {format_size(after)}")
+        except Exception as e:
+            print(f"Warning: vacuum failed: {e}", file=sys.stderr)
+
+    print("\nAll data deleted.")
+
+
+def _perform_delete(db_path, runs):
+    """Actually delete runs from DB and filesystem."""
+    db = open_db(db_path, must_exist=False) if os.path.exists(db_path) else None
+
+    for r in runs:
+        parts_done = []
+
+        # Delete from DB
+        if r['has_db'] and db:
+            db.execute('DELETE FROM traces WHERE id = ?', (r['db_id'],))
+            parts_done.append(f"DB trace #{r['db_id']}")
+
+        # Delete JSON file
+        if r['json_file'] and os.path.exists(r['json_file']):
+            try:
+                os.unlink(r['json_file'])
+                parts_done.append("JSON")
+            except OSError as e:
+                print(f"  Warning: could not delete {r['json_file']}: {e}", file=sys.stderr)
+
+        # Delete I/O directory
+        if r['io_dir'] and os.path.isdir(r['io_dir']):
+            try:
+                shutil.rmtree(r['io_dir'])
+                parts_done.append(f"I/O dir ({r['io_count']} files)")
+            except OSError as e:
+                print(f"  Warning: could not delete {r['io_dir']}: {e}", file=sys.stderr)
+
+        detail = ', '.join(parts_done) if parts_done else 'nothing to remove'
+        print(f"  Deleted #{r['num']}: {r['name']} [{detail}]")
+
+    if db:
+        db.commit()
+        db.close()
+
+
+def _find_run(runs, run_id):
+    """Find a run by its # number. Exits with error if not found."""
+    for r in runs:
+        if r['num'] == run_id:
+            return r
+    print(f"Error: No run #{run_id}. Use 'mactrace_data list' to see available runs.", file=sys.stderr)
+    sys.exit(1)
+
+
+# =============================================================================
+# DB-only commands (preserve all original mactrace_db behavior)
+# =============================================================================
+
+def cmd_db_list(args):
+    """List DB traces only."""
+    db = open_db(get_db_path(args.db))
+    if not db:
+        print("Error: Database not found.", file=sys.stderr)
+        sys.exit(1)
+
+    try:
+        cursor = db.execute('''
+            SELECT id, name, command, event_count, duration_ms, start_time, imported_at, json_file, io_dir
+            FROM traces ORDER BY id
+        ''')
+        rows = cursor.fetchall()
+
+        if not rows:
+            if getattr(args, 'json', False):
+                print("[]")
+            else:
+                print("No traces in database.")
+            return
+
+        if getattr(args, 'json', False):
+            traces = [dict(row) for row in rows]
+            print(json_module.dumps(traces, indent=2, default=str))
+            return
+
+        print(f"{'ID':>4}  {'Name':<20}  {'Events':>10}  {'Duration':>10}  {'Started':<20}  Command")
+        print("-" * 100)
+
+        for row in rows:
+            name = row['name'] or '-'
+            name = (name[:18] + '..') if len(name) > 20 else name
+            cmd_short = row['command'] or '-'
+            cmd_short = (cmd_short[:40] + '...') if len(cmd_short) > 43 else cmd_short
+            duration = format_duration(row['duration_ms']) if row['duration_ms'] else '-'
+            started = (row['start_time'][:19] if row['start_time'] else '-')
+            events = row['event_count'] or 0
+            print(f"{row['id']:>4}  {name:<20}  {events:>10,}  {duration:>10}  {started:<20}  {cmd_short}")
+
+        print(f"\n{len(rows)} trace(s)")
+    finally:
+        db.close()
+
+
+def cmd_db_info(args):
+    """Show detailed info for a DB trace."""
+    db = open_db(get_db_path(args.db))
+    if not db:
+        print("Error: Database not found.", file=sys.stderr)
+        sys.exit(1)
+
+    try:
+        cursor = db.execute('''
+            SELECT id, name, command, json_file, io_dir, target_pid, exit_code,
+                   duration_ms, event_count, start_time, imported_at
+            FROM traces WHERE id = ?
+        ''', (args.trace_id,))
+
+        row = cursor.fetchone()
+        if not row:
+            print(f"Error: No trace with ID {args.trace_id}", file=sys.stderr)
+            sys.exit(1)
+
+        print(f"Trace #{row['id']}: {row['name']}")
+        print(f"  Command:     {row['command']}")
+        print(f"  Target PID:  {row['target_pid']}")
+        print(f"  Exit Code:   {row['exit_code']}")
+        print(f"  Duration:    {format_duration(row['duration_ms']) if row['duration_ms'] else 'N/A'}")
+        print(f"  Events:      {(row['event_count'] or 0):,}")
+        print(f"  Started:     {row['start_time'] or 'N/A'}")
+        print(f"  Imported:    {row['imported_at']}")
+        print(f"  JSON File:   {row['json_file'] or 'N/A'}")
+        print(f"  I/O Dir:     {row['io_dir'] or 'N/A'}")
+
+        # Category breakdown
+        cats = db.execute('''
+            SELECT category, COUNT(*) as cnt FROM events WHERE trace_id = ?
+            GROUP BY category ORDER BY cnt DESC
+        ''', (row['id'],)).fetchall()
+        if cats:
+            print(f"\n  Categories:")
+            for c in cats:
+                print(f"    {c['category'] or 'other':<12} {c['cnt']:>8,}")
+
+        # Top syscalls
+        syscalls = db.execute('''
+            SELECT syscall, COUNT(*) as cnt FROM events WHERE trace_id = ?
+            GROUP BY syscall ORDER BY cnt DESC LIMIT 10
+        ''', (row['id'],)).fetchall()
+        if syscalls:
+            print(f"\n  Top Syscalls:")
+            for s in syscalls:
+                print(f"    {s['syscall']:<24} {s['cnt']:>8,}")
+
+        # Errors
+        errs = db.execute('''
+            SELECT errno_name, COUNT(*) as cnt FROM events WHERE trace_id = ? AND errno != 0
+            GROUP BY errno_name ORDER BY cnt DESC LIMIT 5
+        ''', (row['id'],)).fetchall()
+        if errs:
+            print(f"\n  Errors:")
+            for e in errs:
+                print(f"    {e['errno_name'] or 'unknown':<16} {e['cnt']:>8,}")
+    finally:
+        db.close()
+
+
+def cmd_db_delete(args):
+    """Delete traces from DB only."""
+    db = open_db(get_db_path(args.db))
+    if not db:
+        print("Error: Database not found.", file=sys.stderr)
+        sys.exit(1)
+
+    try:
+        placeholders = ','.join('?' * len(args.trace_ids))
+        cursor = db.execute(f'SELECT id, name, event_count FROM traces WHERE id IN ({placeholders})',
+                            args.trace_ids)
+        found = cursor.fetchall()
+        found_ids = {row['id'] for row in found}
+        missing = [tid for tid in args.trace_ids if tid not in found_ids]
+
+        if missing:
+            print(f"Warning: Trace ID(s) not found: {', '.join(map(str, missing))}", file=sys.stderr)
+
+        if not found:
+            print("No traces to delete.")
+            return
+
+        print("DB traces to delete:")
+        total_events = 0
+        for row in found:
+            print(f"  #{row['id']}: {row['name']} ({(row['event_count'] or 0):,} events)")
+            total_events += row['event_count'] or 0
+
+        if not args.force:
+            try:
+                confirm = input(f"\nDelete {len(found)} trace(s) with {total_events:,} events from DB? [y/N] ")
+                if confirm.lower() not in ('y', 'yes'):
+                    print("Cancelled.")
+                    return
+            except (EOFError, KeyboardInterrupt):
+                print("\nCancelled.")
+                return
+
+        for row in found:
+            db.execute('DELETE FROM traces WHERE id = ?', (row['id'],))
+            print(f"Deleted trace #{row['id']}: {row['name']}")
+
+        db.commit()
+        print(f"\nDeleted {len(found)} trace(s) from database.")
+    finally:
+        db.close()
+
+
+def cmd_db_vacuum(args):
+    """Compact the database."""
+    db_path = get_db_path(args.db)
+    db = open_db(db_path)
+    if not db:
+        print("Error: Database not found.", file=sys.stderr)
+        sys.exit(1)
+
+    try:
+        size_before = os.path.getsize(db_path)
+        print(f"Vacuuming {db_path}...")
+        db.execute('VACUUM')
+        db.commit()
+        size_after = os.path.getsize(db_path)
+        saved = size_before - size_after
+        print(f"Done. {format_size(size_before)} → {format_size(size_after)} (saved {format_size(saved)})")
+    finally:
+        db.close()
+
+
+def cmd_db_stats(args):
+    """Show database statistics."""
+    db_path = get_db_path(args.db)
+    db = open_db(db_path)
+    if not db:
+        print("Error: Database not found.", file=sys.stderr)
+        sys.exit(1)
+
+    try:
+        size = os.path.getsize(db_path) if os.path.exists(db_path) else 0
+        print(f"Database: {db_path}")
+        print(f"Size:     {format_size(size)}")
+
+        cursor = db.execute('SELECT COUNT(*), SUM(event_count), SUM(duration_ms) FROM traces')
+        row = cursor.fetchone()
+        trace_count = row[0] or 0
+        total_events = row[1] or 0
+        total_duration = row[2]
+
+        print(f"\nTraces:   {trace_count}")
+        print(f"Events:   {total_events:,}")
+        if total_duration:
+            print(f"Total traced time: {format_duration(total_duration)}")
+
+        cats = db.execute('''
+            SELECT category, COUNT(*) as cnt FROM events
+            GROUP BY category ORDER BY cnt DESC
+        ''').fetchall()
+        if cats:
+            print(f"\nEvents by category:")
+            for c in cats:
+                print(f"  {c['category'] or 'other':<12} {c['cnt']:>10,}")
+    finally:
+        db.close()
+
+
+# =============================================================================
+# Files-only commands
+# =============================================================================
+
+def cmd_files_list(args):
+    """List JSON + I/O files on disk."""
+    traces_dir = get_traces_dir(args.traces)
+
+    if not traces_dir or not os.path.isdir(traces_dir):
+        print(f"Traces directory not found: {traces_dir}")
+        return
+
+    entries = []
+    try:
+        items = sorted(os.listdir(traces_dir))
+    except OSError as e:
+        print(f"Error reading {traces_dir}: {e}", file=sys.stderr)
+        return
+    
+    json_files = set()
+    dirs = set()
+    for item in items:
+        if item.endswith('.json'):
+            json_files.add(item[:-5])
+        full = os.path.join(traces_dir, item)
+        if os.path.isdir(full):
+            dirs.add(item)
+
+    for name in sorted(json_files):
+        json_path = os.path.join(traces_dir, name + '.json')
+        has_io = name in dirs
+        # Get size without blocking — try quickly, fall back to 0
+        try:
+            json_size = os.path.getsize(json_path)
+        except OSError:
+            json_size = 0
+        try:
+            mtime = os.path.getmtime(json_path)
+            date = datetime.fromtimestamp(mtime).strftime('%Y-%m-%d %H:%M')
+        except OSError:
+            date = '-'
+        entries.append({
+            'name': name,
+            'json_file': json_path,
+            'json_size': json_size,
+            'has_io': has_io,
+            'date': date,
+        })
+
+    if not entries:
+        print("No trace files found.")
+        return
+
+    if getattr(args, 'json', False):
+        print(json_module.dumps(entries, indent=2, default=str))
+        return
+
+    print(f"{'#':>4}  {'Name':<25}  {'JSON Size':>10}  {'I/O':>4}  {'Date':<16}")
+    print("-" * 70)
+
+    for i, e in enumerate(entries, 1):
+        name = e['name'][:25]
+        json_sz = format_size(e['json_size']) if e['json_size'] else '?'
+        io_mark = '\u2713' if e.get('has_io') else '-'
+        print(f"{i:>4}  {name:<25}  {json_sz:>10}  {io_mark:>4}  {e['date']:<16}")
+
+    total_json = sum(e['json_size'] for e in entries)
+    print(f"\n{len(entries)} file set(s), {format_size(total_json)} JSON total")
+
+
+def cmd_files_info(args):
+    """Show file details for a run."""
+    runs = discover_runs(get_db_path(args.db), get_traces_dir(args.traces), skip_sizes=True)
+    run = _find_run(runs, args.run_id)
+    _fill_sizes(run)
+
+    print(f"Run #{run['num']}: {run['name']}")
+
+    if run['json_file']:
+        exists = os.path.exists(run['json_file'])
+        print(f"\n  JSON file: {run['json_file']}")
+        if exists:
+            print(f"    Size: {format_size(run['json_size'])}")
+            st = os.stat(run['json_file'])
+            print(f"    Modified: {datetime.fromtimestamp(st.st_mtime).strftime('%Y-%m-%d %H:%M:%S')}")
+        else:
+            print(f"    Status: MISSING")
+    else:
+        print(f"\n  JSON file: none")
+
+    if run['io_dir']:
+        exists = os.path.isdir(run['io_dir'])
+        print(f"\n  I/O dir: {run['io_dir']}")
+        if exists:
+            print(f"    Files: {run['io_count']}")
+            print(f"    Size: {format_size(run['io_size'])}")
+            # Show first few files
+            try:
+                files = sorted(os.listdir(run['io_dir']))[:10]
+                if files:
+                    print(f"    Contents (first {min(10, len(files))}):")
+                    for f in files:
+                        fp = os.path.join(run['io_dir'], f)
+                        sz = os.path.getsize(fp) if os.path.isfile(fp) else 0
+                        print(f"      {f} ({format_size(sz)})")
+                    total_files = len(os.listdir(run['io_dir']))
+                    if total_files > 10:
+                        print(f"      ... and {total_files - 10} more")
+            except OSError:
+                pass
+        else:
+            print(f"    Status: MISSING")
+    else:
+        print(f"\n  I/O dir: none")
+
+
+def cmd_files_delete(args):
+    """Delete files only, keep DB."""
+    runs = discover_runs(get_db_path(args.db), get_traces_dir(args.traces), skip_sizes=True)
+    targets = []
+    for rid in args.run_ids:
+        t = _find_run(runs, rid)
+        _fill_sizes(t)
+        targets.append(t)
+
+    if not targets:
+        print("No runs to delete files for.")
+        return
+
+    print("Files to delete (DB entries will be kept):")
+    total_size = 0
+    for r in targets:
+        parts = []
+        if r['json_file'] and os.path.exists(r['json_file']):
+            parts.append(f"JSON {format_size(r['json_size'])}")
+        if r['io_dir'] and os.path.isdir(r['io_dir']):
+            parts.append(f"I/O dir {r['io_count']} files ({format_size(r['io_size'])})")
+        if not parts:
+            parts.append("no files on disk")
+        print(f"  #{r['num']}: {r['name']} ({', '.join(parts)})")
+        total_size += r['json_size'] + r['io_size']
+
+    if not args.force:
+        try:
+            confirm = input(f"\nDelete files for {len(targets)} run(s) ({format_size(total_size)})? [y/N] ")
+            if confirm.lower() not in ('y', 'yes'):
+                print("Cancelled.")
+                return
+        except (EOFError, KeyboardInterrupt):
+            print("\nCancelled.")
+            return
+
+    for r in targets:
+        parts_done = []
+        if r['json_file'] and os.path.exists(r['json_file']):
+            try:
+                os.unlink(r['json_file'])
+                parts_done.append("JSON")
+            except OSError as e:
+                print(f"  Warning: could not delete {r['json_file']}: {e}", file=sys.stderr)
+        if r['io_dir'] and os.path.isdir(r['io_dir']):
+            try:
+                shutil.rmtree(r['io_dir'])
+                parts_done.append("I/O dir")
+            except OSError as e:
+                print(f"  Warning: could not delete {r['io_dir']}: {e}", file=sys.stderr)
+        detail = ', '.join(parts_done) if parts_done else 'nothing to remove'
+        print(f"  Deleted files for #{r['num']}: {r['name']} [{detail}]")
+
+
+# =============================================================================
+# Argument parsing
+# =============================================================================
+
+def main():
+    parser = argparse.ArgumentParser(
+        prog='mactrace_data',
+        description='Unified data management for mactrace traces.',
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog='''
+Examples:
+    mactrace_data list                     List all tracing runs
+    mactrace_data info 3                   Details for run #3
+    mactrace_data delete 1 2 3             Delete runs 1, 2, 3 (DB + files)
+    mactrace_data delete --all             Delete everything (prompts)
+    mactrace_data delete --all --force     Delete everything, no prompt
+
+    mactrace_data db list                  List DB traces only
+    mactrace_data db info 5               DB trace #5 details
+    mactrace_data db delete 5 -f           Remove from DB, no prompt
+    mactrace_data db vacuum                Compact the database
+    mactrace_data db stats                 Database statistics
+
+    mactrace_data files list               List JSON + I/O files on disk
+    mactrace_data files info 3             File details for run #3
+    mactrace_data files delete 3           Delete files only, keep DB
+'''
+    )
+    parser.add_argument('-d', '--db', help='Database file path')
+    parser.add_argument('-t', '--traces', help='Traces directory path')
+    parser.add_argument('-f', '--force', action='store_true', help="Don't prompt for confirmation")
+    parser.add_argument('-v', '--verbose', action='store_true', help='Show config resolution details')
+
+    subparsers = parser.add_subparsers(dest='command', help='Command')
+
+    # --- Top-level commands ---
+
+    # list
+    list_p = subparsers.add_parser('list', aliases=['ls'], help='List all runs (unified)')
+    list_p.add_argument('-j', '--json', action='store_true', help='Output as JSON')
+
+    # info
+    info_p = subparsers.add_parser('info', aliases=['show'], help='Show run details')
+    info_p.add_argument('run_id', type=int, help='Run number (from list)')
+
+    # delete
+    del_p = subparsers.add_parser('delete', aliases=['rm', 'del'], help='Delete run(s)')
+    del_p.add_argument('run_ids', type=int, nargs='*', help='Run number(s) to delete')
+    del_p.add_argument('--all', action='store_true', help='Delete ALL data')
+
+    # --- db subcommand ---
+    db_p = subparsers.add_parser('db', help='Database-only operations')
+    db_sub = db_p.add_subparsers(dest='db_command', help='DB command')
+
+    db_list_p = db_sub.add_parser('list', aliases=['ls'], help='List DB traces')
+    db_list_p.add_argument('-j', '--json', action='store_true', help='Output as JSON')
+
+    db_info_p = db_sub.add_parser('info', aliases=['show'], help='Show DB trace details')
+    db_info_p.add_argument('trace_id', type=int, help='DB trace ID')
+
+    db_del_p = db_sub.add_parser('delete', aliases=['rm', 'del'], help='Delete from DB only')
+    db_del_p.add_argument('trace_ids', type=int, nargs='+', help='DB trace ID(s)')
+
+    db_sub.add_parser('vacuum', help='Compact the database')
+    db_sub.add_parser('stats', help='Show database statistics')
+
+    # --- files subcommand ---
+    files_p = subparsers.add_parser('files', help='File-only operations')
+    files_sub = files_p.add_subparsers(dest='files_command', help='Files command')
+
+    files_list_p = files_sub.add_parser('list', aliases=['ls'], help='List trace files')
+    files_list_p.add_argument('-j', '--json', action='store_true', help='Output as JSON')
+
+    files_info_p = files_sub.add_parser('info', aliases=['show'], help='Show file details')
+    files_info_p.add_argument('run_id', type=int, help='Run number (from list)')
+
+    files_del_p = files_sub.add_parser('delete', aliases=['rm', 'del'], help='Delete files only')
+    files_del_p.add_argument('run_ids', type=int, nargs='+', help='Run number(s)')
+
+    args = parser.parse_args()
+
+    if args.verbose:
+        db_path = get_db_path(args.db)
+        traces_dir = get_traces_dir(args.traces)
+        config = get_mactrace_config()
+        print(f"Database:   {db_path}", file=sys.stderr)
+        print(f"Traces dir: {traces_dir}", file=sys.stderr)
+        if config:
+            print(f"Config:     {', '.join(f'{k}={v}' for k, v in config.items())}", file=sys.stderr)
+
+    if not args.command:
+        parser.print_help()
+        sys.exit(1)
+
+    # Route to handler
+    if args.command in ('list', 'ls'):
+        cmd_list(args)
+    elif args.command in ('info', 'show'):
+        cmd_info(args)
+    elif args.command in ('delete', 'rm', 'del'):
+        if not args.all and not args.run_ids:
+            print("Error: specify run number(s) or --all", file=sys.stderr)
+            sys.exit(1)
+        cmd_delete(args)
+    elif args.command == 'db':
+        if not getattr(args, 'db_command', None):
+            db_p.print_help()
+            sys.exit(1)
+        if args.db_command in ('list', 'ls'):
+            cmd_db_list(args)
+        elif args.db_command in ('info', 'show'):
+            cmd_db_info(args)
+        elif args.db_command in ('delete', 'rm', 'del'):
+            cmd_db_delete(args)
+        elif args.db_command == 'vacuum':
+            cmd_db_vacuum(args)
+        elif args.db_command == 'stats':
+            cmd_db_stats(args)
+    elif args.command == 'files':
+        if not getattr(args, 'files_command', None):
+            files_p.print_help()
+            sys.exit(1)
+        if args.files_command in ('list', 'ls'):
+            cmd_files_list(args)
+        elif args.files_command in ('info', 'show'):
+            cmd_files_info(args)
+        elif args.files_command in ('delete', 'rm', 'del'):
+            cmd_files_delete(args)
+
+
+if __name__ == '__main__':
+    main()
