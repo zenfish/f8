@@ -3184,37 +3184,74 @@ The _nocancel variants are included automatically.""")
         trace_spec=args.trace
     )
     
-    # ── Dynamic DIF sizing (kern.dtrace.difo_maxsize) ──────────────────
-    # Read current kernel value
+    # ── Dynamic DTrace kernel limit sizing ─────────────────────────────────────
+    # Two kernel limits gate DTrace compilation:
+    #   kern.dtrace.difo_maxsize — max size of a single DIF object (per-probe bytecode)
+    #   kern.dtrace.dof_maxsize  — max size of the entire DOF (compiled program)
+    #
+    # macOS defaults: difo=256KB, dof=512KB. With 200+ probes + IO capture,
+    # we routinely exceed dof_maxsize. DTrace's error message is misleading:
+    # "DIF program exceeds maximum program size" fires for BOTH limits.
     import subprocess as _sp
-    try:
-        _result = _sp.run(['/usr/sbin/sysctl', '-n', 'kern.dtrace.difo_maxsize'],
-                          capture_output=True, text=True)
-        current_difo = int(_result.stdout.strip())
-    except (ValueError, OSError):
-        current_difo = 262144  # kernel default
-    
+
+    def _read_sysctl(name, default):
+        try:
+            r = _sp.run(['/usr/sbin/sysctl', '-n', name], capture_output=True, text=True)
+            return int(r.stdout.strip())
+        except (ValueError, OSError):
+            return default
+
+    current_difo = _read_sysctl('kern.dtrace.difo_maxsize', 262144)
+    current_dof  = _read_sysctl('kern.dtrace.dof_maxsize',  524288)
+
     original_difo_maxsize = None
+    original_dof_maxsize  = None
+
+    # Count ALL DIF programs: base probes + I/O capture + iovec
+    # These are appended during trace_command/trace_pid, but we need
+    # the count NOW for auto-sizing.
     dif_count = count_dif_programs(tracer._dtrace_script)
-    
+    if tracer.capture_io:
+        io_probes = tracer._build_io_capture_probes(tracer.io_size)
+        dif_count += count_dif_programs(io_probes)
+        if tracer.iovec_max is not None:
+            iov_probes = tracer._build_iovec_capture_probes(
+                tracer.io_size, tracer.iovec_max, tracer.iovec_syscalls)
+            dif_count += count_dif_programs(iov_probes)
+
+    # ── difo_maxsize (per-probe limit) ──────────────────────────────────
     # Budget formula: 250 probes fit in 256KB (262144 bytes)
     PROBES_PER_256K = 250
     BASE_DIFO = 262144
-    
+
     # Calculate needed difo_maxsize for our probe count (with 20% headroom)
     needed_difo = int((dif_count / PROBES_PER_256K) * BASE_DIFO * 1.2)
     # Round up to nearest 64KB
     needed_difo = ((needed_difo + 65535) // 65536) * 65536
     # Floor at kernel default
     needed_difo = max(needed_difo, BASE_DIFO)
-    
+
     if args.dynamic_max is not None:
         # Explicit -d override: use that value
         target_difo = args.dynamic_max
     else:
         # Auto-adjust: raise if needed, leave alone if sufficient
         target_difo = needed_difo if needed_difo > current_difo else current_difo
-    
+
+    # ── dof_maxsize (total DOF limit) ───────────────────────────────────
+    # The compiled DOF (all probes + actions + strings + metadata) needs
+    # room to fit. Empirically, each probe clause compiles to ~2-4KB of DOF,
+    # plus IO capture probes with tracemem() are heavier (~8-16KB each).
+    # Use 8KB/probe as a conservative estimate with 50% headroom.
+    DOF_BYTES_PER_PROBE = 8192
+    needed_dof = int(dif_count * DOF_BYTES_PER_PROBE * 1.5)
+    # Round up to nearest 256KB
+    needed_dof = ((needed_dof + 262143) // 262144) * 262144
+    # Floor at kernel default
+    needed_dof = max(needed_dof, 524288)
+    target_dof = needed_dof if needed_dof > current_dof else current_dof
+
+    # ── Apply difo_maxsize ──────────────────────────────────────────
     if target_difo != current_difo:
         original_difo_maxsize = current_difo
         try:
@@ -3222,37 +3259,54 @@ The _nocancel variants are included automatically.""")
                     capture_output=True, check=True)
         except _sp.CalledProcessError as e:
             print(f"Warning: Could not set kern.dtrace.difo_maxsize={target_difo}: {e.stderr.strip()}", file=sys.stderr)
-            target_difo = current_difo  # fall back
+            target_difo = current_difo
             original_difo_maxsize = None
         else:
             if args.dynamic_max is not None:
                 print(f"kern.dtrace.difo_maxsize: {current_difo} → {target_difo} (manual -d override)", file=sys.stderr)
             else:
                 print(f"kern.dtrace.difo_maxsize: {current_difo} → {target_difo} (auto-adjusted for {dif_count} probes)", file=sys.stderr)
-        
-        # Restore on ANY exit: atexit + signal handlers
-        if original_difo_maxsize is not None:
-            import atexit
-            _difo_restored = False
-            def _restore_difo():
-                nonlocal _difo_restored
-                if _difo_restored:
-                    return
-                _difo_restored = True
-                try:
+
+    # ── Apply dof_maxsize ───────────────────────────────────────────
+    if target_dof != current_dof:
+        original_dof_maxsize = current_dof
+        try:
+            _sp.run(['/usr/sbin/sysctl', f'kern.dtrace.dof_maxsize={target_dof}'],
+                    capture_output=True, check=True)
+        except _sp.CalledProcessError as e:
+            print(f"Warning: Could not set kern.dtrace.dof_maxsize={target_dof}: {e.stderr.strip()}", file=sys.stderr)
+            target_dof = current_dof
+            original_dof_maxsize = None
+        else:
+            print(f"kern.dtrace.dof_maxsize: {current_dof} → {target_dof} (auto-adjusted for {dif_count} probes)", file=sys.stderr)
+
+    # ── Restore on ANY exit: atexit + signal handlers ───────────────────
+    if original_difo_maxsize is not None or original_dof_maxsize is not None:
+        import atexit
+        _dtrace_limits_restored = False
+        def _restore_dtrace_limits():
+            nonlocal _dtrace_limits_restored
+            if _dtrace_limits_restored:
+                return
+            _dtrace_limits_restored = True
+            try:
+                if original_difo_maxsize is not None:
                     _sp.run(['/usr/sbin/sysctl', f'kern.dtrace.difo_maxsize={original_difo_maxsize}'],
                             capture_output=True)
-                except Exception:
-                    pass
-            atexit.register(_restore_difo)
-            
-            import signal as _sig
-            def _signal_restore(signum, frame):
-                _restore_difo()
-                _sig.signal(signum, _sig.SIG_DFL)
-                os.kill(os.getpid(), signum)
-            _sig.signal(_sig.SIGTERM, _signal_restore)
-            _sig.signal(_sig.SIGHUP, _signal_restore)
+                if original_dof_maxsize is not None:
+                    _sp.run(['/usr/sbin/sysctl', f'kern.dtrace.dof_maxsize={original_dof_maxsize}'],
+                            capture_output=True)
+            except Exception:
+                pass
+        atexit.register(_restore_dtrace_limits)
+
+        import signal as _sig
+        def _signal_restore(signum, frame):
+            _restore_dtrace_limits()
+            _sig.signal(signum, _sig.SIG_DFL)
+            os.kill(os.getpid(), signum)
+        _sig.signal(_sig.SIGTERM, _signal_restore)
+        _sig.signal(_sig.SIGHUP, _signal_restore)
     
     # Budget reporting (based on effective difo_maxsize)
     _effective_max = target_difo
