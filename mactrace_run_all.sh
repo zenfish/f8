@@ -124,20 +124,28 @@ if [ -n "$existing_db_id" ]; then
     fi
 fi
 
-# Remove existing output files if --force
-if [ -n "$force_mode" ]; then
-    if [ -f "$json_path" ]; then
-        echo "Removing existing: $json_path"
-        rm -f "$json_path"
-    fi
-    if [ -d "$io_dir" ]; then
-        echo "Removing existing: $io_dir/"
-        rm -rf "$io_dir"
-    fi
-    # Also remove the txt summary if it exists
-    txt_path_clean=$(resolve_path "$base.txt" MACTRACE_OUTPUT)
-    if [ -f "$txt_path_clean" ]; then
-        rm -f "$txt_path_clean"
+# Check for existing output files
+if [ -f "$json_path" ] || [ -d "$io_dir" ]; then
+    if [ -n "$force_mode" ]; then
+        if [ -f "$json_path" ]; then
+            echo "Removing existing: $json_path"
+            rm -f "$json_path"
+        fi
+        if [ -d "$io_dir" ]; then
+            echo "Removing existing: $io_dir/"
+            rm -rf "$io_dir"
+        fi
+        # Also remove the txt summary if it exists
+        txt_path_clean=$(resolve_path "$base.txt" MACTRACE_OUTPUT)
+        if [ -f "$txt_path_clean" ]; then
+            rm -f "$txt_path_clean"
+        fi
+    else
+        echo -e "\nOutput file already exists:\n"
+        [ -f "$json_path" ] && echo "    $json_path"
+        [ -d "$io_dir" ]    && echo "    $io_dir/"
+        echo -e "\nUse --force to auto-remove, or choose a different name with -n <name>.\n"
+        exit 0
     fi
 fi
 
