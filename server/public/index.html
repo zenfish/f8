@@ -360,10 +360,12 @@
             vertical-align: middle;
             font-family: var(--f-mono);
         }
-        .dns-source.src-mdns       { background: #2980b9; color: white; }
-        .dns-source.src-port53     { background: #27ae60; color: white; }
-        .dns-source.src-hosts      { background: #e67e22; color: white; }
-        .dns-source.src-unknown    { background: #7f8c8d; color: white; }
+        .dns-source.src-mdns       { background: #80cdc1; color: #1a1a1a; }
+        .dns-source.src-port53     { background: #018571; color: white; }
+        .dns-source.src-doh        { background: #dfc27d; color: #1a1a1a; }
+        .dns-source.src-dot        { background: #a6611a; color: white; }
+        .dns-source.src-hosts      { background: #f5f5f5; color: #1a1a1a; }
+        .dns-source.src-unknown    { background: #f5f5f5; color: #666; }
         /* Geo flag */
         .geo-flag {
             display: inline-block;
@@ -811,7 +813,9 @@
     function renderDnsSource(source) {
         const labels = {
             'mDNSResponder': ['system resolver', 'src-mdns'],
-            'port53':        ['port 53 (direct)', 'src-port53'],
+            'port53':        ['DNS (port 53)', 'src-port53'],
+            'doh':           ['DNS-over-HTTPS', 'src-doh'],
+            'dot':           ['DNS-over-TLS', 'src-dot'],
             '/etc/hosts':    ['/etc/hosts', 'src-hosts'],
         };
         const [label, cls] = labels[source] || [source || '?', 'src-unknown'];

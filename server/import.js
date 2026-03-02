@@ -1352,6 +1352,63 @@ function extractDnsLookups() {
         console.log(`  Port 53 (direct DNS): ${port53Count} lookups parsed from wire protocol`);
     }
     
+    // ── Source 3: DNS-over-HTTPS (DoH) detection ────────────────────
+    // Known DoH provider hostnames — if we see mDNSResponder lookups for these,
+    // mark them as DoH bootstrap (the actual DNS queries happen inside HTTPS)
+    const DOH_PROVIDERS = new Set([
+        'cloudflare-dns.com', 'chrome.cloudflare-dns.com', 'mozilla.cloudflare-dns.com',
+        '1dot1dot1dot1.cloudflare-dns.com', 'one.one.one.one',
+        'dns.google', 'dns.google.com', 'dns64.dns.google',
+        'doh.opendns.com', 'dns.quad9.net', 'dns9.quad9.net',
+        'dns.nextdns.io', 'doh.cleanbrowsing.org', 'security.cloudflare-dns.com',
+        'family.cloudflare-dns.com', 'dns.adguard.com', 'dns-family.adguard.com',
+    ]);
+    
+    // Also detect by connect to known DoH IPs on port 443
+    const DOH_IPS = new Set([
+        '1.1.1.1', '1.0.0.1',                      // Cloudflare
+        '8.8.8.8', '8.8.4.4',                      // Google
+        '9.9.9.9', '149.112.112.112',              // Quad9
+        '208.67.222.222', '208.67.220.220',        // OpenDNS
+    ]);
+    
+    // Re-label existing correlations that are DoH providers
+    for (const [hostname, info] of correlations) {
+        if (DOH_PROVIDERS.has(hostname.toLowerCase())) {
+            info.source = 'doh';
+        }
+    }
+    
+    // Check for connects to known DoH IPs on port 443
+    for (const conn of connectEvents) {
+        if (!conn.target) continue;
+        const [ip, port] = conn.target.split(':');
+        if (port === '443' && DOH_IPS.has(ip)) {
+            // Find if any mDNSResponder lookup corresponds to a DoH provider name
+            // that resolved to this IP — if not, add a synthetic entry
+            let found = false;
+            for (const [hostname, info] of correlations) {
+                if (info.ip && info.ip.startsWith(ip + ':')) {
+                    info.source = 'doh';
+                    found = true;
+                }
+            }
+        }
+    }
+    
+    // Also detect DNS-over-TLS (port 853)
+    for (const conn of connectEvents) {
+        if (!conn.target) continue;
+        const [ip, port] = conn.target.split(':');
+        if (port === '853') {
+            for (const [hostname, info] of correlations) {
+                if (info.ip && info.ip.startsWith(ip + ':')) {
+                    info.source = 'dot';
+                }
+            }
+        }
+    }
+
     // ── Insert all correlations ─────────────────────────────────────
     if (correlations.size === 0) {
         console.log('  No DNS lookups found');
