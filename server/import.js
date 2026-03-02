@@ -1447,4 +1447,4 @@ try {
 db.close();
 
 console.log(`Done! Saved to ${dbFile}`);
-console.log(`\nRun: mactrace-server --db ${dbFile}`);
+console.log(`\nRun: mactrace_server --db ${dbFile}`);

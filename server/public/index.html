@@ -819,7 +819,7 @@
             '/etc/hosts':    ['/etc/hosts', 'src-hosts'],
         };
         const [label, cls] = labels[source] || [source || '?', 'src-unknown'];
-        return \`<span class="dns-source \${cls}">\${label}</span>\`;
+        return `<span class="dns-source ${cls}">${label}</span>`;
     }
 
     let ipToHostname = new Map();  // IP → hostname for DNS enrichment
