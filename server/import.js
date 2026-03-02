@@ -1372,10 +1372,27 @@ function extractDnsLookups() {
         '208.67.222.222', '208.67.220.220',        // OpenDNS
     ]);
     
-    // Re-label existing correlations that are DoH providers
+    // Re-label existing correlations that are DoH providers —
+    // but ONLY if we see a connection to that IP on port 443.
+    // If the connection is on port 53, it's plain DNS even if
+    // the server happens to also support DoH (e.g., 1.1.1.1).
+    const connectsByIp = new Map(); // ip → Set of ports
+    for (const conn of connectEvents) {
+        if (!conn.target) continue;
+        const [ip, port] = conn.target.split(':');
+        if (!connectsByIp.has(ip)) connectsByIp.set(ip, new Set());
+        connectsByIp.get(ip).add(port);
+    }
+    
     for (const [hostname, info] of correlations) {
         if (DOH_PROVIDERS.has(hostname.toLowerCase())) {
-            info.source = 'doh';
+            // Check if the resolved IP was actually contacted on port 443
+            const resolvedIp = info.ip ? info.ip.split(':')[0] : null;
+            const ports = resolvedIp ? connectsByIp.get(resolvedIp) : null;
+            if (ports && ports.has('443')) {
+                info.source = 'doh';
+            }
+            // If only port 53 → leave as whatever source it already is (system/mdns)
         }
     }
     
