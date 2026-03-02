@@ -313,6 +313,106 @@ app.get('/api/traces/:id/io/:filename', (req, res) => {
     fs.createReadStream(filepath).pipe(res);
 });
 
+// Paginated hexdump API — returns JSON lines for virtual scrolling.
+// Supports existing .hexdump files OR on-the-fly generation from .bin.
+// Query params: offset (line #, default 0), limit (default 500)
+// Special: if limit=-1, returns only { totalLines } (cheap metadata call).
+app.get('/api/traces/:id/hexdump-lines/:filename', async (req, res) => {
+    try {
+        const trace = queryOne('SELECT io_dir FROM traces WHERE id = ?', [req.params.id]);
+        if (!trace?.io_dir) return res.status(404).json({ error: 'I/O directory not found' });
+
+        const filename = req.params.filename;
+        if (filename.includes('..') || filename.includes('/') || filename.includes('\\')) {
+            return res.status(400).json({ error: 'Invalid filename' });
+        }
+
+        const safeName = path.basename(filename);
+        // Resolve hexdump file path — accept either .hexdump or base name
+        let hexPath;
+        if (safeName.endsWith('.hexdump')) {
+            hexPath = path.join(trace.io_dir, safeName);
+        } else {
+            hexPath = path.join(trace.io_dir, safeName.replace(/\.bin$/, '') + '.bin.hexdump');
+        }
+
+        // If hexdump doesn't exist, try generating from .bin on disk for next time
+        const binPath = hexPath.replace(/\.hexdump$/, '');
+        if (!fs.existsSync(hexPath) && fs.existsSync(binPath)) {
+            try {
+                execFileSync('/bin/sh', ['-c', `hexdump -C "${binPath}" > "${hexPath}"`], {
+                    maxBuffer: 1024 * 1024,
+                    timeout: 300000
+                });
+            } catch (e) {
+                return res.status(500).json({ error: 'Failed to generate hexdump: ' + e.message });
+            }
+        }
+
+        if (!fs.existsSync(hexPath)) {
+            return res.status(404).json({ error: 'Hexdump file not found' });
+        }
+
+        const offsetParam = parseInt(req.query.offset, 10) || 0;
+        const limitParam = parseInt(req.query.limit, 10);
+
+        // Fast line count via wc -l (avoids reading entire file into memory)
+        let totalLines;
+        try {
+            const wcOut = execFileSync('wc', ['-l', hexPath], { encoding: 'utf-8' });
+            totalLines = parseInt(wcOut.trim().split(/\s+/)[0], 10) || 0;
+        } catch {
+            totalLines = 0;
+        }
+
+        // Metadata-only request (limit=-1)
+        if (limitParam === -1) {
+            const stat = fs.statSync(hexPath);
+            return res.json({ totalLines, fileSize: stat.size });
+        }
+
+        const limit = isNaN(limitParam) ? 500 : Math.min(limitParam, 5000);
+        const startLine = offsetParam + 1; // sed is 1-indexed
+        const endLine = offsetParam + limit;
+
+        // Extract line range with sed — memory-efficient, never reads whole file
+        let rawLines;
+        try {
+            rawLines = execFileSync('sed', ['-n', `${startLine},${endLine}p`, hexPath], {
+                encoding: 'utf-8',
+                maxBuffer: limit * 200
+            });
+        } catch (e) {
+            return res.status(500).json({ error: 'Failed to read hexdump range: ' + e.message });
+        }
+
+        // Parse hexdump -C lines into structured JSON
+        const lines = [];
+        for (const line of rawLines.split('\n')) {
+            if (!line.trim()) continue;
+            const match = line.match(/^([0-9a-f]+)\s+(.+?)\s+\|(.+)\|$/i);
+            if (match) {
+                lines.push({
+                    addr: parseInt(match[1], 16),
+                    addrStr: match[1],
+                    bytes: match[2],
+                    ascii: match[3]
+                });
+            }
+        }
+
+        res.json({
+            totalLines,
+            offset: offsetParam,
+            limit,
+            lines
+        });
+    } catch (err) {
+        console.error('Error in /hexdump-lines:', err);
+        res.status(500).json({ error: err.message });
+    }
+});
+
 // Get aggregated object stats (files or network hosts)
 app.get('/api/traces/:id/objects', async (req, res) => {
     try {
