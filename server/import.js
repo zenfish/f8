@@ -1093,9 +1093,14 @@ function extractDnsLookups() {
     }
     
     // Correlate mDNSResponder lookups with connect() calls
+    // Skip connects to port 53 — those are DNS server connections, not resolved hosts
     for (const lookup of mdnsLookups) {
         if (correlations.has(lookup.hostname)) continue;
-        const conn = connectEvents.find(c => c.seq > lookup.seq && c.seq < lookup.seq + 1000);
+        const conn = connectEvents.find(c => 
+            c.seq > lookup.seq && 
+            c.seq < lookup.seq + 1000 &&
+            !c.target.endsWith(':53')   // Skip DNS server connections
+        );
         if (conn) {
             correlations.set(lookup.hostname, {
                 ip: conn.target,
