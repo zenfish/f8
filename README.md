@@ -2,9 +2,13 @@
 
 *fait accompli* (n.) — a thing that has already happened or been decided before those affected hear about it, leaving them with no option but to accept it.
 
-You run a program. It does what it does. Only afterward do you get to see everything that happened — every syscall, every file touched, every network connection, every byte read and written. The deed is done; you're just reviewing the evidence.
+You run a program, trace it, it does what it does, and then... what just happened?
 
-**f8** is an strace-like system call tracer for macOS using DTrace. Traces every syscall for a command and all its child processes, producing structured JSON for analysis and an interactive web-based timeline viewer.
+f8 is an effort to instrument the shadows. All the details, including syscalls, files touched, network connections, all
+the bytes read and written. The deed is done; you're just reviewing the evidence.
+
+**f8** is an strace-like system call tracer for macOS that uses DTrace under the hood. It traces syscalls for a given
+command and provides an interactive web-based timeline/exec viewer along with JSON files for analysis.
 
 ![Trace list](docs/screenshot-traces.png)
 *Trace list — each imported trace shows the command, event count, duration, and exit code.*
@@ -39,7 +43,7 @@ cd f8
 The installer does three things:
 1. **`npm install`** in `server/` — installs better-sqlite3 for the web server
 2. **Creates `~/.f8/config`** — sets `F8_OUTPUT=~/traces` so traces have a consistent home. All tools read this config automatically, even through `sudo` (uses `SUDO_USER` to find your home directory). See [ENVIRONMENT.md](ENVIRONMENT.md) for full config syntax.
-3. **Adds tools to PATH** — symlinks to `/usr/local/bin`, or prints the `export PATH=...` line if that's not writable
+3. **Adds tools to PATH** — creates symlinks in `/usr/local/bin` so you can run `f8`, `f8_server`, etc. from anywhere. If `/usr/local/bin` isn't writable (common without sudo), it prints the `export PATH=...` line to add to your shell config instead
 
 ### Manual Setup (if you prefer)
 
