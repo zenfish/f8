@@ -689,7 +689,6 @@ const server = app.listen(port, () => {
 server.on('error', (err) => {
     if (err.code === 'EADDRINUSE') {
         console.error(`Error: Port ${port} is already in use.`);
-        console.error(`Either stop the other process or use: mactrace-server --port ${port + 1}`);
     } else {
         console.error(`Error starting server: ${err.message}`);
     }
