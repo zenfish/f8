@@ -4,11 +4,9 @@
 
 You run a program, trace it, it does what it does, and then... what just happened?
 
-f8 is an effort to instrument the shadows. All the details, including syscalls, files touched, network connections, all
-the bytes read and written. The deed is done; you're just reviewing the evidence.
+f8 is an effort to instrument the shadows. All the details, including syscalls, files touched, network connections, all the bytes read and written. The deed is done; you're just reviewing the evidence.
 
-**f8** is an strace-like system call tracer for macOS that uses DTrace under the hood. It traces syscalls for a given
-command and provides an interactive web-based timeline/exec viewer along with JSON files for analysis.
+**f8** is an strace-like system call tracer for macOS that uses DTrace under the hood. It traces syscalls for a given command and provides an interactive web-based timeline/exec viewer along with JSON files for analysis.
 
 ![Trace list](docs/screenshot-traces.png)
 *Trace list — each imported trace shows the command, event count, duration, and exit code.*
@@ -16,23 +14,35 @@ command and provides an interactive web-based timeline/exec viewer along with JS
 ![Timeline view](docs/screenshot-timeline.png)
 *Timeline detail — color-coded syscalls with category filtering, I/O tracking, and process tree.*
 
-> **⚠️ Requires SIP DTrace restrictions to be disabled.** Check with `csrutil status`. See [Troubleshooting](#troubleshooting) if you need to change this.
+> Important: ** f8 requires SIP DTrace restrictions to be disabled.** This is Apple, don't look at me. Check to see if its enabled/disabled with `csrutil status`. See [Troubleshooting](#troubleshooting) if you need to change this.
+
+## Background, thanks
+
+While doing work for DARPA's now-defunct Cyber Fast Track program I came up with the idea for f8, but Dtrace was/is so atrociously documented and supported by Apple (at least, that's my story!) along with some other technical challenges that I never got it to the point where I thought it'd be worthwhile to publically release it. This is a rewrite of that old project.
+
+To be sure, Dtrace was/is amazing, but Apple only seems to begrudgingly accept it. eBPF is the obvious next thing, but probably won't see the light of Mac anytime.
+
+And to be clear: I leaned so much on the amazing [OpenClaw](https://openclaw.ai/) and [Claude Code](https://code.claude.com/docs/en/overview) to create this that they squealed in pain. I'll take responsibility for all the flaws, but they did the real work.
 
 ## Installation
 
 ### Prerequisites
+
+Important - I'm down to a single mac, so only tested on Sequoia. Who knows if it'll keel over or produce useless output elsewhere.
 
 - macOS (tested on 15.3 Sequoia)
 - Python 3.8+
 - Node.js 18+ (for the web server)
 - Root privileges (DTrace requires sudo)
 - SIP dtrace restrictions disabled (see [Troubleshooting](#troubleshooting))
+- Disk & RAM. It's a hog, plain and simple. Gigs of data can trivially be generated.
+
+It uses sqlite3 to store data.
 
 ### Setup
 
 ```bash
 # Clone or copy to your preferred location
-cd ~/src
 git clone <repo-url> f8
 cd f8
 
@@ -43,15 +53,15 @@ cd f8
 The installer does three things:
 1. **`npm install`** in `server/` — installs better-sqlite3 for the web server
 2. **Creates `~/.f8/config`** — sets `F8_OUTPUT=~/traces` so traces have a consistent home. All tools read this config automatically, even through `sudo` (uses `SUDO_USER` to find your home directory). See [ENVIRONMENT.md](ENVIRONMENT.md) for full config syntax.
-3. **Adds tools to PATH** — creates symlinks in `/usr/local/bin` so you can run `f8`, `f8_server`, etc. from anywhere. If `/usr/local/bin` isn't writable (common without sudo), it prints the `export PATH=...` line to add to your shell config instead
+3. **Adds tools to PATH** — creates symlinks in /usr/local/bin so you can run f8, f8_server, etc. from anywhere. If /usr/local/bin isn't writable (common without sudo), it prints the export PATH=... line to add to your shell startup file (e.g. $HOME/.bash_profile, $HOME/.zshrc, etc) instead.
 
 ### Manual Setup (if you prefer)
 
 ```bash
-cd server && npm install && cd ..                      # Node.js deps
-mkdir -p ~/.f8 ~/traces                          # Directories
+cd server && npm install && cd ..          # Node.js deps
+mkdir -p ~/.f8 ~/traces                    # Directories
 echo 'F8_OUTPUT=~/traces' > ~/.f8/config   # Config
-export PATH="$PWD:$PATH"                               # PATH
+export PATH="$PWD:$PATH"                   # PATH
 ```
 
 ### Verify Installation
@@ -72,13 +82,12 @@ Want to see the web UI before disabling SIP? Import the included example trace:
 ```bash
 f8_import examples/echo-hello.json
 f8_server
-# → http://localhost:3000
+# go to "http://localhost:3000" in your browser
 ```
 
 ## Quick Start
 
 > **New to f8?** See [TUTORIAL.md](TUTORIAL.md) for a guided walkthrough using `f8_run_all.sh` and `f8_open`.
-> **DNS analysis?** See [DNS.md](DNS.md) for how f8 detects and classifies DNS resolution paths.
 
 ### 1. Trace a command
 
@@ -276,6 +285,7 @@ See **[ADDING_SYSCALLS.md](ADDING_SYSCALLS.md)** for a step-by-step guide to add
 | Document | Contents |
 |----------|----------|
 | [TUTORIAL.md](TUTORIAL.md) | Guided walkthrough with `f8_run_all.sh` |
+| [DNS analysis](DNS.md) | How f8 detects and classifies DNS resolution paths. |
 | [docs/usage.md](docs/usage.md) | Full CLI usage, environment variables, path resolution |
 | [docs/output-format.md](docs/output-format.md) | JSON output schema, process tracking, traced syscalls |
 | [docs/io-capture.md](docs/io-capture.md) | I/O data capture, vectored I/O (`--iovec`), DIF budget |
@@ -286,6 +296,3 @@ See **[ADDING_SYSCALLS.md](ADDING_SYSCALLS.md)** for a step-by-step guide to add
 | [COVERAGE.md](COVERAGE.md) | Syscall coverage breakdown by category and macOS version |
 | [DNS.md](DNS.md) | How f8 detects and classifies DNS resolution paths |
 
-## License
-
-MIT
