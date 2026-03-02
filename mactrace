@@ -9,8 +9,10 @@ Requires: sudo (DTrace needs root privileges)
 Usage: sudo ./mactrace [-o name] command [args...]
        sudo ./mactrace -p PID [-o name]
 
-Author: Mox (for Dan's PhD research)
+Author: Dan Farmer
 """
+
+VERSION = '0.1.0'
 
 import argparse
 import json
@@ -2890,7 +2892,7 @@ def parse_size(value):
     value = value.strip()
     suffixes = {'k': 1024, 'm': 1024*1024, 'g': 1024*1024*1024}
     if value and value[-1].lower() in suffixes:
-        return int(value[:-1]) * suffixes[value[-1].lower()]
+        return int(float(value[:-1]) * suffixes[value[-1].lower()])
     return int(value)
 
 
@@ -2940,6 +2942,7 @@ Output naming:
 Full documentation: README.md  |  --trace help
 """
     )
+    parser.add_argument("--version", action="version", version=f"mactrace {VERSION}")
     parser.add_argument("-o", "--output", help="Output name. -o make → make.EPOCH.json (auto). -o make.json → exact name. -o - → stdout. Default: auto-derived from command name. Relative paths use $MACTRACE_OUTPUT.")
     parser.add_argument("-u", "--user", 
                         help="Run traced program as this user (name or UID). Default: auto-detect from $SUDO_USER")

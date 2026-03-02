@@ -113,27 +113,27 @@ cleanup_artifacts() {
     rm -f "$mactrace_stderr_log" 2>/dev/null
     # DB entry (best-effort)
     local db_id
-    db_id=$(mactrace_db list -j 2>/dev/null | jq -r ".[] | select(.name == \"$base\") | .id" 2>/dev/null || true)
+    db_id=$(mactrace_data list -j 2>/dev/null | jq -r ".[] | select(.name == \"$base\") | .id" 2>/dev/null || true)
     if [ -n "$db_id" ]; then
-        mactrace_db delete "$db_id" 2>/dev/null || true
+        mactrace_data delete "$db_id" 2>/dev/null || true
         echo "  Removed DB entry: $base (id=$db_id)" >&2
     fi
 }
 
 # ── Handle existing artifacts ────────────────────────────────────────
-existing_db_id=$(mactrace_db list -j 2>/dev/null | jq -r ".[] | select(.name == \"$base\") | .id" 2>/dev/null || true)
+existing_db_id=$(mactrace_data list -j 2>/dev/null | jq -r ".[] | select(.name == \"$base\") | .id" 2>/dev/null || true)
 
 if [ -n "$existing_db_id" ]; then
     if [ -n "$force_mode" ]; then
         echo "Removing existing DB entry: $base (id=$(echo $existing_db_id | tr '\n' ' '))"
         # shellcheck disable=SC2086
         # Intentionally unquoted: $existing_db_id may contain multiple IDs
-        # separated by newlines; mactrace_db delete accepts multiple ID args.
-        mactrace_db delete -f $existing_db_id 2>/dev/null || true
+        # separated by newlines; mactrace_data delete accepts multiple ID args.
+        mactrace_data delete -f $existing_db_id 2>/dev/null || true
     else
         echo -e "\nAn existing saved DB is already present with the name \"$base\", cowardly bailin' out!"
         echo -e "you can remove that entry with the command:\n"
-        echo -e "    mactrace_db delete $existing_db_id\n"
+        echo -e "    mactrace_data delete $existing_db_id\n"
         echo -e "Or use --force to auto-remove.\n"
         exit 0
     fi

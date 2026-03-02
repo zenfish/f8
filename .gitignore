@@ -13,6 +13,7 @@ trace.json
 !package-lock.json
 !scripts/coverage-data/*.json
 !tests/fixtures/**/*.json
+!examples/*.json
 !syscalls.json
 
 # Captured I/O data (binary trace artifacts)

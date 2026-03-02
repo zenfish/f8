@@ -72,7 +72,7 @@ echo "   ✓ Trace output directory: ${TRACES_DIR}"
 echo ""
 echo "3. PATH setup..."
 
-TOOLS=(mactrace mactrace_analyze mactrace_timeline mactrace_import mactrace_server mactrace_db mactrace_run_all.sh)
+TOOLS=(mactrace mactrace_analyze mactrace_timeline mactrace_import mactrace_server mactrace_data mactrace_open mactrace_run_all.sh)
 
 if [[ "$NO_LINK" == true ]]; then
     echo "   Skipped (--no-link). Add to PATH manually:"
@@ -106,7 +106,25 @@ else
     fi
 fi
 
-# ── 4. Verify ────────────────────────────────────────────────────────
+# ── 4. SIP check ─────────────────────────────────────────────────────
+
+echo ""
+echo "4. Checking SIP status..."
+if csrutil status 2>/dev/null | grep -qi "dtrace restrictions disabled"; then
+    echo "   ✓ DTrace restrictions disabled — full tracing available"
+elif csrutil status 2>/dev/null | grep -qi "disabled"; then
+    echo "   ✓ SIP disabled — full tracing available"
+else
+    echo "   ⚠ SIP dtrace restrictions appear to be ENABLED"
+    echo "     mactrace requires DTrace access. To disable dtrace restrictions:"
+    echo "     1. Reboot into Recovery Mode (hold power button on Apple Silicon)"
+    echo "     2. Open Terminal from Utilities menu"
+    echo "     3. Run: csrutil enable --without dtrace"
+    echo "     4. Reboot"
+    echo "     This only disables the DTrace restriction, not all of SIP."
+fi
+
+# ── 5. Done ──────────────────────────────────────────────────────────
 
 echo ""
 echo "=== Done ==="
