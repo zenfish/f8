@@ -97,6 +97,8 @@ cleanup_artifacts() {
         rm -rf "$io_dir"
         echo "  Removed: $io_dir/" >&2
     fi
+    # Temp files
+    rm -f "$mactrace_stderr_capture" "$mactrace_health_capture" 2>/dev/null
     # DB entry (best-effort)
     local db_id
     db_id=$(mactrace_db list -j 2>/dev/null | jq -r ".[] | select(.name == \"$base\") | .id" 2>/dev/null || true)
@@ -131,17 +133,18 @@ fi
 echo -e "\nstarting mactrace run, using \"$base\" as base to use in run.... going to be tracing:\n"
 echo -e "    $traceme\n"
 
-# Temp file to capture mactrace's "Trace written to:" output
+# Temp files to capture mactrace stderr output
 mactrace_stderr_capture=$(mktemp)
+mactrace_health_capture=$(mktemp)
 
 # ── Run mactrace ────────────────────────────────────────────────────
 if [ -n "$attach_pid" ]; then
     trap 'true' INT
-    sudo mactrace $performance_flags $throttle_flag --capture-io -o "$base" -jp -e -p "$attach_pid" 2> >(tee /dev/stderr | grep "^Trace written to:" > "$mactrace_stderr_capture")
+    sudo mactrace $performance_flags $throttle_flag --capture-io -o "$base" -jp -e -p "$attach_pid" 2> >(tee /dev/stderr | tee >(grep "^Trace written to:" > "$mactrace_stderr_capture") | sed -n '/^--- DTrace health ---$/,/^$/p; /^--- Rerun suggestions ---$/,/^$/p; /^--- Trace summary ---$/,/^$/p' > "$mactrace_health_capture")
     mactrace_exit=$?
     trap - INT
 else
-    sudo mactrace $throttle_flag --capture-io -o "$base" -jp -e $traceme 2> >(tee /dev/stderr | grep "^Trace written to:" > "$mactrace_stderr_capture")
+    sudo mactrace $throttle_flag --capture-io -o "$base" -jp -e $traceme 2> >(tee /dev/stderr | tee >(grep "^Trace written to:" > "$mactrace_stderr_capture") | sed -n '/^--- DTrace health ---$/,/^$/p; /^--- Rerun suggestions ---$/,/^$/p; /^--- Trace summary ---$/,/^$/p' > "$mactrace_health_capture")
     mactrace_exit=$?
 fi
 
@@ -186,6 +189,17 @@ mactrace_import "$base.json" --io-dir "$base"
 
 # Post-processing done
 trap - INT
+
+# ── Replay DTrace health/suggestions in red so they're visible ────
+if [ -s "$mactrace_health_capture" ]; then
+    echo ""
+    echo -e "\033[1;31m════════════════════════════════════════════════════════════\033[0m"
+    while IFS= read -r line; do
+        echo -e "\033[1;31m${line}\033[0m"
+    done < "$mactrace_health_capture"
+    echo -e "\033[1;31m════════════════════════════════════════════════════════════\033[0m"
+fi
+rm -f "$mactrace_health_capture"
 
 set +e
 killall mactrace_server
