@@ -56,7 +56,7 @@ sudo mactrace -o test.json -jp echo hello
 
 ## Quick Start
 
-> **New to mactrace?** See [TUTORIAL.md](TUTORIAL.md) for a guided walkthrough using `mactrace_run_all.sh`.
+> **New to mactrace?** See [TUTORIAL.md](TUTORIAL.md) for a guided walkthrough using `mactrace_run_all.sh` and `mactrace_open`.
 
 ### 1. Trace a command
 

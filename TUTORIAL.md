@@ -61,6 +61,20 @@ mactrace_run_all.sh python3 my_script.py
 mactrace_run_all.sh wget -O /tmp/page.html example.com
 ```
 
+### Tracing macOS Apps
+
+To trace a `.app` bundle (like Steam, Safari, etc.), use `mactrace_open`:
+
+```bash
+# See what's inside the bundle:
+mactrace_open --list /Applications/Steam.app
+
+# Trace it (full pipeline):
+mactrace_open --run-all /Applications/Steam.app
+```
+
+Why not just `mactrace_run_all.sh open /Applications/Steam.app`? Because `open` is a launcher — it asks macOS to start the app, then exits immediately. You'd only trace the `open` command itself (a few hundred syscalls over ~5 seconds), not Steam. `mactrace_open` finds the real binary inside the bundle and traces that directly.
+
 ### Custom Names
 
 By default, the trace is named after the program (`curl`, `make`, etc.). Use `-n` for a custom name:
