@@ -1,207 +1,77 @@
-# DNS Resolution Tracking in mactrace
+# DNS Resolution Detection in mactrace
 
-This document explains how mactrace captures and correlates DNS hostname→IP
-lookups, the different paths DNS resolution takes on macOS, and what each
-path means for visibility.
+mactrace captures and classifies DNS lookups by detecting how each hostname was resolved. This matters because modern applications use multiple resolution paths — and the path affects what you can observe, intercept, and trust.
 
-## How DNS Works on macOS
+## Resolution Sources
 
-When an application resolves a hostname to an IP address, the request can
-take several paths depending on the application and its DNS configuration:
+| Badge | Source | How it works |
+|-------|--------|-------------|
+| **system resolver** | mDNSResponder IPC | App calls `getaddrinfo()` → macOS routes to mDNSResponder via `/var/run/mDNSResponder` socket. This is the standard path for most applications. mactrace parses the IPC protocol to extract the queried hostname. |
+| **DNS (port 53)** | Direct UDP/TCP | App sends raw DNS wire-protocol queries to a DNS server on port 53, bypassing the system resolver. Common in `dig`, `nslookup`, Go applications (which have their own resolver), and security tools. mactrace parses the DNS packet (RFC 1035) to extract hostnames and correlates with responses. |
+| **DNS-over-HTTPS** | DoH (port 443) | App sends DNS queries inside HTTPS requests to a DoH provider (e.g., `chrome.cloudflare-dns.com`). The actual DNS query is invisible to mactrace (it's encrypted inside TLS), but mactrace detects it by recognizing connects to known DoH provider IPs on port 443. |
+| **DNS-over-TLS** | DoT (port 853) | Similar to DoH but uses a dedicated TLS port (853) instead of HTTPS. Less common; used by some Android devices and systemd-resolved. Detected by connects to DNS server IPs on port 853. |
+| **/etc/hosts** | Static hosts file | Hostname resolved from `/etc/hosts`. Detected when the traced program reads `/etc/hosts` and a subsequent connect matches an IP in the file. |
 
-### Path 1: System Resolver → mDNSResponder (most common)
+## Why This Matters
 
-```
-Application
-  → getaddrinfo() / gethostbyname() / NSHost / CFHost
-    → libsystem_info.dylib
-      → Mach IPC to mDNSResponder daemon
-        → /var/run/mDNSResponder (Unix domain socket)
-          → mDNSResponder sends UDP query to configured DNS server
-            → Response cached by mDNSResponder
-```
+### Same hostname, different answers
 
-**Who uses this:** Python (`socket.getaddrinfo`), curl, wget, browsers,
-virtually every macOS application that uses the standard C library or
-Apple frameworks.
-
-**mactrace visibility:** ✅ Full. We capture the `sendto` data on the
-`/var/run/mDNSResponder` Unix socket and parse the mDNSResponder IPC
-protocol to extract the queried hostname. We then correlate with the
-next `connect()` call to determine which IP the hostname resolved to.
-
-### Path 2: Direct UDP to Port 53
+A hostname can resolve differently depending on the path:
 
 ```
-Application
-  → Builds raw DNS wire-format packet (RFC 1035)
-    → sendto() / sendmsg() to DNS server IP on port 53
-      → recvfrom() / recvmsg() with response
+# System resolver (respects /etc/hosts, mDNS, search domains):
+$ dscacheutil -q host -a name chrome.cloudflare-dns.com
+→ may return a CDN edge IP
+
+# Direct DNS query to Cloudflare:
+$ dig @1.1.1.1 chrome.cloudflare-dns.com
+→ 1.1.1.1, 1.0.0.1
+
+# DNS-over-HTTPS (what Chrome actually does):
+→ encrypted, potentially different answer than plaintext DNS
 ```
 
-**Who uses this:** `dig`, `nslookup`, `host`, Go programs using their
-built-in resolver, custom DNS clients, security/recon tools, some
-database drivers.
+### Security implications
 
-**mactrace visibility:** ✅ Full (with `--capture-io`). We capture the
-raw DNS wire protocol from `sendto`/`recvfrom` and `sendmsg`/`recvmsg`
-buffer data, then parse RFC 1035 queries and responses to extract
-hostnames and resolved IPs.
+- **System resolver**: Respects enterprise DNS policies, split-horizon DNS, content filtering. Can be monitored and intercepted.
+- **Direct port 53**: Bypasses system resolver policies but is still plaintext — visible to network monitors, can be spoofed or intercepted.
+- **DoH/DoT**: Encrypted — invisible to network monitors, bypasses DNS-based content filtering and monitoring. This is why some enterprise networks block known DoH providers.
+- **/etc/hosts**: Hardcoded — immune to DNS spoofing but also to legitimate DNS changes. Malware sometimes modifies this file.
 
-**Note on sendmsg:** The `sendmsg` syscall passes its buffer through a
-`struct msghdr → struct iovec` pointer chain. mactrace chases this chain
-with three sequential `copyin()` calls in DTrace. Due to a macOS ARM64
-DTrace limitation where `self->` (thread-local) variables truncate to
-32-bit, we split 64-bit userspace pointers into hi/lo halves for storage
-between entry and return probes.
+### What mactrace can and can't see
 
-### Path 3: DNS-over-TLS (DoT) — Port 853
+| Source | Hostname visible? | Resolved IP visible? | Query content visible? |
+|--------|:-:|:-:|:-:|
+| System resolver | ✅ (parsed from IPC) | ⚠️ (correlated with next connect) | ❌ |
+| DNS port 53 | ✅ (parsed from wire format) | ✅ (parsed from response) | ✅ |
+| DNS-over-HTTPS | ⚠️ (provider hostname only) | ❌ (encrypted) | ❌ |
+| DNS-over-TLS | ⚠️ (provider hostname only) | ❌ (encrypted) | ❌ |
+| /etc/hosts | ✅ (parsed from file) | ✅ (from file) | N/A |
 
-```
-Application
-  → TLS connection to DNS server on port 853
-    → DNS wire-format query inside TLS tunnel
-```
+For DoH and DoT, mactrace knows the app *is using* encrypted DNS (and which provider), but can't see what hostnames were queried through it. The actual DNS queries are inside the encrypted HTTPS/TLS stream.
 
-**Who uses this:** `knot-resolver`, `stubby`, `systemd-resolved`,
-some VPN configurations, applications using DoT-aware libraries.
+## Known DoH Providers
 
-**mactrace visibility:** ❌ Encrypted. We can see the `connect()` to
-port 853 and the TLS handshake, but the DNS query inside is encrypted.
-We know DNS *is happening* (port 853 is a strong signal) but can't
-extract the hostname.
+mactrace recognizes these DoH endpoints:
 
-### Path 4: DNS-over-HTTPS (DoH) — Port 443
+| Provider | Hostnames | IPs |
+|----------|-----------|-----|
+| Cloudflare | `cloudflare-dns.com`, `chrome.cloudflare-dns.com`, `mozilla.cloudflare-dns.com`, `one.one.one.one` | `1.1.1.1`, `1.0.0.1` |
+| Google | `dns.google`, `dns.google.com`, `dns64.dns.google` | `8.8.8.8`, `8.8.4.4` |
+| Quad9 | `dns.quad9.net`, `dns9.quad9.net` | `9.9.9.9`, `149.112.112.112` |
+| OpenDNS | `doh.opendns.com` | `208.67.222.222`, `208.67.220.220` |
+| Others | `dns.nextdns.io`, `dns.adguard.com`, `doh.cleanbrowsing.org` | (varies) |
 
-```
-Application
-  → HTTPS POST/GET to DNS resolver endpoint
-    → e.g., https://dns.google/dns-query
-    → DNS wire-format or JSON query inside HTTPS
-```
+## Special Hostnames
 
-**Who uses this:** Firefox (default in many regions), Chrome (when
-configured), `cloudflared`, `dnscrypt-proxy`, newer curl builds,
-applications using DoH libraries.
+- **`disabled.invalid`** — A probe domain used by macOS to detect encrypted DNS. The `.invalid` TLD should never resolve (RFC 6761). If it does, something is intercepting DNS. Seeing this in a trace means the app (or macOS) is checking whether DoH/DoT is active.
 
-**mactrace visibility:** ❌ Encrypted and indistinguishable from regular
-HTTPS traffic. We can see the `connect()` to the DoH resolver IP, but
-can't tell it apart from a normal web request without knowing the
-resolver's IP in advance.
+## Correlation Limitations
 
-### Path 5: Multicast DNS (mDNS) — .local domains
+The system resolver path (mDNSResponder) doesn't directly expose which IP a hostname resolved to. mactrace correlates by finding the next `connect()` call after the DNS lookup, skipping connections to port 53 (DNS servers themselves). This heuristic works well in practice but can produce incorrect correlations when:
 
-```
-Application
-  → getaddrinfo("myprinter.local")
-    → mDNSResponder
-      → Multicast UDP to 224.0.0.251:5353 (or ff02::fb for IPv6)
-        → Device on local network responds
-```
+- Multiple DNS lookups happen in rapid succession
+- The app connects to a different host between the lookup and the connection
+- The lookup is speculative (prefetching) and no connection follows
 
-**Who uses this:** Any `.local` hostname resolution, AirDrop/AirPlay
-discovery, Bonjour services.
-
-**mactrace visibility:** ✅ Partial. The mDNSResponder IPC captures the
-queried `.local` hostname. The multicast query/response happens inside
-mDNSResponder (a separate process), not in the traced application.
-
-## What mactrace Captures
-
-### At trace time (DTrace probes)
-
-| Syscall | Buffer data | Dest address | Captured by |
-|---------|------------|--------------|-------------|
-| `sendto` to mDNSResponder socket | ✅ via `copyin(arg1)` | ✅ Unix socket path | RAWIO probes |
-| `sendto` to port 53 | ✅ via `copyin(arg1)` | ✅ sockaddr from `arg4` | RAWIO probes |
-| `sendmsg` to port 53 | ✅ via msghdr→iov chain | ❌ dest inside msghdr | RAWIO probes |
-| `recvfrom` from port 53 | ✅ via `copyin(arg1)` | ✅ sockaddr from `arg4` | RAWIO probes |
-| `recvmsg` from port 53 | ✅ via msghdr→iov chain | ❌ src inside msghdr | RAWIO probes |
-| `connect` to any IP | N/A | ✅ sockaddr parsed | Handler probes |
-
-### At import time (server/import.js)
-
-The importer extracts DNS correlations from two sources:
-
-**Source 1: mDNSResponder IPC parsing**
-- Finds `sendto` events targeting `/var/run/mDNSResponder`
-- Parses the mDNSResponder IPC protocol (big-endian header, op codes 7/8)
-- Extracts null-terminated hostname strings after the 28-byte header
-- Correlates each hostname with the next `connect()` to an IP within 1000 events
-
-**Source 2: DNS wire protocol parsing (RFC 1035)**
-- Finds `sendto`/`sendmsg` events where the target contains `:53`
-- Parses the DNS query packet: header (12 bytes) → question section → hostname
-- Finds matching response packets by transaction ID
-- Parses A (type 1) and AAAA (type 28) answer records for resolved IPs
-- Falls back to correlating with subsequent `connect()` calls
-
-Both sources merge into a single `dns_lookups` table. mDNSResponder
-entries take priority (they fire first for apps using `getaddrinfo`).
-
-### At display time (web UI)
-
-- Each DNS lookup is shown in the "🌐 DNS Lookups" summary card
-- IPs are geo-located using `fast-geoip` (MaxMind GeoLite2 database)
-- Country flags from `flagcdn.com` CDN with hover tooltips showing
-  country, city, region, and timezone
-- DNS lookup events are highlighted in the timeline with blue borders
-- Jump links connect DNS lookups to their timeline position
-
-## DTrace Pitfalls on macOS ARM64
-
-### self-> 64-bit Truncation
-
-DTrace `self->` (thread-local) variables silently truncate 64-bit values
-to 32-bit on macOS ARM64. The workaround is to split pointers into hi/lo
-halves (used for recvmsg return-time capture):
-
-```d
-self->ptr_hi = (uint32_t)(this->ptr >> 32);
-self->ptr_lo = (uint32_t)(this->ptr & 0xffffffff);
-// ...later...
-this->ptr = ((uint64_t)self->ptr_hi << 32) | (uint64_t)self->ptr_lo;
-```
-
-For sendmsg, mactrace avoids this entirely by capturing at entry time
-(the buffer is valid when the user sends it), keeping everything in
-clause-local `this->` variables.
-
-### tracemem Hexdump Parsing
-
-DTrace's `tracemem()` outputs hex dumps like:
-```
-        20: 64 72 04 61 72 70 61 00 00 0c 00 01 00 00 29 10  dr.arpa.......)^P
-```
-
-The hex column and ASCII column are separated by two spaces. A naive
-regex that greedily matches hex pairs can bleed into the ASCII column
-when it starts with hex-valid characters (e.g., `70` from `70.247...`).
-mactrace's parser uses a two-space terminator in the regex to prevent this.
-
-## Testing
-
-Use the geo test script to generate traces with diverse DNS data:
-
-```bash
-# Standard test (uses system resolver → mDNSResponder path)
-sudo mactrace -o geo.json --capture-io -jp python3 tests/scripts/geo_test.py
-
-# Direct DNS test (uses sendto/sendmsg → port 53 path)
-sudo mactrace -o dig.json --capture-io -jp dig +short example.com kernel.org
-
-# Import and view
-cd server && node import.js ../geo.json && node server.js
-```
-
-## Future Work
-
-- **DoT detection:** Flag `connect()` calls to port 853 as "encrypted DNS"
-  in the timeline, even though we can't read the query
-- **DoH resolver fingerprinting:** Maintain a list of known DoH resolver
-  IPs (8.8.8.8, 1.1.1.1, etc.) and flag HTTPS connections to them
-- **sendmsg destination address:** Extract `msg_name` from the msghdr
-  struct (same copyin chain technique) to show which DNS server was queried
-- **Multi-iovec support:** Currently we only read `iov[0]`; DNS queries
-  are almost always single-buffer, but completeness would mean iterating
-  the iovec array
+The direct port 53 path doesn't have this problem — the resolved IP is parsed from the DNS response packet itself.
