@@ -1,0 +1,22 @@
+{
+  "command": ["dig", "+short", "-x", "8.8.8.8"],
+  "start_time": "2026-03-01T10:00:00.000000",
+  "end_time": "2026-03-01T10:00:00.050000",
+  "duration_ms": 50,
+  "target_pid": 30000,
+  "exit_code": 0,
+  "pids_traced": [30000, 111],
+  "process_tree": {},
+  "process_events": [
+    {"timestamp_us": 0, "event_type": "exec", "pid": 30000, "tid": 30000, "path": "/usr/bin/dig", "parent_pid": 29999},
+    {"timestamp_us": 50000, "event_type": "exit", "pid": 30000, "tid": 30000, "exit_code": 0, "parent_pid": 29999}
+  ],
+  "summary": {"connect": 2, "sendmsg": 1, "recvmsg": 1, "socket": 2},
+  "events": [
+    {"timestamp_us": 1000, "pid": 111, "syscall": "connect", "return_value": 0, "errno": 0, "args": {"fd": 5, "display": "1.1.1.1:53", "family": "AF_INET", "type": "SOCK_DGRAM"}},
+    {"timestamp_us": 2000, "pid": 111, "syscall": "recvmsg", "return_value": 45, "errno": 0, "args": {"fd": 5, "count": 45, "display": "1.1.1.1:53"}},
+    {"timestamp_us": 5000, "pid": 30000, "syscall": "connect", "return_value": 0, "errno": 0, "args": {"fd": 6, "display": "1.1.1.1:53", "family": "AF_INET", "type": "SOCK_DGRAM"}},
+    {"timestamp_us": 6000, "pid": 30000, "syscall": "sendmsg", "return_value": 40, "errno": 0, "args": {"fd": 6, "count": 40, "display": "1.1.1.1:53"}},
+    {"timestamp_us": 7000, "pid": 30000, "syscall": "recvmsg", "return_value": 56, "errno": 0, "args": {"fd": 6, "count": 56, "display": "1.1.1.1:53"}}
+  ]
+}

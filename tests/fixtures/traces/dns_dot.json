@@ -1,0 +1,19 @@
+{
+  "command": ["curl", "https://example.com"],
+  "start_time": "2026-03-01T10:00:00.000000",
+  "end_time": "2026-03-01T10:00:00.200000",
+  "duration_ms": 200,
+  "target_pid": 32000,
+  "exit_code": 0,
+  "pids_traced": [32000, 111],
+  "process_tree": {},
+  "process_events": [
+    {"timestamp_us": 0, "event_type": "exec", "pid": 32000, "tid": 32000, "path": "/usr/bin/curl", "parent_pid": 29999},
+    {"timestamp_us": 200000, "event_type": "exit", "pid": 32000, "tid": 32000, "exit_code": 0, "parent_pid": 29999}
+  ],
+  "summary": {"connect": 3, "socket": 3},
+  "events": [
+    {"timestamp_us": 1000, "pid": 111, "syscall": "connect", "return_value": 0, "errno": 0, "args": {"fd": 5, "display": "9.9.9.9:853", "family": "AF_INET", "type": "SOCK_STREAM"}},
+    {"timestamp_us": 5000, "pid": 32000, "syscall": "connect", "return_value": 0, "errno": 0, "args": {"fd": 6, "display": "93.184.216.34:443", "family": "AF_INET", "type": "SOCK_STREAM"}}
+  ]
+}
