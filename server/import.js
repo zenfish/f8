@@ -1047,6 +1047,14 @@ function extractDnsLookups() {
     
     const correlations = new Map(); // hostname -> {ip, lookup_seq, connect_seq}
     
+    // Query for connect to IPs (used by all sources for correlation)
+    const connectEvents = db.prepare(`
+        SELECT seq, target FROM events 
+        WHERE trace_id = ? AND syscall = 'connect'
+        AND target GLOB '[0-9]*.[0-9]*.[0-9]*.[0-9]*:*'
+        ORDER BY seq
+    `).all(traceId);
+    
     // ── Source 0: /etc/hosts (static resolution) ──────────────────
     // Check if the traced program read /etc/hosts and parse any entries
     const hostsRows = db.prepare(`
@@ -1099,14 +1107,6 @@ function extractDnsLookups() {
         SELECT seq, data_raw FROM events 
         WHERE trace_id = ? AND target = '/var/run/mDNSResponder'
         AND data_raw IS NOT NULL AND syscall LIKE '%send%'
-        ORDER BY seq
-    `).all(traceId);
-    
-    // Query for connect to IPs (used by both sources for correlation)
-    const connectEvents = db.prepare(`
-        SELECT seq, target FROM events 
-        WHERE trace_id = ? AND syscall = 'connect'
-        AND target GLOB '[0-9]*.[0-9]*.[0-9]*.[0-9]*:*'
         ORDER BY seq
     `).all(traceId);
     
