@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>mactrace</title>
+    <title>f8</title>
     <style>
         /* ── Color Palette ─────────────────────────────────────
          * All theme colors as CSS custom properties.
@@ -734,7 +734,7 @@
 </head>
 <body>
     <div class="header">
-        <h1>🔬 mactrace</h1>
+        <h1>🔬 f8</h1>
         <select id="trace-select">
             <option value="">Select a trace...</option>
         </select>
@@ -933,7 +933,7 @@
             loading.style.display = 'none';
             
             if (traces.length === 0) {
-                traceList.innerHTML = '<li style="cursor:default">No traces imported yet.<br><br>Run: <code>mactrace-import trace.json</code></li>';
+                traceList.innerHTML = '<li style="cursor:default">No traces imported yet.<br><br>Run: <code>f8-import trace.json</code></li>';
                 return;
             }
             
@@ -2051,7 +2051,7 @@
                     
                     // Update title
                     const label = progName || `PID ${rootPid}`;
-                    document.title = `mactrace — ${label} (${pidSet.size} processes)`;
+                    document.title = `f8 — ${label} (${pidSet.size} processes)`;
                     
                     // Hide the view toggle in sub-windows
                     viewToggle.style.display = 'none';

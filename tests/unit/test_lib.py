@@ -1,5 +1,5 @@
 """
-Tests for mactrace_lib.py — shared utility functions.
+Tests for f8_lib.py — shared utility functions.
 
 Covers: format_bytes, format_duration, sanitize_filename, extract_raw_bytes,
         python_hexdump, render_terminal, file classification, config parsing.
@@ -10,12 +10,12 @@ import re
 import tempfile
 import pytest
 
-from mactrace_lib import (
+from f8_lib import (
     format_bytes, format_bytes_short, format_duration,
     sanitize_filename, truncate_path,
     extract_raw_bytes, python_hexdump, render_terminal,
     is_config_file, is_library, is_startup_file,
-    get_mactrace_config, get_config_value, resolve_input_path,
+    get_f8_config, get_config_value, resolve_input_path,
 )
 
 

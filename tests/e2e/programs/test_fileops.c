@@ -1,5 +1,5 @@
 /*
- * test_fileops.c - Deterministic file operation sequence for mactrace testing.
+ * test_fileops.c - Deterministic file operation sequence for f8 testing.
  *
  * Creates a temp file, writes known data, reads it back, verifies, unlinks.
  * Expected syscalls: open(O_CREAT|O_WRONLY) → write(13 bytes) → close →
@@ -12,8 +12,8 @@
 #include <string.h>
 #include <unistd.h>
 
-#define TEST_FILE "/tmp/mactrace_test_fileops.tmp"
-#define TEST_DATA "Hello mactrace"
+#define TEST_FILE "/tmp/f8_test_fileops.tmp"
+#define TEST_DATA "Hello f8"
 #define TEST_LEN  14
 
 int main(void) {

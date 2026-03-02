@@ -1,5 +1,5 @@
 /*
- * test_network.c - Deterministic network ops for mactrace testing.
+ * test_network.c - Deterministic network ops for f8 testing.
  *
  * Creates a TCP socket, connects to localhost:1 (guaranteed ECONNREFUSED
  * since port 1 is privileged and nothing listens there), then cleans up.

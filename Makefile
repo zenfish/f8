@@ -1,4 +1,4 @@
-# mactrace test suite
+# f8 test suite
 #
 # Usage:
 #   make test          Run all tests (unit + integration, no root needed)
@@ -24,7 +24,7 @@ test-e2e:
 	sudo python3 -m pytest tests/e2e/ -v
 
 verify:
-	python3 mactrace_categories.py --verify
+	python3 f8_categories.py --verify
 
 clean:
 	rm -rf .pytest_cache tests/__pycache__ tests/unit/__pycache__ \

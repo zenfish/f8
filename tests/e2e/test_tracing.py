@@ -1,5 +1,5 @@
 """
-End-to-end tracing tests — runs mactrace against deterministic C programs.
+End-to-end tracing tests — runs f8 against deterministic C programs.
 
 Requires sudo. Tests verify structural properties of the trace output:
 - Expected syscalls are present
@@ -19,23 +19,23 @@ import tempfile
 import pytest
 
 PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-MACTRACE = os.path.join(PROJECT_ROOT, 'mactrace')
+F8_CMD = os.path.join(PROJECT_ROOT, 'f8')
 PROGRAMS_DIR = os.path.join(os.path.dirname(__file__), 'programs')
 
 
-def run_mactrace(program_path, extra_args=None, timeout=30):
-    """Run mactrace on a program, return parsed JSON trace."""
+def run_f8(program_path, extra_args=None, timeout=30):
+    """Run f8 on a program, return parsed JSON trace."""
     with tempfile.NamedTemporaryFile(suffix='.json', delete=False) as f:
         output_path = f.name
 
     try:
-        cmd = ['sudo', sys.executable, MACTRACE, '-o', output_path]
+        cmd = ['sudo', sys.executable, F8_CMD, '-o', output_path]
         if extra_args:
             cmd.extend(extra_args)
         cmd.append(program_path)
 
         result = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
-        assert result.returncode == 0, f"mactrace failed: {result.stderr}"
+        assert result.returncode == 0, f"f8 failed: {result.stderr}"
 
         with open(output_path) as f:
             return json.load(f)
@@ -49,7 +49,7 @@ class TestFileOps:
 
     @pytest.fixture(autouse=True)
     def trace(self, compile_programs):
-        self.data = run_mactrace(os.path.join(PROGRAMS_DIR, 'test_fileops'))
+        self.data = run_f8(os.path.join(PROGRAMS_DIR, 'test_fileops'))
 
     def test_exit_code_zero(self):
         assert self.data['exit_code'] == 0
@@ -58,7 +58,7 @@ class TestFileOps:
         """Should have open() calls for the test file path."""
         events = self.data['events']
         opens = [e for e in events if e['syscall'] in ('open', 'openat')
-                 and 'mactrace_test_fileops' in str(e.get('args', {}).get('path', ''))]
+                 and 'f8_test_fileops' in str(e.get('args', {}).get('path', ''))]
         assert len(opens) >= 2, "Expected at least 2 opens (write + read)"
 
     def test_has_write_event(self):
@@ -79,7 +79,7 @@ class TestFileOps:
         """Should have unlink for the test file."""
         events = self.data['events']
         unlinks = [e for e in events if e['syscall'] == 'unlink'
-                   and 'mactrace_test_fileops' in str(e.get('args', {}).get('path', ''))]
+                   and 'f8_test_fileops' in str(e.get('args', {}).get('path', ''))]
         assert len(unlinks) >= 1
 
     def test_events_have_categories(self):
@@ -93,7 +93,7 @@ class TestForkExec:
 
     @pytest.fixture(autouse=True)
     def trace(self, compile_programs):
-        self.data = run_mactrace(os.path.join(PROGRAMS_DIR, 'test_forkexec'))
+        self.data = run_f8(os.path.join(PROGRAMS_DIR, 'test_forkexec'))
 
     def test_exit_code_zero(self):
         assert self.data['exit_code'] == 0
@@ -121,7 +121,7 @@ class TestForkExec:
         assert len(tree) >= 1, "Process tree should have at least one entry"
 
     def test_child_stdout_write(self):
-        """Child should write 'mactrace_test_output\\n' to stdout."""
+        """Child should write 'f8_test_output\\n' to stdout."""
         child_pids = set(self.data['events'][-1]['pid'] for _ in [1])  # placeholder
         # Find write to fd 1 with the expected length (21 bytes)
         events = self.data['events']
@@ -136,7 +136,7 @@ class TestNetwork:
 
     @pytest.fixture(autouse=True)
     def trace(self, compile_programs):
-        self.data = run_mactrace(os.path.join(PROGRAMS_DIR, 'test_network'))
+        self.data = run_f8(os.path.join(PROGRAMS_DIR, 'test_network'))
 
     def test_exit_code_zero(self):
         assert self.data['exit_code'] == 0
@@ -171,7 +171,7 @@ class TestIovec:
 
     @pytest.fixture(autouse=True)
     def trace(self, compile_programs):
-        self.data = run_mactrace(
+        self.data = run_f8(
             os.path.join(PROGRAMS_DIR, 'test_iovec'),
             extra_args=['--iovec', '4', '--trace=file']
         )

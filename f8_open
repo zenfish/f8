@@ -1,17 +1,17 @@
 #!/bin/bash
-# mactrace_open — Trace a macOS .app bundle by resolving its main executable.
+# f8_open — Trace a macOS .app bundle by resolving its main executable.
 #
 # The macOS `open` command is a launcher that hands off to Launch Services.
-# mactrace can only trace the `open` process itself, not the app it launches.
+# f8 can only trace the `open` process itself, not the app it launches.
 # This script reads the app's Info.plist to find the real binary, then traces it.
 #
 # Usage:
-#   mactrace_open /Applications/Steam.app
-#   mactrace_open /Applications/Steam.app -- --some-app-flag
-#   mactrace_open --list /Applications/Steam.app    # just show executables, don't trace
-#   mactrace_open --run-all /Applications/Steam.app  # use mactrace_run_all instead
+#   f8_open /Applications/Steam.app
+#   f8_open /Applications/Steam.app -- --some-app-flag
+#   f8_open --list /Applications/Steam.app    # just show executables, don't trace
+#   f8_open --run-all /Applications/Steam.app  # use f8_run_all instead
 #
-# All other flags are passed through to mactrace (or mactrace_run_all with --run-all).
+# All other flags are passed through to f8 (or f8_run_all with --run-all).
 
 set -e
 
@@ -33,23 +33,23 @@ while [[ $# -gt 0 ]]; do
             shift
             ;;
         --help|-h)
-            echo "Usage: mactrace_open [options] /path/to/App.app [-- app-args...]"
+            echo "Usage: f8_open [options] /path/to/App.app [-- app-args...]"
             echo ""
             echo "Trace a macOS .app bundle by resolving its main executable."
             echo ""
             echo "Options:"
             echo "  --list, -l       List executables in the bundle (don't trace)"
-            echo "  --run-all, -a    Use mactrace_run_all instead of mactrace"
+            echo "  --run-all, -a    Use f8_run_all instead of f8"
             echo "  --help, -h       Show this help"
             echo ""
-            echo "All other flags before '--' are passed to mactrace/mactrace_run_all."
+            echo "All other flags before '--' are passed to f8/f8_run_all."
             echo "Flags after '--' are passed to the traced application."
             echo ""
             echo "Examples:"
-            echo "  mactrace_open /Applications/Steam.app"
-            echo "  mactrace_open --list /Applications/Steam.app"
-            echo "  mactrace_open --run-all /Applications/Steam.app"
-            echo "  mactrace_open -o steam /Applications/Steam.app -- --no-browser"
+            echo "  f8_open /Applications/Steam.app"
+            echo "  f8_open --list /Applications/Steam.app"
+            echo "  f8_open --run-all /Applications/Steam.app"
+            echo "  f8_open -o steam /Applications/Steam.app -- --no-browser"
             exit 0
             ;;
         --)
@@ -63,7 +63,7 @@ while [[ $# -gt 0 ]]; do
             ;;
         *)
             if [ -z "$app_path" ]; then
-                # Could be a mactrace flag or the app path
+                # Could be a f8 flag or the app path
                 if [[ "$1" == -* ]]; then
                     passthrough_args+=("$1")
                     shift
@@ -92,7 +92,7 @@ fi
 
 if [ -z "$app_path" ]; then
     echo "Error: No .app bundle specified." >&2
-    echo "Usage: mactrace_open [options] /path/to/App.app" >&2
+    echo "Usage: f8_open [options] /path/to/App.app" >&2
     exit 1
 fi
 
@@ -170,14 +170,14 @@ echo ""
 
 if $use_run_all; then
     if ! $has_output_flag; then
-        exec mactrace_run_all.sh -n "$app_name" "${passthrough_args[@]}" "$main_binary" "${app_args[@]}"
+        exec f8_run_all.sh -n "$app_name" "${passthrough_args[@]}" "$main_binary" "${app_args[@]}"
     else
-        exec mactrace_run_all.sh "${passthrough_args[@]}" "$main_binary" "${app_args[@]}"
+        exec f8_run_all.sh "${passthrough_args[@]}" "$main_binary" "${app_args[@]}"
     fi
 else
     if ! $has_output_flag; then
-        exec sudo mactrace -o "$app_name" "${passthrough_args[@]}" "$main_binary" "${app_args[@]}"
+        exec sudo f8 -o "$app_name" "${passthrough_args[@]}" "$main_binary" "${app_args[@]}"
     else
-        exec sudo mactrace "${passthrough_args[@]}" "$main_binary" "${app_args[@]}"
+        exec sudo f8 "${passthrough_args[@]}" "$main_binary" "${app_args[@]}"
     fi
 fi

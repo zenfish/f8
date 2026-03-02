@@ -1,8 +1,8 @@
 #!/usr/bin/env node
 /**
- * Import mactrace JSON into SQLite database (using sql.js).
+ * Import f8 JSON into SQLite database (using sql.js).
  * 
- * Usage: mactrace-import trace.json [--db mactrace.db] [--io-dir ./io_output]
+ * Usage: f8-import trace.json [--db f8.db] [--io-dir ./io_output]
  */
 
 import Database from 'better-sqlite3';
@@ -13,7 +13,7 @@ import { fileURLToPath } from 'url';
 // Parse arguments
 const args = process.argv.slice(2);
 let jsonFile = null;
-let dbFile = 'mactrace.db';
+let dbFile = 'f8.db';
 let ioDir = null;
 
 for (let i = 0; i < args.length; i++) {
@@ -27,7 +27,7 @@ for (let i = 0; i < args.length; i++) {
 }
 
 if (!jsonFile) {
-    console.error('Usage: mactrace-import <trace.json> [--db mactrace.db] [--io-dir ./io_output]');
+    console.error('Usage: f8-import <trace.json> [--db f8.db] [--io-dir ./io_output]');
     process.exit(1);
 }
 
@@ -1447,4 +1447,4 @@ try {
 db.close();
 
 console.log(`Done! Saved to ${dbFile}`);
-console.log(`\nRun: mactrace_server --db ${dbFile}`);
+console.log(`\nRun: f8_server --db ${dbFile}`);

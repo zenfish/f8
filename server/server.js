@@ -1,9 +1,9 @@
 #!/usr/bin/env node
 /**
- * mactrace timeline server (using better-sqlite3)
+ * f8 timeline server (using better-sqlite3)
  * 
  * Database is memory-mapped and read on demand — no full-RAM copy.
- * Usage: mactrace-server [--db mactrace.db] [--port 3000]
+ * Usage: f8-server [--db f8.db] [--port 3000]
  */
 
 import Database from 'better-sqlite3';
@@ -68,7 +68,7 @@ async function enrichDnsWithGeo(lookups) {
 
 // Parse arguments
 const args = process.argv.slice(2);
-let dbFile = 'mactrace.db';
+let dbFile = 'f8.db';
 let port = 3000;
 
 for (let i = 0; i < args.length; i++) {
@@ -78,7 +78,7 @@ for (let i = 0; i < args.length; i++) {
 
 if (!fs.existsSync(dbFile)) {
     console.error(`Database not found: ${dbFile}`);
-    console.error('Run: mactrace-import <trace.json> --db mactrace.db');
+    console.error('Run: f8-import <trace.json> --db f8.db');
     process.exit(1);
 }
 
@@ -593,7 +593,7 @@ app.get('/api/traces/:id/process-tree', (req, res) => {
         const allPids = new Set(pidStats.map(p => p.pid));
         const parentMap = new Map(); // childPid → parentPid
         
-        // Try the processes table first (has authoritative parent links from mactrace)
+        // Try the processes table first (has authoritative parent links from f8)
         let hasProcessesTable = false;
         try {
             hasProcessesTable = queryOne(
@@ -605,7 +605,7 @@ app.get('/api/traces/:id/process-tree', (req, res) => {
         }
         
         if (hasProcessesTable) {
-            // Use authoritative process tree from mactrace's DTrace probes
+            // Use authoritative process tree from f8's DTrace probes
             const procRows = query(
                 'SELECT pid, parent_pid, exec_path FROM processes WHERE trace_id = ? AND parent_pid IS NOT NULL',
                 [traceId]
@@ -654,7 +654,7 @@ app.get('/api/traces/:id/process-tree', (req, res) => {
         const pidPrograms = new Map(); // pid → [program paths]
         const pidProgramSource = new Map(); // pid → 'exec' | 'spawn' | 'inferred'
         
-        // Use processes table if available (has authoritative exec_path from MACTRACE_EXEC)
+        // Use processes table if available (has authoritative exec_path from F8_EXEC)
         if (hasProcessesTable) {
             const procExecs = query(
                 "SELECT pid, exec_path FROM processes WHERE trace_id = ? AND exec_path IS NOT NULL AND exec_path != ''",
@@ -795,7 +795,7 @@ app.get('/api/categories', (req, res) => {
 });
 
 const server = app.listen(port, () => {
-    console.log(`mactrace server running at http://localhost:${port}`);
+    console.log(`f8 server running at http://localhost:${port}`);
     console.log(`Database: ${dbFile}`);
     const traces = queryOne('SELECT COUNT(*) as count FROM traces');
     console.log(`Traces in database: ${traces?.count || 0}`);

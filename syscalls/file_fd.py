@@ -29,7 +29,7 @@ syscall::dup:entry
 syscall::dup:return
 /TRACED && self->dup_ts/
 {
-    printf("MACTRACE_SYSCALL %d %d dup %d %d %d %d\n",
+    printf("F8_SYSCALL %d %d dup %d %d %d %d\n",
         pid, tid, (int)arg1, errno, self->dup_ts, self->dup_fd);
     self->dup_ts = 0;
 }
@@ -45,7 +45,7 @@ syscall::dup2:entry
 syscall::dup2:return
 /TRACED && self->dup2_ts/
 {
-    printf("MACTRACE_SYSCALL %d %d dup2 %d %d %d %d %d\n",
+    printf("F8_SYSCALL %d %d dup2 %d %d %d %d %d\n",
         pid, tid, (int)arg1, errno, self->dup2_ts, self->dup2_old, self->dup2_new);
     self->dup2_ts = 0;
 }
@@ -64,7 +64,7 @@ syscall::fcntl:return,
 syscall::fcntl_nocancel:return
 /TRACED && self->fcntl_ts/
 {
-    printf("MACTRACE_SYSCALL %d %d fcntl %d %d %d %d %d %d\n",
+    printf("F8_SYSCALL %d %d fcntl %d %d %d %d %d %d\n",
         pid, tid, (int)arg1, errno, self->fcntl_ts, 
         self->fcntl_fd, self->fcntl_cmd, self->fcntl_arg);
     self->fcntl_ts = 0;
@@ -81,7 +81,7 @@ syscall::ioctl:entry
 syscall::ioctl:return
 /TRACED && self->ioctl_ts/
 {
-    printf("MACTRACE_SYSCALL %d %d ioctl %d %d %d %d 0x%lx\n",
+    printf("F8_SYSCALL %d %d ioctl %d %d %d %d 0x%lx\n",
         pid, tid, (int)arg1, errno, self->ioctl_ts, self->ioctl_fd, self->ioctl_req);
     self->ioctl_ts = 0;
 }
@@ -98,7 +98,7 @@ syscall::fsync:return,
 syscall::fsync_nocancel:return
 /TRACED && self->fsync_ts/
 {
-    printf("MACTRACE_SYSCALL %d %d fsync %d %d %d %d\n",
+    printf("F8_SYSCALL %d %d fsync %d %d %d %d\n",
         pid, tid, (int)arg1, errno, self->fsync_ts, self->fsync_fd);
     self->fsync_ts = 0;
 }

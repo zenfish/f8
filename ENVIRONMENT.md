@@ -1,21 +1,21 @@
-# mactrace Environment Variables
+# f8 Environment Variables
 
-Set these to run mactrace from anywhere without worrying about paths.
+Set these to run f8 from anywhere without worrying about paths.
 
 ## Variables
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `MACTRACE_HOME` | `$HOME/.mactrace` | Base directory for all mactrace data |
-| `MACTRACE_DB` | `$MACTRACE_HOME/mactrace.db` | SQLite database for timeline server |
-| `MACTRACE_OUTPUT` | `.` (cwd) | Where to save/read JSON trace files |
-| `MACTRACE_IO_DIR` | `$MACTRACE_OUTPUT/<name>` | Where to save I/O capture files |
-| `MACTRACE_PORT` | `3000` | Default port for timeline server |
-| `MACTRACE_USER` | (none) | Default user to run traced programs as |
+| `F8_HOME` | `$HOME/.f8` | Base directory for all f8 data |
+| `F8_DB` | `$F8_HOME/f8.db` | SQLite database for timeline server |
+| `F8_OUTPUT` | `.` (cwd) | Where to save/read JSON trace files |
+| `F8_IO_DIR` | `$F8_OUTPUT/<name>` | Where to save I/O capture files |
+| `F8_PORT` | `3000` | Default port for timeline server |
+| `F8_USER` | (none) | Default user to run traced programs as |
 
 ## Path Resolution
 
-All mactrace tools use consistent path resolution rules:
+All f8 tools use consistent path resolution rules:
 
 | Path Type | Example | Behavior |
 |-----------|---------|----------|
@@ -27,62 +27,62 @@ All mactrace tools use consistent path resolution rules:
 
 | Tool / Option | Env Var Used |
 |---------------|--------------|
-| `mactrace -o` | `MACTRACE_OUTPUT` |
-| `mactrace-import <file>` | `MACTRACE_OUTPUT` |
-| `mactrace-import --io-dir` | `MACTRACE_OUTPUT` |
-| `mactrace-import --db` | `MACTRACE_HOME` |
-| `mactrace-server --db` | `MACTRACE_HOME` |
+| `f8 -o` | `F8_OUTPUT` |
+| `f8-import <file>` | `F8_OUTPUT` |
+| `f8-import --io-dir` | `F8_OUTPUT` |
+| `f8-import --db` | `F8_HOME` |
+| `f8-server --db` | `F8_HOME` |
 
 **Examples:**
 ```bash
-export MACTRACE_OUTPUT="$HOME/traces"
-export MACTRACE_HOME="$HOME/.mactrace"
+export F8_OUTPUT="$HOME/traces"
+export F8_HOME="$HOME/.f8"
 
 # These are equivalent:
-mactrace-import myapp.json
-mactrace-import $HOME/traces/myapp.json
+f8-import myapp.json
+f8-import $HOME/traces/myapp.json
 
 # These use explicit paths (no prefix added):
-mactrace-import ./myapp.json          # Current directory
-mactrace-import /tmp/myapp.json       # Absolute path
+f8-import ./myapp.json          # Current directory
+f8-import /tmp/myapp.json       # Absolute path
 ```
 
 ## Running as a Different User
 
-**By default, mactrace automatically runs the traced program as the user who invoked sudo** (detected via `$SUDO_USER`). This means files created by traced programs are owned by you, not root.
+**By default, f8 automatically runs the traced program as the user who invoked sudo** (detected via `$SUDO_USER`). This means files created by traced programs are owned by you, not root.
 
 ```bash
 # Automatic: runs as 'zen' if you're zen running sudo
-sudo mactrace -o trace.json ./myapp
+sudo f8 -o trace.json ./myapp
 
 # Explicit user via flag (overrides auto-detect)
-sudo mactrace -u nobody -o trace.json ./myapp
+sudo f8 -u nobody -o trace.json ./myapp
 
 # Explicit user via environment variable
-export MACTRACE_USER=testuser
-sudo mactrace -o trace.json ./myapp
+export F8_USER=testuser
+sudo f8 -o trace.json ./myapp
 ```
 
 ### User Selection Priority
 
 1. `-u`/`--user` command-line flag (highest)
-2. `MACTRACE_USER` environment variable
+2. `F8_USER` environment variable
 3. `SUDO_USER` (auto-detected from sudo caller)
 4. root (if none of the above apply)
 
 The user can be specified as a username or numeric UID:
 ```bash
-sudo mactrace -u 501 -o trace.json ./myapp
-sudo mactrace -u zen -o trace.json ./myapp
+sudo f8 -u 501 -o trace.json ./myapp
+sudo f8 -u zen -o trace.json ./myapp
 ```
 
 ### Running as Root
 
 To explicitly run as root (disabling auto-detection):
 ```bash
-sudo mactrace -u root -o trace.json ./myapp
+sudo f8 -u root -o trace.json ./myapp
 # or
-MACTRACE_USER=root sudo mactrace -o trace.json ./myapp
+F8_USER=root sudo f8 -o trace.json ./myapp
 ```
 
 ## Quick Setup
@@ -90,49 +90,49 @@ MACTRACE_USER=root sudo mactrace -o trace.json ./myapp
 Add to `~/.bashrc` or `~/.zshrc`:
 
 ```bash
-export MACTRACE_HOME="$HOME/.mactrace"
-export MACTRACE_DB="$MACTRACE_HOME/mactrace.db"
-export MACTRACE_OUTPUT="$HOME/traces"
-export PATH="$HOME/phd/src/mactrace:$PATH"
+export F8_HOME="$HOME/.f8"
+export F8_DB="$F8_HOME/f8.db"
+export F8_OUTPUT="$HOME/traces"
+export PATH="$HOME/phd/src/f8:$PATH"
 
 # Create directories
-mkdir -p "$MACTRACE_HOME" "$MACTRACE_OUTPUT"
+mkdir -p "$F8_HOME" "$F8_OUTPUT"
 ```
 
-Note: `MACTRACE_USER` is usually not needed — mactrace auto-detects the sudo caller.
+Note: `F8_USER` is usually not needed — f8 auto-detects the sudo caller.
 
 ## Usage Examples
 
 ```bash
-# Trace from any directory, output goes to MACTRACE_OUTPUT
+# Trace from any directory, output goes to F8_OUTPUT
 # Use sudo -E to preserve environment variables!
 cd /some/random/dir
-sudo -E mactrace -o myapp.json ./myapp
+sudo -E f8 -o myapp.json ./myapp
 
-# Import to central database (finds myapp.json in MACTRACE_OUTPUT)
-mactrace-import myapp.json
+# Import to central database (finds myapp.json in F8_OUTPUT)
+f8-import myapp.json
 
-# Start server (uses MACTRACE_DB automatically)
-mactrace-server
+# Start server (uses F8_DB automatically)
+f8-server
 ```
 
 ## Configuration File (Recommended)
 
-Create `~/.mactrace/config` to set defaults that work even without `sudo -E`:
+Create `~/.f8/config` to set defaults that work even without `sudo -E`:
 
 ```bash
-mkdir -p ~/.mactrace
-cat > ~/.mactrace/config << 'EOF'
-# mactrace configuration
-MACTRACE_HOME=~/.mactrace
-MACTRACE_OUTPUT=~/traces
-MACTRACE_DB=$MACTRACE_HOME/mactrace.db
+mkdir -p ~/.f8
+cat > ~/.f8/config << 'EOF'
+# f8 configuration
+F8_HOME=~/.f8
+F8_OUTPUT=~/traces
+F8_DB=$F8_HOME/f8.db
 EOF
 ```
 
-Now `sudo mactrace -o trace.json ./myapp` writes to `~/traces/trace.json` automatically.
+Now `sudo f8 -o trace.json ./myapp` writes to `~/traces/trace.json` automatically.
 
-**How it works:** mactrace detects `SUDO_USER` and reads `~$SUDO_USER/.mactrace/config`, so your settings work even when sudo resets environment variables.
+**How it works:** f8 detects `SUDO_USER` and reads `~$SUDO_USER/.f8/config`, so your settings work even when sudo resets environment variables.
 
 ### Config File Format
 
@@ -143,11 +143,11 @@ Simple `key=value` format with variable expansion:
 KEY=value
 
 # ~ expands to the sudo caller's home directory (not root's)
-MACTRACE_HOME=~/.mactrace
-MACTRACE_OUTPUT=~/traces
+F8_HOME=~/.f8
+F8_OUTPUT=~/traces
 
 # $VAR and ${VAR} expand to previously defined config values
-MACTRACE_DB=$MACTRACE_HOME/mactrace.db
+F8_DB=$F8_HOME/f8.db
 
 # Quotes around values are optional (stripped if present)
 SOME_PATH="~/path with spaces"
@@ -165,11 +165,11 @@ SOME_PATH="~/path with spaces"
 **Example with variable references:**
 ```bash
 # Set base directory first
-MACTRACE_HOME=~/mactrace-data
+F8_HOME=~/f8-data
 
 # Then reference it in other settings
-MACTRACE_OUTPUT=$MACTRACE_HOME/traces
-MACTRACE_DB=$MACTRACE_HOME/db/mactrace.db
+F8_OUTPUT=$F8_HOME/traces
+F8_DB=$F8_HOME/db/f8.db
 ```
 
 ## Alternative: sudo -E
@@ -177,8 +177,8 @@ MACTRACE_DB=$MACTRACE_HOME/db/mactrace.db
 If you prefer environment variables over a config file, use `sudo -E` to preserve them:
 
 ```bash
-export MACTRACE_OUTPUT="$HOME/traces"
-sudo -E mactrace -o trace.json ./myapp     # -E preserves env vars
+export F8_OUTPUT="$HOME/traces"
+sudo -E f8 -o trace.json ./myapp     # -E preserves env vars
 ```
 
 ## Priority Order
@@ -187,7 +187,7 @@ Settings are resolved in this order (highest priority first):
 
 1. Command-line flags
 2. Environment variables (require `sudo -E`)
-3. Config file (`~/.mactrace/config`)
+3. Config file (`~/.f8/config`)
 4. Defaults
 
 ## Directory Structure
@@ -195,11 +195,11 @@ Settings are resolved in this order (highest priority first):
 With defaults, your data lives in:
 
 ```
-~/.mactrace/
-├── mactrace.db          # SQLite database (all imported traces)
+~/.f8/
+├── f8.db          # SQLite database (all imported traces)
 └── server/              # Symlink to install location (for web assets)
 
-~/traces/                # Or wherever MACTRACE_OUTPUT points
+~/traces/                # Or wherever F8_OUTPUT points
 ├── myapp.json           # Trace output
 ├── myapp/               # I/O files (if --capture-io used)
 │   ├── 1234-myapp-read-3.bin
@@ -216,9 +216,9 @@ For all options, the precedence is:
 3. **Default value** (lowest priority)
 
 ```bash
-# Example: MACTRACE_USER
-export MACTRACE_USER=zen
+# Example: F8_USER
+export F8_USER=zen
 
-sudo mactrace ./app           # Runs as 'zen' (from env var)
-sudo mactrace -u root ./app   # Runs as 'root' (flag overrides)
+sudo f8 ./app           # Runs as 'zen' (from env var)
+sudo f8 -u root ./app   # Runs as 'root' (flag overrides)
 ```

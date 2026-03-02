@@ -36,7 +36,7 @@ syscall::stat64:return,
 syscall::lstat64:return
 /TRACED && self->stat_path != NULL/
 {
-    printf("MACTRACE_SYSCALL %d %d %s %d %d %d \"%s\"\n",
+    printf("F8_SYSCALL %d %d %s %d %d %d \"%s\"\n",
         pid, tid, self->stat_is_lstat ? "lstat64" : "stat64",
         (int)arg1, errno, self->stat_ts, self->stat_path);
     self->stat_path = NULL;
@@ -52,7 +52,7 @@ syscall::fstat64:entry
 syscall::fstat64:return
 /TRACED && self->fstat_ts/
 {
-    printf("MACTRACE_SYSCALL %d %d fstat64 %d %d %d %d\n",
+    printf("F8_SYSCALL %d %d fstat64 %d %d %d %d\n",
         pid, tid, (int)arg1, errno, self->fstat_ts, self->fstat_fd);
     self->fstat_ts = 0;
 }
@@ -69,7 +69,7 @@ syscall::fstatat64:entry
 syscall::fstatat64:return
 /TRACED && self->fstatat_path != NULL/
 {
-    printf("MACTRACE_SYSCALL %d %d fstatat64 %d %d %d %d \"%s\" 0x%x\n",
+    printf("F8_SYSCALL %d %d fstatat64 %d %d %d %d \"%s\" 0x%x\n",
         pid, tid, (int)arg1, errno, self->fstatat_ts, self->fstatat_fd, self->fstatat_path, self->fstatat_flag);
     self->fstatat_path = NULL;
 }
@@ -85,7 +85,7 @@ syscall::access:entry
 syscall::access:return
 /TRACED && self->access_path != NULL/
 {
-    printf("MACTRACE_SYSCALL %d %d access %d %d %d \"%s\" %d\n",
+    printf("F8_SYSCALL %d %d access %d %d %d \"%s\" %d\n",
         pid, tid, (int)arg1, errno, self->access_ts, self->access_path, self->access_mode);
     self->access_path = NULL;
 }
@@ -102,7 +102,7 @@ syscall::faccessat:entry
 syscall::faccessat:return
 /TRACED && self->faccessat_path != NULL/
 {
-    printf("MACTRACE_SYSCALL %d %d faccessat %d %d %d %d \"%s\" %d\n",
+    printf("F8_SYSCALL %d %d faccessat %d %d %d %d \"%s\" %d\n",
         pid, tid, (int)arg1, errno, self->faccessat_ts,
         self->faccessat_fd, self->faccessat_path, self->faccessat_mode);
     self->faccessat_path = NULL;

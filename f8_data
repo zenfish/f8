@@ -1,29 +1,29 @@
 #!/usr/bin/env python3
 """
-mactrace_data - Unified data management for mactrace.
+f8_data - Unified data management for f8.
 
 Manages trace data across the database, JSON files, and I/O binary files.
 
 Usage:
-    mactrace_data list                     List all runs (unified: DB + files)
-    mactrace_data info <N>                 Show details for run #N
-    mactrace_data delete <N>...            Delete run(s): DB + JSON + I/O files
-    mactrace_data delete --all             Delete everything (prompts first)
-    mactrace_data delete --all --force     Delete everything without prompting
+    f8_data list                     List all runs (unified: DB + files)
+    f8_data info <N>                 Show details for run #N
+    f8_data delete <N>...            Delete run(s): DB + JSON + I/O files
+    f8_data delete --all             Delete everything (prompts first)
+    f8_data delete --all --force     Delete everything without prompting
 
-    mactrace_data db list [-j]             List DB traces
-    mactrace_data db info <id>             Show DB trace details
-    mactrace_data db delete <id>...        Delete from DB only
-    mactrace_data db vacuum                Compact the database
-    mactrace_data db stats                 Show database statistics
+    f8_data db list [-j]             List DB traces
+    f8_data db info <id>             Show DB trace details
+    f8_data db delete <id>...        Delete from DB only
+    f8_data db vacuum                Compact the database
+    f8_data db stats                 Show database statistics
 
-    mactrace_data files list [-j]          List JSON + I/O files on disk
-    mactrace_data files info <N>           Show file details for run #N
-    mactrace_data files delete <N>...      Delete files only, keep DB
+    f8_data files list [-j]          List JSON + I/O files on disk
+    f8_data files info <N>           Show file details for run #N
+    f8_data files delete <N>...      Delete files only, keep DB
 
 Options:
-    -d, --db PATH      Database file (default: from config or ./mactrace.db)
-    -t, --traces PATH  Traces directory (default: from MACTRACE_OUTPUT config)
+    -d, --db PATH      Database file (default: from config or ./f8.db)
+    -t, --traces PATH  Traces directory (default: from F8_OUTPUT config)
     -f, --force        Don't prompt for confirmation on delete
     -j, --json         Output as JSON
     -v, --verbose      Show config resolution details
@@ -41,8 +41,8 @@ sys.dont_write_bytecode = True
 from datetime import datetime
 
 # Shared utilities
-from mactrace_lib import (
-    get_mactrace_config, get_config_value, resolve_input_path,
+from f8_lib import (
+    get_f8_config, get_config_value, resolve_input_path,
     format_bytes as format_size, format_duration,
 )
 
@@ -55,23 +55,23 @@ def get_db_path(args_db=None):
     """Determine database path from args, config, or default."""
     if args_db:
         return args_db
-    config = get_mactrace_config()
-    if 'MACTRACE_DB' in config:
-        return config['MACTRACE_DB']
-    if 'MACTRACE_DB' in os.environ:
-        return os.environ['MACTRACE_DB']
-    return 'mactrace.db'
+    config = get_f8_config()
+    if 'F8_DB' in config:
+        return config['F8_DB']
+    if 'F8_DB' in os.environ:
+        return os.environ['F8_DB']
+    return 'f8.db'
 
 
 def get_traces_dir(args_traces=None):
     """Determine traces directory from args, config, or default."""
     if args_traces:
         return args_traces
-    config = get_mactrace_config()
-    if 'MACTRACE_OUTPUT' in config:
-        return config['MACTRACE_OUTPUT']
-    if 'MACTRACE_OUTPUT' in os.environ:
-        return os.environ['MACTRACE_OUTPUT']
+    config = get_f8_config()
+    if 'F8_OUTPUT' in config:
+        return config['F8_OUTPUT']
+    if 'F8_OUTPUT' in os.environ:
+        return os.environ['F8_OUTPUT']
     return './traces'
 
 
@@ -282,8 +282,8 @@ def cmd_config(args):
     """Show resolved configuration paths."""
     db_path = get_db_path(args.db)
     traces_dir = get_traces_dir(args.traces)
-    config = get_mactrace_config()
-    config_path = os.path.join(os.path.expanduser('~'), '.mactrace', 'config')
+    config = get_f8_config()
+    config_path = os.path.join(os.path.expanduser('~'), '.f8', 'config')
     
     print(f"Config file:  {config_path}", end='')
     print(f" {'(exists)' if os.path.exists(config_path) else '(NOT FOUND)'}")
@@ -503,7 +503,7 @@ def _delete_all(db_path, traces_dir, force):
                 pass
 
     print("╔══════════════════════════════════════════════════╗")
-    print("║         ⚠️  DELETE ALL MACTRACE DATA  ⚠️          ║")
+    print("║         ⚠️  DELETE ALL F8 DATA  ⚠️          ║")
     print("╠══════════════════════════════════════════════════╣")
     print(f"║  Runs:        {len(runs):<35}║")
     print(f"║  DB traces:   {db_count:<35}║")
@@ -588,12 +588,12 @@ def _find_run(runs, run_id):
     for r in runs:
         if r['num'] == run_id:
             return r
-    print(f"Error: No run #{run_id}. Use 'mactrace_data list' to see available runs.", file=sys.stderr)
+    print(f"Error: No run #{run_id}. Use 'f8_data list' to see available runs.", file=sys.stderr)
     sys.exit(1)
 
 
 # =============================================================================
-# DB-only commands (preserve all original mactrace_db behavior)
+# DB-only commands (preserve all original f8_db behavior)
 # =============================================================================
 
 def cmd_db_list(args):
@@ -1008,26 +1008,26 @@ def cmd_files_delete(args):
 
 def main():
     parser = argparse.ArgumentParser(
-        prog='mactrace_data',
-        description='Unified data management for mactrace traces.',
+        prog='f8_data',
+        description='Unified data management for f8 traces.',
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog='''
 Examples:
-    mactrace_data list                     List all tracing runs
-    mactrace_data info 3                   Details for run #3
-    mactrace_data delete 1 2 3             Delete runs 1, 2, 3 (DB + files)
-    mactrace_data delete --all             Delete everything (prompts)
-    mactrace_data delete --all --force     Delete everything, no prompt
+    f8_data list                     List all tracing runs
+    f8_data info 3                   Details for run #3
+    f8_data delete 1 2 3             Delete runs 1, 2, 3 (DB + files)
+    f8_data delete --all             Delete everything (prompts)
+    f8_data delete --all --force     Delete everything, no prompt
 
-    mactrace_data db list                  List DB traces only
-    mactrace_data db info 5               DB trace #5 details
-    mactrace_data db delete 5 -f           Remove from DB, no prompt
-    mactrace_data db vacuum                Compact the database
-    mactrace_data db stats                 Database statistics
+    f8_data db list                  List DB traces only
+    f8_data db info 5               DB trace #5 details
+    f8_data db delete 5 -f           Remove from DB, no prompt
+    f8_data db vacuum                Compact the database
+    f8_data db stats                 Database statistics
 
-    mactrace_data files list               List JSON + I/O files on disk
-    mactrace_data files info 3             File details for run #3
-    mactrace_data files delete 3           Delete files only, keep DB
+    f8_data files list               List JSON + I/O files on disk
+    f8_data files info 3             File details for run #3
+    f8_data files delete 3           Delete files only, keep DB
 '''
     )
     parser.add_argument('-d', '--db', help='Database file path')
@@ -1092,7 +1092,7 @@ Examples:
     if args.verbose:
         db_path = get_db_path(args.db)
         traces_dir = get_traces_dir(args.traces)
-        config = get_mactrace_config()
+        config = get_f8_config()
         print(f"Database:   {db_path}", file=sys.stderr)
         print(f"Traces dir: {traces_dir}", file=sys.stderr)
         if config:

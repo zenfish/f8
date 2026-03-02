@@ -28,7 +28,7 @@ syscall::mmap:entry
 syscall::mmap:return
 /TRACED && self->mmap_ts/
 {
-    printf("MACTRACE_SYSCALL %d %d mmap %p %d %d 0x%x %d 0x%x %d %d\n",
+    printf("F8_SYSCALL %d %d mmap %p %d %d 0x%x %d 0x%x %d %d\n",
         pid, tid, arg1, errno, self->mmap_ts,
         self->mmap_len, self->mmap_prot, self->mmap_flags, self->mmap_fd, self->mmap_off);
     self->mmap_ts = 0;
@@ -45,7 +45,7 @@ syscall::munmap:entry
 syscall::munmap:return
 /TRACED && self->munmap_ts/
 {
-    printf("MACTRACE_SYSCALL %d %d munmap %d %d %d 0x%lx %d\n",
+    printf("F8_SYSCALL %d %d munmap %d %d %d 0x%lx %d\n",
         pid, tid, (int)arg1, errno, self->munmap_ts, self->munmap_addr, self->munmap_len);
     self->munmap_ts = 0;
 }
@@ -62,7 +62,7 @@ syscall::mprotect:entry
 syscall::mprotect:return
 /TRACED && self->mprot_ts/
 {
-    printf("MACTRACE_SYSCALL %d %d mprotect %d %d %d 0x%lx %d %d\n",
+    printf("F8_SYSCALL %d %d mprotect %d %d %d 0x%lx %d %d\n",
         pid, tid, (int)arg1, errno, self->mprot_ts,
         self->mprot_addr, self->mprot_len, self->mprot_prot);
     self->mprot_ts = 0;

@@ -1,10 +1,10 @@
-# Adding a System Call to mactrace
+# Adding a System Call to f8
 
 This guide walks through adding a new system call, using `renameat` as a worked example.
 
 ## Overview
 
-There are two levels of syscall support in mactrace:
+There are two levels of syscall support in f8:
 
 1. **Basic tracking** — the syscall is counted, categorized, and appears in traces with its return value. This only requires editing `syscalls.json`.
 
@@ -49,7 +49,7 @@ Find the appropriate category and add the syscall name to its `syscalls` array:
 - One syscall can only belong to one category
 
 **That's it.** All tools read `syscalls.json` at runtime:
-- `mactrace_categories.py` → Python analysis tools
+- `f8_categories.py` → Python analysis tools
 - `server/import.js` → database importer
 - `server/server.js` → web API
 
@@ -59,10 +59,10 @@ The generic DTrace probe (`syscall:::entry` / `syscall:::return`) already captur
 
 ```bash
 # Check the JSON is valid and the syscall is recognized
-python3 mactrace_categories.py --verify
+python3 f8_categories.py --verify
 
 # Check it maps correctly
-python3 -c "from mactrace_categories import get_category; print(get_category('renameat'))"
+python3 -c "from f8_categories import get_category; print(get_category('renameat'))"
 # Should print: file
 
 # Run the unit tests
@@ -73,7 +73,7 @@ make test-unit
 
 ```bash
 # Trace a command that uses the syscall
-sudo mactrace -o test.json -jp mv /tmp/test1 /tmp/test2
+sudo f8 -o test.json -jp mv /tmp/test1 /tmp/test2
 
 # Check it appears
 python3 -c "
@@ -126,7 +126,7 @@ syscalls/
 Each handler provides:
 - **`syscalls`** — list of syscall names it covers
 - **`dtrace`** — D-language probe text (entry + return)
-- **`parse_args()`** — parse MACTRACE_SYSCALL argument tokens into a dict
+- **`parse_args()`** — parse F8_SYSCALL argument tokens into a dict
 - **`update_fd_info()`** (optional) — update fd tracking after this syscall
 
 ### Step 1: Add to `syscalls.json` (same as Level 1)
@@ -176,7 +176,7 @@ syscall::renameat:entry
 syscall::renameat:return
 /TRACED && self->renameat_from != NULL/
 {
-    printf("MACTRACE_SYSCALL %d %d renameat %d %d %d %d \"%s\" %d \"%s\"\n",
+    printf("F8_SYSCALL %d %d renameat %d %d %d %d \"%s\" %d \"%s\"\n",
         pid, tid, (int)arg1, errno, self->renameat_ts,
         self->renameat_fromfd, self->renameat_from,
         self->renameat_tofd, self->renameat_to);
@@ -205,7 +205,7 @@ DTrace probes:
 - Use `TRACED` predicate (not `tracked[pid]` — the header defines `TRACED`)
 - Use `self->` for thread-local storage between entry and return
 - Always null-check in return probe and clean up `self->` variables
-- The output format is: `MACTRACE_SYSCALL <pid> <tid> <name> <retval> <errno> <timestamp> [args...]`
+- The output format is: `F8_SYSCALL <pid> <tid> <name> <retval> <errno> <timestamp> [args...]`
 - String arguments use `copyinstr()` and are quoted in output
 
 Python parser:
@@ -247,7 +247,7 @@ print(HANDLER_REGISTRY['renameat'].parse_args('renameat', ['3', '\"old\"', '4', 
 "
 
 # Test with a real trace
-sudo mactrace -o rename_test.json -jp python3 -c "import os; os.rename('/tmp/mt_a', '/tmp/mt_b')"
+sudo f8 -o rename_test.json -jp python3 -c "import os; os.rename('/tmp/mt_a', '/tmp/mt_b')"
 ```
 
 ### Step 5: Write a unit test
@@ -257,7 +257,7 @@ Add a test in `tests/unit/test_parse_dtrace.py`:
 ```python
 def test_renameat_line(self, tracer):
     """Parse a renameat syscall with from/to paths."""
-    line = 'MACTRACE_SYSCALL 100 100 renameat 0 0 1000000 3 "/tmp/old" 4 "/tmp/new"'
+    line = 'F8_SYSCALL 100 100 renameat 0 0 1000000 3 "/tmp/old" 4 "/tmp/new"'
     tracer._parse_line(line, 0)
     assert len(tracer.events) == 1
     evt = tracer.events[0]
@@ -303,7 +303,7 @@ To add a new constant table, add it to `_constants.py` and it's immediately avai
 ### Level 1 (basic tracking)
 - [ ] Added syscall name to the right category in `syscalls.json`
 - [ ] Added `_nocancel` variant if it exists
-- [ ] `python3 mactrace_categories.py --verify` passes
+- [ ] `python3 f8_categories.py --verify` passes
 - [ ] `python3 -m pytest tests/ -v --tb=short` passes
 
 ### Level 2 (rich arguments)
@@ -312,7 +312,7 @@ To add a new constant table, add it to `_constants.py` and it's immediately avai
 - [ ] Handler auto-discovered (check: `python3 -c "from syscalls import HANDLER_REGISTRY; print('newsyscall' in HANDLER_REGISTRY)"`)
 - [ ] Added `update_fd_info()` if syscall affects file descriptors
 - [ ] Added unit test in `tests/unit/test_parse_dtrace.py`
-- [ ] Tested with a real trace (`sudo mactrace ...`)
+- [ ] Tested with a real trace (`sudo f8 ...`)
 - [ ] All 204+ tests still pass
 
 ---
@@ -326,8 +326,8 @@ sudo dtrace -ln 'syscall:::entry' | awk '{print $NF}' | sort -u
 # Check if a specific syscall exists
 sudo dtrace -ln 'syscall::renameat:entry'
 
-# See which syscalls mactrace doesn't track yet
-sudo mactrace -e -o /dev/null echo hello
+# See which syscalls f8 doesn't track yet
+sudo f8 -e -o /dev/null echo hello
 # The -e flag reports untraced syscalls at the end
 ```
 
@@ -337,7 +337,7 @@ sudo mactrace -e -o /dev/null echo hello
 - **`syscalls/`** — Handler package with DTrace probes and Python parsers.
 - **`syscalls/__init__.py`** — Framework: `SyscallHandler`, `@register`, `HANDLER_REGISTRY`, `ALL_DTRACE_PROBES`, `TRACED_SYSCALLS`.
 - **`syscalls/_constants.py`** — Shared flag/enum tables and parsing helpers.
-- **`mactrace`** — Main tracer. DTrace header + handler probes assembled at import time. Parser dispatches to handlers.
-- **`mactrace_categories.py`** — Loads `syscalls.json`, provides `get_category()`, `get_color()`, etc.
+- **`f8`** — Main tracer. DTrace header + handler probes assembled at import time. Parser dispatches to handlers.
+- **`f8_categories.py`** — Loads `syscalls.json`, provides `get_category()`, `get_color()`, etc.
 - **`tests/unit/test_parse_dtrace.py`** — Unit tests for line parsing.
 - **`tests/unit/test_categories.py`** — Tests for `syscalls.json` integrity and category lookups.

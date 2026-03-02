@@ -1,6 +1,10 @@
-# mactrace
+# f8 — fait accompli
 
-An strace-like system call tracer for macOS using DTrace. Traces every syscall for a command and all its child processes, producing structured JSON for analysis and an interactive web-based timeline viewer.
+*fait accompli* (n.) — a thing that has already happened or been decided before those affected hear about it, leaving them with no option but to accept it.
+
+You run a program. It does what it does. Only afterward do you get to see everything that happened — every syscall, every file touched, every network connection, every byte read and written. The deed is done; you're just reviewing the evidence.
+
+**f8** is an strace-like system call tracer for macOS using DTrace. Traces every syscall for a command and all its child processes, producing structured JSON for analysis and an interactive web-based timeline viewer.
 
 ![Trace list](docs/screenshot-traces.png)
 *Trace list — each imported trace shows the command, event count, duration, and exit code.*
@@ -25,8 +29,8 @@ An strace-like system call tracer for macOS using DTrace. Traces every syscall f
 ```bash
 # Clone or copy to your preferred location
 cd ~/src
-git clone <repo-url> mactrace
-cd mactrace
+git clone <repo-url> f8
+cd f8
 
 # Run the installer (installs deps, creates config, sets up PATH)
 ./install.sh
@@ -34,15 +38,15 @@ cd mactrace
 
 The installer does three things:
 1. **`npm install`** in `server/` — installs better-sqlite3 for the web server
-2. **Creates `~/.mactrace/config`** — sets `MACTRACE_OUTPUT=~/traces` so traces have a consistent home. All tools read this config automatically, even through `sudo` (uses `SUDO_USER` to find your home directory). See [ENVIRONMENT.md](ENVIRONMENT.md) for full config syntax.
+2. **Creates `~/.f8/config`** — sets `F8_OUTPUT=~/traces` so traces have a consistent home. All tools read this config automatically, even through `sudo` (uses `SUDO_USER` to find your home directory). See [ENVIRONMENT.md](ENVIRONMENT.md) for full config syntax.
 3. **Adds tools to PATH** — symlinks to `/usr/local/bin`, or prints the `export PATH=...` line if that's not writable
 
 ### Manual Setup (if you prefer)
 
 ```bash
 cd server && npm install && cd ..                      # Node.js deps
-mkdir -p ~/.mactrace ~/traces                          # Directories
-echo 'MACTRACE_OUTPUT=~/traces' > ~/.mactrace/config   # Config
+mkdir -p ~/.f8 ~/traces                          # Directories
+echo 'F8_OUTPUT=~/traces' > ~/.f8/config   # Config
 export PATH="$PWD:$PATH"                               # PATH
 ```
 
@@ -50,10 +54,10 @@ export PATH="$PWD:$PATH"                               # PATH
 
 ```bash
 # Should print usage info
-sudo mactrace --help
+sudo f8 --help
 
 # Quick test — trace the 'echo' command
-sudo mactrace -o test.json -jp echo hello
+sudo f8 -o test.json -jp echo hello
 ```
 
 
@@ -62,20 +66,20 @@ sudo mactrace -o test.json -jp echo hello
 Want to see the web UI before disabling SIP? Import the included example trace:
 
 ```bash
-mactrace_import examples/echo-hello.json
-mactrace_server
+f8_import examples/echo-hello.json
+f8_server
 # → http://localhost:3000
 ```
 
 ## Quick Start
 
-> **New to mactrace?** See [TUTORIAL.md](TUTORIAL.md) for a guided walkthrough using `mactrace_run_all.sh` and `mactrace_open`.
-> **DNS analysis?** See [DNS.md](DNS.md) for how mactrace detects and classifies DNS resolution paths.
+> **New to f8?** See [TUTORIAL.md](TUTORIAL.md) for a guided walkthrough using `f8_run_all.sh` and `f8_open`.
+> **DNS analysis?** See [DNS.md](DNS.md) for how f8 detects and classifies DNS resolution paths.
 
 ### 1. Trace a command
 
 ```bash
-sudo mactrace -o trace.json -jp ls -la /tmp
+sudo f8 -o trace.json -jp ls -la /tmp
 ```
 
 This runs `ls -la /tmp` under DTrace, captures every syscall (open, read, write, stat, etc.), and writes structured JSON to `trace.json`. The `-j` flag enables JSON output, `-p` pretty-prints it.
@@ -83,12 +87,12 @@ This runs `ls -la /tmp` under DTrace, captures every syscall (open, read, write,
 ### 2. Analyze the trace (text summary)
 
 ```bash
-./mactrace_analyze trace.json
+./f8_analyze trace.json
 ```
 
 Sample output:
 ```
-=== mactrace Analysis ===
+=== f8 Analysis ===
 Command: ls -la /tmp
 Duration: 12.3ms
 Total syscalls: 87
@@ -120,10 +124,10 @@ PIDs traced: 1
 
 ```bash
 # Import into the database
-mactrace_import trace.json
+f8_import trace.json
 
 # Start the server
-mactrace_server
+f8_server
 # → http://localhost:3000
 ```
 
@@ -138,13 +142,13 @@ Select a trace from the dropdown to see the interactive timeline with:
 
 ```bash
 # Capture I/O data (read/write buffer contents)
-sudo mactrace --capture-io -o trace.json ./my_program
+sudo f8 --capture-io -o trace.json ./my_program
 
 # Attach to a running process
-sudo mactrace -p 12345 -o trace.json -t 30
+sudo f8 -p 12345 -o trace.json -t 30
 
 # Trace with larger buffers for busy programs
-sudo mactrace --capture-io --strsize 65536 -o trace.json ./my_program
+sudo f8 --capture-io --strsize 65536 -o trace.json ./my_program
 ```
 
 ## Requirements
@@ -159,14 +163,14 @@ sudo mactrace --capture-io --strsize 65536 -o trace.json ./my_program
 
 | Tool | What it does |
 |------|-------------|
-| `mactrace` | Core tracer — runs a command under DTrace, captures syscalls to JSON |
-| `mactrace_run_all.sh` | **One-shot pipeline:** trace → analyze → import → serve |
-| `mactrace_server` | Start the web-based timeline viewer |
-| `mactrace_open` | Trace macOS .app bundles (Steam, Safari, etc.) |
-| `mactrace_analyze` | CLI text analysis — syscall breakdown, files, errors, I/O extraction |
-| `mactrace_timeline` | Generate a standalone HTML timeline (no server needed) |
-| `mactrace_data` | Manage traces — list, info, delete, vacuum, stats |
-| `mactrace_import` | Import JSON traces into SQLite for the web server |
+| `f8` | Core tracer — runs a command under DTrace, captures syscalls to JSON |
+| `f8_run_all.sh` | **One-shot pipeline:** trace → analyze → import → serve |
+| `f8_server` | Start the web-based timeline viewer |
+| `f8_open` | Trace macOS .app bundles (Steam, Safari, etc.) |
+| `f8_analyze` | CLI text analysis — syscall breakdown, files, errors, I/O extraction |
+| `f8_timeline` | Generate a standalone HTML timeline (no server needed) |
+| `f8_data` | Manage traces — list, info, delete, vacuum, stats |
+| `f8_import` | Import JSON traces into SQLite for the web server |
 
 ## Troubleshooting
 
@@ -183,21 +187,21 @@ DTrace on modern macOS is restricted by SIP. To get full tracing:
 
 ### "dtrace: failed to initialize dtrace: DTrace requires additional privileges"
 
-DTrace requires root. Always run mactrace with `sudo`:
+DTrace requires root. Always run f8 with `sudo`:
 ```bash
-sudo mactrace -o trace.json ./my_program
+sudo f8 -o trace.json ./my_program
 ```
 
 ### Drops: "dtrace: N dynamic variable drops" or missing events
 
 DTrace has fixed-size buffers. If your traced program is very busy, increase buffer sizes:
 ```bash
-sudo mactrace --bufsize 512m --dynvarsize 512m -o trace.json ./my_program
+sudo f8 --bufsize 512m --dynvarsize 512m -o trace.json ./my_program
 ```
 
 For I/O capture, also increase string/data sizes:
 ```bash
-sudo mactrace --capture-io --strsize 65536 --io-size 65536 -o trace.json ./my_program
+sudo f8 --capture-io --strsize 65536 --io-size 65536 -o trace.json ./my_program
 ```
 
 ### Server won't start / "Cannot find module 'better-sqlite3'"
@@ -209,33 +213,33 @@ cd server && npm install
 
 ### Tracing macOS .app bundles (Steam, Safari, etc.)
 
-Running `mactrace open /Applications/Steam.app` only traces the `open` command itself — not Steam. The `open` command is a thin launcher that asks macOS Launch Services to start the app, then exits. mactrace traces `open`, which finishes in a few seconds, while Steam continues running as a completely separate process.
+Running `f8 open /Applications/Steam.app` only traces the `open` command itself — not Steam. The `open` command is a thin launcher that asks macOS Launch Services to start the app, then exits. f8 traces `open`, which finishes in a few seconds, while Steam continues running as a completely separate process.
 
-**Use `mactrace_open` instead:**
+**Use `f8_open` instead:**
 
 ```bash
 # See what binary the app actually runs:
-mactrace_open --list /Applications/Steam.app
+f8_open --list /Applications/Steam.app
 
 # Trace it:
-mactrace_open /Applications/Steam.app
+f8_open /Applications/Steam.app
 
 # Full pipeline (trace + analyze + import + server):
-mactrace_open --run-all /Applications/Steam.app
+f8_open --run-all /Applications/Steam.app
 
 # Pass flags to the app:
-mactrace_open /Applications/Steam.app -- --no-browser
+f8_open /Applications/Steam.app -- --no-browser
 ```
 
-`mactrace_open` reads the app's `Info.plist` to find the real executable (`CFBundleExecutable`), then runs mactrace against that binary directly.
+`f8_open` reads the app's `Info.plist` to find the real executable (`CFBundleExecutable`), then runs f8 against that binary directly.
 
-**Note:** Some apps spawn additional helper processes after launch. mactrace traces the main process and its direct children, but helpers launched via XPC or Launch Services won't be captured.
+**Note:** Some apps spawn additional helper processes after launch. f8 traces the main process and its direct children, but helpers launched via XPC or Launch Services won't be captured.
 
 ### Empty or missing trace output
 
 - Check that the traced program actually ran (look for exit code in the JSON)
 - Try `-v` (verbose) to see DTrace activity on stderr
-- Use `-e` to detect untraced syscalls that mactrace doesn't cover yet
+- Use `-e` to detect untraced syscalls that f8 doesn't cover yet
 - Some programs behave differently under sudo — use `-u yourname` to run as yourself
 
 ### Import shows "0 events imported"
@@ -258,7 +262,7 @@ See **[ADDING_SYSCALLS.md](ADDING_SYSCALLS.md)** for a step-by-step guide to add
 - [ ] Socket address decoding (IP/port extraction)
 - [ ] More granular timestamps per syscall
 - [ ] Output filtering options (file-only, network-only, etc.)
-- [x] Timeline visualization tool (mactrace_timeline)
+- [x] Timeline visualization tool (f8_timeline)
 - [x] Data content capture for read/write (`--capture-io`)
 - [x] Web-based timeline server with hexdump viewer
 
@@ -267,7 +271,7 @@ See **[ADDING_SYSCALLS.md](ADDING_SYSCALLS.md)** for a step-by-step guide to add
 
 | Document | Contents |
 |----------|----------|
-| [TUTORIAL.md](TUTORIAL.md) | Guided walkthrough with `mactrace_run_all.sh` |
+| [TUTORIAL.md](TUTORIAL.md) | Guided walkthrough with `f8_run_all.sh` |
 | [docs/usage.md](docs/usage.md) | Full CLI usage, environment variables, path resolution |
 | [docs/output-format.md](docs/output-format.md) | JSON output schema, process tracking, traced syscalls |
 | [docs/io-capture.md](docs/io-capture.md) | I/O data capture, vectored I/O (`--iovec`), DIF budget |
@@ -276,7 +280,7 @@ See **[ADDING_SYSCALLS.md](ADDING_SYSCALLS.md)** for a step-by-step guide to add
 | [ENVIRONMENT.md](ENVIRONMENT.md) | Config file syntax, `~`/`$VAR` expansion, `SUDO_USER` handling |
 | [ADDING_SYSCALLS.md](ADDING_SYSCALLS.md) | Step-by-step guide to adding new syscall handlers |
 | [COVERAGE.md](COVERAGE.md) | Syscall coverage breakdown by category and macOS version |
-| [DNS.md](DNS.md) | How mactrace detects and classifies DNS resolution paths |
+| [DNS.md](DNS.md) | How f8 detects and classifies DNS resolution paths |
 
 ## License
 

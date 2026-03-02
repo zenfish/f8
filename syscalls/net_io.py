@@ -40,7 +40,7 @@ syscall::sendto_nocancel:return
         self->sendto_addrlen > 128 ? 128 : self->sendto_addrlen);
     this->family = this->sa->sa_family;
     
-    printf("MACTRACE_SOCKADDR %d %d sendto %d %d %d %d %d %d 0x%x ",
+    printf("F8_SOCKADDR %d %d sendto %d %d %d %d %d %d 0x%x ",
         pid, tid, (int)arg1, errno, self->sendto_ts,
         self->sendto_fd, self->sendto_len, this->family, self->sendto_flags);
     tracemem(this->sa, 128, self->sendto_addrlen > 128 ? 128 : self->sendto_addrlen);
@@ -52,7 +52,7 @@ syscall::sendto:return,
 syscall::sendto_nocancel:return
 /TRACED && self->sendto_ts && (self->sendto_addr == 0 || self->sendto_addrlen == 0)/
 {
-    printf("MACTRACE_SYSCALL %d %d sendto %d %d %d %d %d 0x%x\n",
+    printf("F8_SYSCALL %d %d sendto %d %d %d %d %d 0x%x\n",
         pid, tid, (int)arg1, errno, self->sendto_ts,
         self->sendto_fd, self->sendto_len, self->sendto_flags);
     self->sendto_ts = 0;
@@ -79,7 +79,7 @@ syscall::recvfrom_nocancel:return
         this->addrlen > 128 ? 128 : this->addrlen);
     this->family = this->sa->sa_family;
     
-    printf("MACTRACE_SOCKADDR %d %d recvfrom %d %d %d %d %d %d 0x%x ",
+    printf("F8_SOCKADDR %d %d recvfrom %d %d %d %d %d %d 0x%x ",
         pid, tid, (int)arg1, errno, self->recvfrom_ts,
         self->recvfrom_fd, self->recvfrom_len, this->family, self->recvfrom_flags);
     tracemem(this->sa, 128, this->addrlen > 128 ? 128 : this->addrlen);
@@ -91,7 +91,7 @@ syscall::recvfrom:return,
 syscall::recvfrom_nocancel:return
 /TRACED && self->recvfrom_ts && (self->recvfrom_addr == 0 || arg1 < 0)/
 {
-    printf("MACTRACE_SYSCALL %d %d recvfrom %d %d %d %d %d 0x%x\n",
+    printf("F8_SYSCALL %d %d recvfrom %d %d %d %d %d 0x%x\n",
         pid, tid, (int)arg1, errno, self->recvfrom_ts,
         self->recvfrom_fd, self->recvfrom_len, self->recvfrom_flags);
     self->recvfrom_ts = 0;
@@ -110,7 +110,7 @@ syscall::sendmsg:return,
 syscall::sendmsg_nocancel:return
 /TRACED && self->sendmsg_ts/
 {
-    printf("MACTRACE_SYSCALL %d %d sendmsg %d %d %d %d 0x%x\n",
+    printf("F8_SYSCALL %d %d sendmsg %d %d %d %d 0x%x\n",
         pid, tid, (int)arg1, errno, self->sendmsg_ts, self->sendmsg_fd, self->sendmsg_flags);
     self->sendmsg_ts = 0;
 }
@@ -128,7 +128,7 @@ syscall::recvmsg:return,
 syscall::recvmsg_nocancel:return
 /TRACED && self->recvmsg_ts/
 {
-    printf("MACTRACE_SYSCALL %d %d recvmsg %d %d %d %d 0x%x\n",
+    printf("F8_SYSCALL %d %d recvmsg %d %d %d %d 0x%x\n",
         pid, tid, (int)arg1, errno, self->recvmsg_ts, self->recvmsg_fd, self->recvmsg_flags);
     self->recvmsg_ts = 0;
 }
@@ -147,7 +147,7 @@ syscall::sendmsg_x:entry
 syscall::sendmsg_x:return
 /TRACED && self->sendmsgx_ts/
 {
-    printf("MACTRACE_SYSCALL %d %d sendmsg_x %d %d %d %d %d 0x%x\n",
+    printf("F8_SYSCALL %d %d sendmsg_x %d %d %d %d %d 0x%x\n",
         pid, tid, (int)arg1, errno, self->sendmsgx_ts,
         self->sendmsgx_fd, self->sendmsgx_cnt, self->sendmsgx_flags);
     self->sendmsgx_ts = 0;
@@ -165,7 +165,7 @@ syscall::recvmsg_x:entry
 syscall::recvmsg_x:return
 /TRACED && self->recvmsgx_ts/
 {
-    printf("MACTRACE_SYSCALL %d %d recvmsg_x %d %d %d %d %d 0x%x\n",
+    printf("F8_SYSCALL %d %d recvmsg_x %d %d %d %d %d 0x%x\n",
         pid, tid, (int)arg1, errno, self->recvmsgx_ts,
         self->recvmsgx_fd, self->recvmsgx_cnt, self->recvmsgx_flags);
     self->recvmsgx_ts = 0;
@@ -189,7 +189,7 @@ syscall::sendfile:return
 {
     /* Read actual bytes sent from *nbytes (off_t = 8 bytes) */
     this->sent = *(int64_t *)copyin(self->sf_nbytesp, 8);
-    printf("MACTRACE_SYSCALL %d %d sendfile %d %d %d %d %d %lld %lld 0x%x\n",
+    printf("F8_SYSCALL %d %d sendfile %d %d %d %d %d %lld %lld 0x%x\n",
         pid, tid, (int)arg1, errno, self->sf_ts,
         self->sf_filefd, self->sf_sockfd, (long long)self->sf_offset,
         (long long)this->sent, self->sf_flags);
@@ -199,7 +199,7 @@ syscall::sendfile:return
 syscall::sendfile:return
 /TRACED && self->sf_ts && self->sf_nbytesp == 0/
 {
-    printf("MACTRACE_SYSCALL %d %d sendfile %d %d %d %d %d %lld 0 0x%x\n",
+    printf("F8_SYSCALL %d %d sendfile %d %d %d %d %d %lld 0 0x%x\n",
         pid, tid, (int)arg1, errno, self->sf_ts,
         self->sf_filefd, self->sf_sockfd, (long long)self->sf_offset, self->sf_flags);
     self->sf_ts = 0;
@@ -207,7 +207,7 @@ syscall::sendfile:return
 '''
 
     def parse_args(self, syscall, args):
-        """Parse fallback MACTRACE_SYSCALL args (when sockaddr capture fails or not applicable)."""
+        """Parse fallback F8_SYSCALL args (when sockaddr capture fails or not applicable)."""
         result = {}
         if syscall in ("sendto", "sendto_nocancel", "recvfrom", "recvfrom_nocancel"):
             if len(args) >= 1:

@@ -21,7 +21,7 @@ syscall::close:return,
 syscall::close_nocancel:return
 /TRACED && self->close_ts/
 {
-    printf("MACTRACE_SYSCALL %d %d close %d %d %d %d\n",
+    printf("F8_SYSCALL %d %d close %d %d %d %d\n",
         pid, tid, (int)arg1, errno, self->close_ts, self->close_fd);
     self->close_ts = 0;
 }

@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """
-mactrace_lib.py - Shared utilities for mactrace tools.
+f8_lib.py - Shared utilities for f8 tools.
 
-Extracted from mactrace_analyze.py and mactrace_timeline.py to eliminate
-code duplication. All mactrace Python tools should import from here.
+Extracted from f8_analyze.py and f8_timeline.py to eliminate
+code duplication. All f8 Python tools should import from here.
 """
 
 import os
@@ -17,10 +17,10 @@ import pwd
 # Configuration
 # =============================================================================
 
-def get_mactrace_config() -> dict:
+def get_f8_config() -> dict:
     """
-    Read mactrace config file, supporting variable expansion.
-    Config is at ~/.mactrace/config (using SUDO_USER's home if running as root).
+    Read f8 config file, supporting variable expansion.
+    Config is at ~/.f8/config (using SUDO_USER's home if running as root).
     
     Returns dict of config values with variables expanded.
     """
@@ -36,7 +36,7 @@ def get_mactrace_config() -> dict:
     else:
         home = os.path.expanduser('~')
     
-    config_path = os.path.join(home, '.mactrace', 'config')
+    config_path = os.path.join(home, '.f8', 'config')
     
     if not os.path.exists(config_path):
         return config
@@ -84,13 +84,13 @@ def get_config_value(key: str, default: str = None) -> str:
         return env_val
     
     # Then config file
-    config = get_mactrace_config()
+    config = get_f8_config()
     return config.get(key, default)
 
 
 def resolve_input_path(path: str) -> str:
     """
-    Resolve input file path using MACTRACE_OUTPUT if path is relative.
+    Resolve input file path using F8_OUTPUT if path is relative.
     
     Returns the resolved path (which may or may not exist).
     """
@@ -105,8 +105,8 @@ def resolve_input_path(path: str) -> str:
     if os.path.exists(path):
         return path
     
-    # Try MACTRACE_OUTPUT directory
-    output_dir = get_config_value('MACTRACE_OUTPUT')
+    # Try F8_OUTPUT directory
+    output_dir = get_config_value('F8_OUTPUT')
     if output_dir:
         resolved = os.path.join(output_dir, path)
         return resolved

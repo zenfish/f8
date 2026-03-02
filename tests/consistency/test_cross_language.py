@@ -16,7 +16,7 @@ PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(_
 SERVER_DIR = os.path.join(PROJECT_ROOT, 'server')
 
 sys.path.insert(0, PROJECT_ROOT)
-from mactrace_categories import get_category, get_color, get_text_color, CATEGORY_ORDER
+from f8_categories import get_category, get_color, get_text_color, CATEGORY_ORDER
 
 
 def run_js(script: str) -> str:
@@ -60,7 +60,7 @@ class TestCategoryParity:
     def test_all_syscalls_same_category(self):
         """Every syscall in syscalls.json maps to the same category in Python and JS."""
         # Get Python's complete mapping
-        from mactrace_categories import get_all_syscall_mappings
+        from f8_categories import get_all_syscall_mappings
         py_map = get_all_syscall_mappings()
         
         # Check every syscall known to either side
@@ -78,14 +78,14 @@ class TestCategoryParity:
 
     def test_no_python_only_syscalls(self):
         """No syscalls exist only in Python (would mean JS is missing them)."""
-        from mactrace_categories import get_all_syscall_mappings
+        from f8_categories import get_all_syscall_mappings
         py_map = get_all_syscall_mappings()
         py_only = set(py_map.keys()) - set(self.js_map.keys())
         assert not py_only, f"Syscalls in Python but not JS: {py_only}"
 
     def test_no_js_only_syscalls(self):
         """No syscalls exist only in JS (would mean Python is missing them)."""
-        from mactrace_categories import get_all_syscall_mappings
+        from f8_categories import get_all_syscall_mappings
         py_map = get_all_syscall_mappings()
         js_only = set(self.js_map.keys()) - set(py_map.keys())
         assert not js_only, f"Syscalls in JS but not Python: {js_only}"

@@ -1,32 +1,32 @@
 #!/bin/bash
 #
-# mactrace-server - Start the mactrace timeline web server
+# f8-server - Start the f8 timeline web server
 #
 # Serves an interactive web UI for viewing and analyzing imported traces.
-# Traces must first be imported with mactrace-import.
+# Traces must first be imported with f8-import.
 #
 # USAGE:
-#   mactrace-server [options]
+#   f8-server [options]
 #
 # OPTIONS:
-#   --db <path>    Database path (default: $MACTRACE_DB or $MACTRACE_HOME/mactrace.db)
-#   --port <port>  Server port (default: $MACTRACE_PORT or 3000)
+#   --db <path>    Database path (default: $F8_DB or $F8_HOME/f8.db)
+#   --port <port>  Server port (default: $F8_PORT or 3000)
 #   --help         Show this help
 #
 # ENVIRONMENT:
-#   MACTRACE_HOME  Base directory (default: ~/.mactrace)
-#   MACTRACE_DB    Database path
-#   MACTRACE_PORT  Server port
+#   F8_HOME  Base directory (default: ~/.f8)
+#   F8_DB    Database path
+#   F8_PORT  Server port
 #
 # PATH RESOLUTION:
 #   - Absolute paths (/path/to/file) used as-is
 #   - Explicit relative (./file, ../file) used as-is
-#   - Simple filenames (db.sqlite) prefixed with $MACTRACE_HOME
+#   - Simple filenames (db.sqlite) prefixed with $F8_HOME
 #
 # EXAMPLES:
-#   mactrace-server                    # Start with defaults
-#   mactrace-server --port 8080        # Use custom port
-#   mactrace-server --db custom.db     # Use $MACTRACE_HOME/custom.db
+#   f8-server                    # Start with defaults
+#   f8-server --port 8080        # Use custom port
+#   f8-server --db custom.db     # Use $F8_HOME/custom.db
 #
 
 set -e
@@ -41,8 +41,8 @@ done
 SCRIPT_DIR="$(cd "$(dirname "$SOURCE")" && pwd)"
 SERVER_DIR="$SCRIPT_DIR/server"
 
-# Read mactrace config file (same logic as mactrace Python script)
-# Config is at ~/.mactrace/config, using SUDO_USER's home if running as root
+# Read f8 config file (same logic as f8 Python script)
+# Config is at ~/.f8/config, using SUDO_USER's home if running as root
 read_config() {
     local config_home="$HOME"
     
@@ -51,7 +51,7 @@ read_config() {
         config_home=$(eval echo "~$SUDO_USER")
     fi
     
-    local config_file="$config_home/.mactrace/config"
+    local config_file="$config_home/.f8/config"
     
     if [[ ! -f "$config_file" ]]; then
         return
@@ -93,33 +93,33 @@ read_config
 # Show help
 show_help() {
     cat << 'EOF'
-mactrace-server - Start the mactrace timeline web server
+f8-server - Start the f8 timeline web server
 
 Serves an interactive web UI for viewing and analyzing imported traces.
-Traces must first be imported with mactrace-import.
+Traces must first be imported with f8-import.
 
 USAGE:
-  mactrace-server [options]
+  f8-server [options]
 
 OPTIONS:
-  --db <path>    Database path (default: $MACTRACE_DB or $MACTRACE_HOME/mactrace.db)
-  --port <port>  Server port (default: $MACTRACE_PORT or 3000)
+  --db <path>    Database path (default: $F8_DB or $F8_HOME/f8.db)
+  --port <port>  Server port (default: $F8_PORT or 3000)
   --help         Show this help
 
 ENVIRONMENT:
-  MACTRACE_HOME  Base directory (default: ~/.mactrace)
-  MACTRACE_DB    Database path
-  MACTRACE_PORT  Server port
+  F8_HOME  Base directory (default: ~/.f8)
+  F8_DB    Database path
+  F8_PORT  Server port
 
 PATH RESOLUTION:
   - Absolute paths (/path/to/file) used as-is
   - Explicit relative (./file, ../file) used as-is
-  - Simple filenames (db.sqlite) prefixed with $MACTRACE_HOME
+  - Simple filenames (db.sqlite) prefixed with $F8_HOME
 
 EXAMPLES:
-  mactrace-server                    # Start with defaults
-  mactrace-server --port 8080        # Use custom port
-  mactrace-server --db custom.db     # Use $MACTRACE_HOME/custom.db
+  f8-server                    # Start with defaults
+  f8-server --port 8080        # Use custom port
+  f8-server --db custom.db     # Use $F8_HOME/custom.db
 EOF
 }
 
@@ -128,8 +128,8 @@ if [[ "$1" == "--help" || "$1" == "-h" ]]; then
     exit 0
 fi
 
-# Resolve MACTRACE_HOME (use $HOME, not hardcoded ~)
-MACTRACE_HOME="${MACTRACE_HOME:-${HOME}/.mactrace}"
+# Resolve F8_HOME (use $HOME, not hardcoded ~)
+F8_HOME="${F8_HOME:-${HOME}/.f8}"
 
 # resolve_path: Apply env var prefix to relative paths
 resolve_path() {
@@ -162,17 +162,17 @@ resolve_path() {
 # Build default args from environment
 env_args=()
 
-# Database: explicit arg > MACTRACE_DB > default
+# Database: explicit arg > F8_DB > default
 if [[ ! " $* " =~ " --db " ]]; then
-    db="${MACTRACE_DB:-$MACTRACE_HOME/mactrace.db}"
+    db="${F8_DB:-$F8_HOME/f8.db}"
     if [[ -f "$db" ]]; then
         env_args+=(--db "$db")
     fi
 fi
 
-# Port: explicit arg > MACTRACE_PORT > default (3000)
-if [[ ! " $* " =~ " --port " ]] && [[ -n "$MACTRACE_PORT" ]]; then
-    env_args+=(--port "$MACTRACE_PORT")
+# Port: explicit arg > F8_PORT > default (3000)
+if [[ ! " $* " =~ " --port " ]] && [[ -n "$F8_PORT" ]]; then
+    env_args+=(--port "$F8_PORT")
 fi
 
 # Process user arguments, resolving --db path
@@ -180,8 +180,8 @@ args=()
 prev_opt=""
 for arg in "$@"; do
     if [[ "$prev_opt" == "--db" ]]; then
-        # Resolve db path with MACTRACE_HOME
-        resolved=$(resolve_path "$arg" "MACTRACE_HOME")
+        # Resolve db path with F8_HOME
+        resolved=$(resolve_path "$arg" "F8_HOME")
         args+=("$resolved")
         prev_opt=""
     elif [[ "$arg" == "--db" ]]; then

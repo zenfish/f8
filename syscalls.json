@@ -1,11 +1,11 @@
 {
   "_doc": [
-    "Canonical syscall category definitions for mactrace.",
+    "Canonical syscall category definitions for f8.",
     "",
     "TO ADD A SYSCALL: find the appropriate category, add the name to its 'syscalls' array.",
     "TO ADD A CATEGORY: add a new object to the 'categories' array with id, label, color, textColor, description, and syscalls.",
     "Display order follows array order. Colors are from ColorBrewer (https://colorbrewer2.org/).",
-    "All tools (mactrace, mactrace_analyze, import.js, server.js) read this file — no other source of truth."
+    "All tools (f8, f8_analyze, import.js, server.js) read this file — no other source of truth."
   ],
 
   "categories": [

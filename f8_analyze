@@ -1,37 +1,37 @@
 #!/usr/bin/env python3
 """
-Analyze mactrace JSON output to show what happened during execution.
+Analyze f8 JSON output to show what happened during execution.
 
-Reads JSON from mactrace and produces a human-readable summary
+Reads JSON from f8 and produces a human-readable summary
 including file access, network activity, process lifecycle, and errors.
 
 Usage:
-    ./mactrace_analyze.py trace.json
-    ./mactrace -o - /bin/ls | ./mactrace_analyze.py -
+    ./f8_analyze.py trace.json
+    ./f8 -o - /bin/ls | ./f8_analyze.py -
 
     # Filter by syscall category
-    ./mactrace_analyze.py trace.json --category file
-    ./mactrace_analyze.py trace.json --category network
+    ./f8_analyze.py trace.json --category file
+    ./f8_analyze.py trace.json --category network
 
     # Show only errors
-    ./mactrace_analyze.py trace.json --errors-only
+    ./f8_analyze.py trace.json --errors-only
 
     # Output JSON summary instead of text
-    ./mactrace_analyze.py trace.json --json
+    ./f8_analyze.py trace.json --json
 
     # Save I/O data to files (excludes startup libs/config)
-    # NOTE: Requires mactrace to be run with --capture-io flag!
-    sudo ./mactrace --capture-io -o trace.json /bin/cat /etc/passwd
-    ./mactrace_analyze.py trace.json --save-io ./io_output
+    # NOTE: Requires f8 to be run with --capture-io flag!
+    sudo ./f8 --capture-io -o trace.json /bin/cat /etc/passwd
+    ./f8_analyze.py trace.json --save-io ./io_output
 
     # Save ALL I/O data including startup
-    ./mactrace_analyze.py trace.json --save-all-io ./io_output
+    ./f8_analyze.py trace.json --save-all-io ./io_output
 
     # Also create .hexdump versions for binary analysis
-    ./mactrace_analyze.py trace.json --save-io ./io_output --hexdump
+    ./f8_analyze.py trace.json --save-io ./io_output --hexdump
 
     # Render terminal output (strips ANSI, handles cursor movement)
-    ./mactrace_analyze.py trace.json --save-io ./io_output --render-terminal
+    ./f8_analyze.py trace.json --save-io ./io_output --render-terminal
 """
 
 import sys
@@ -47,8 +47,8 @@ from typing import Optional, List, Dict, Any, Set
 from datetime import datetime
 
 # Shared utilities — config, formatting, file classification, text processing
-from mactrace_lib import (
-    get_mactrace_config, get_config_value, resolve_input_path,
+from f8_lib import (
+    get_f8_config, get_config_value, resolve_input_path,
     format_bytes, format_duration, format_timestamp,
     truncate_path, sanitize_filename, python_hexdump, render_terminal,
     extract_raw_bytes,
@@ -57,7 +57,7 @@ from mactrace_lib import (
 )
 
 
-# Utilities now imported from mactrace_lib (see import block above)
+# Utilities now imported from f8_lib (see import block above)
 
 
 # ============================================================================
@@ -128,9 +128,9 @@ class IORecord:
 
 # Import categories from shared module
 try:
-    from mactrace_categories import get_category, get_categories_for_display, CATEGORY_ORDER
+    from f8_categories import get_category, get_categories_for_display, CATEGORY_ORDER
 except ImportError:
-    print("Warning: mactrace_categories.py not found — all syscalls will show as 'other'", file=sys.stderr)
+    print("Warning: f8_categories.py not found — all syscalls will show as 'other'", file=sys.stderr)
     def get_category(syscall):
         return 'other'
     def get_categories_for_display():
@@ -138,8 +138,8 @@ except ImportError:
     CATEGORY_ORDER = ['file', 'network', 'process', 'memory', 'signal', 'other']
 
 
-class MacTraceAnalyzer:
-    """Analyze mactrace JSON output."""
+class F8Analyzer:
+    """Analyze f8 JSON output."""
 
     def __init__(self, save_io_dir: str = None, save_all_io: bool = False,
                  hexdump: bool = False, render_terminal_output: bool = False):
@@ -227,7 +227,7 @@ class MacTraceAnalyzer:
         # Count syscalls
         self.syscall_counts[syscall] += 1
         
-        # Get category from event (mactrace includes it) or fall back to lookup
+        # Get category from event (f8 includes it) or fall back to lookup
         category = event.get('category') or get_category(syscall)
         self.category_counts[category] += 1
             
@@ -615,7 +615,7 @@ class MacTraceAnalyzer:
         """Print human-readable summary."""
         
         print("=" * 70)
-        print("MACTRACE ANALYSIS")
+        print("F8 ANALYSIS")
         print("=" * 70)
         
         # Basic info
@@ -856,10 +856,10 @@ class MacTraceAnalyzer:
 
 def main():
     parser = argparse.ArgumentParser(
-        description='Analyze mactrace JSON output',
-        epilog='Reads JSON from mactrace and produces analysis summary.'
+        description='Analyze f8 JSON output',
+        epilog='Reads JSON from f8 and produces analysis summary.'
     )
-    parser.add_argument('file', help='mactrace JSON file (use - for stdin)')
+    parser.add_argument('file', help='f8 JSON file (use - for stdin)')
     parser.add_argument('-c', '--category', choices=CATEGORY_ORDER,
                         help='Filter to specific syscall category')
     parser.add_argument('--errors-only', action='store_true',
@@ -892,13 +892,13 @@ def main():
     save_io_dir = args.save_all_io or args.save_io
     save_all_io = args.save_all_io is not None
     
-    # If save_io_dir is relative, use MACTRACE_OUTPUT
+    # If save_io_dir is relative, use F8_OUTPUT
     if save_io_dir and not os.path.isabs(save_io_dir) and not save_io_dir.startswith('./'):
-        output_dir = get_config_value('MACTRACE_OUTPUT')
+        output_dir = get_config_value('F8_OUTPUT')
         if output_dir:
             save_io_dir = os.path.join(output_dir, save_io_dir)
     
-    analyzer = MacTraceAnalyzer(
+    analyzer = F8Analyzer(
         save_io_dir=save_io_dir,
         save_all_io=save_all_io,
         hexdump=args.hexdump,
@@ -914,10 +914,10 @@ def main():
             print(f"  (resolved from: {args.file})", file=sys.stderr)
         else:
             print(f"Error: File not found: {args.file}", file=sys.stderr)
-            # Hint about MACTRACE_OUTPUT if it's set
-            output_dir = get_config_value('MACTRACE_OUTPUT')
+            # Hint about F8_OUTPUT if it's set
+            output_dir = get_config_value('F8_OUTPUT')
             if output_dir:
-                print(f"  (MACTRACE_OUTPUT={output_dir})", file=sys.stderr)
+                print(f"  (F8_OUTPUT={output_dir})", file=sys.stderr)
         sys.exit(1)
     except json.JSONDecodeError as e:
         print(f"Error: Invalid JSON in {input_file}: {e}", file=sys.stderr)

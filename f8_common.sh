@@ -1,17 +1,17 @@
 #!/bin/bash
 #
-# mactrace_common.sh — Shared shell utilities for mactrace tools
+# f8_common.sh — Shared shell utilities for f8 tools
 #
-# Source this file from other mactrace shell scripts:
-#   source "$(dirname "$0")/mactrace_common.sh"
+# Source this file from other f8 shell scripts:
+#   source "$(dirname "$0")/f8_common.sh"
 #
 # Provides:
-#   read_config     — Load ~/.mactrace/config into environment
+#   read_config     — Load ~/.f8/config into environment
 #   resolve_path    — Resolve bare filenames using env var prefixes
 #
 
-# ── read_config: Load mactrace config file ──────────────────────────
-# Reads ~/.mactrace/config (or SUDO_USER's config if running as root).
+# ── read_config: Load f8 config file ──────────────────────────
+# Reads ~/.f8/config (or SUDO_USER's config if running as root).
 # Only sets variables that aren't already in the environment.
 # Supports ~ expansion, $VAR references, and # comments.
 read_config() {
@@ -22,7 +22,7 @@ read_config() {
         config_home=$(eval echo "~$SUDO_USER")
     fi
 
-    local config_file="$config_home/.mactrace/config"
+    local config_file="$config_home/.f8/config"
     [[ -f "$config_file" ]] || return
 
     while IFS='=' read -r key value || [[ -n "$key" ]]; do
@@ -55,7 +55,7 @@ read_config() {
 # ── resolve_path: Apply env var prefix to bare filenames ────────────
 # Usage: resolve_path "filename" "ENV_VAR_NAME"
 #
-# Path resolution rules (same as mactrace Python tools):
+# Path resolution rules (same as f8 Python tools):
 #   Absolute path (/path/to/file)     → used as-is
 #   Explicit relative (./file, ../file) → used as-is
 #   Bare filename (file.json)          → $ENV_VAR/file.json (if env var set)

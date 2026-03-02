@@ -24,7 +24,7 @@ syscall::chmod:entry
 syscall::chmod:return
 /TRACED && self->chmod_path != NULL/
 {
-    printf("MACTRACE_SYSCALL %d %d chmod %d %d %d \"%s\" 0%o\n",
+    printf("F8_SYSCALL %d %d chmod %d %d %d \"%s\" 0%o\n",
         pid, tid, (int)arg1, errno, self->chmod_ts, self->chmod_path, self->chmod_mode);
     self->chmod_path = NULL;
 }
@@ -40,7 +40,7 @@ syscall::fchmod:entry
 syscall::fchmod:return
 /TRACED && self->fchmod_ts/
 {
-    printf("MACTRACE_SYSCALL %d %d fchmod %d %d %d %d 0%o\n",
+    printf("F8_SYSCALL %d %d fchmod %d %d %d %d 0%o\n",
         pid, tid, (int)arg1, errno, self->fchmod_ts, self->fchmod_fd, self->fchmod_mode);
     self->fchmod_ts = 0;
 }
@@ -56,7 +56,7 @@ syscall::truncate:entry
 syscall::truncate:return
 /TRACED && self->trunc_path != NULL/
 {
-    printf("MACTRACE_SYSCALL %d %d truncate %d %d %d \"%s\" %d\n",
+    printf("F8_SYSCALL %d %d truncate %d %d %d \"%s\" %d\n",
         pid, tid, (int)arg1, errno, self->trunc_ts, self->trunc_path, self->trunc_len);
     self->trunc_path = NULL;
 }
@@ -72,7 +72,7 @@ syscall::ftruncate:entry
 syscall::ftruncate:return
 /TRACED && self->ftrunc_ts/
 {
-    printf("MACTRACE_SYSCALL %d %d ftruncate %d %d %d %d %d\n",
+    printf("F8_SYSCALL %d %d ftruncate %d %d %d %d %d\n",
         pid, tid, (int)arg1, errno, self->ftrunc_ts, self->ftrunc_fd, self->ftrunc_len);
     self->ftrunc_ts = 0;
 }

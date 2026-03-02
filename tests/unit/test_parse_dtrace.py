@@ -1,8 +1,8 @@
 """
-Tests for DTrace output line parsing in the mactrace tracer.
+Tests for DTrace output line parsing in the f8 tracer.
 
-Since the mactrace file has no .py extension, we import it via importlib.
-Tests cover all MACTRACE_* line formats, malformed input, and edge cases.
+Since the f8 file has no .py extension, we import it via importlib.
+Tests cover all F8_* line formats, malformed input, and edge cases.
 """
 
 import sys
@@ -10,20 +10,20 @@ import os
 import importlib.util
 import pytest
 
-# Import the mactrace module (no .py extension)
+# Import the f8 module (no .py extension)
 PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 spec = importlib.util.spec_from_loader(
-    'mactrace_mod',
-    importlib.machinery.SourceFileLoader('mactrace_mod', os.path.join(PROJECT_ROOT, 'mactrace'))
+    'f8_mod',
+    importlib.machinery.SourceFileLoader('f8_mod', os.path.join(PROJECT_ROOT, 'f8'))
 )
-mactrace_mod = importlib.util.module_from_spec(spec)
+f8_mod = importlib.util.module_from_spec(spec)
 
 # We need to load the module but NOT run main() — just get the classes
 # Load it with __name__ set to avoid triggering if __name__ == "__main__"
-spec.loader.exec_module(mactrace_mod)
+spec.loader.exec_module(f8_mod)
 
-MacTrace = mactrace_mod.MacTrace
-parse_size = mactrace_mod.parse_size
+F8 = f8_mod.F8
+parse_size = f8_mod.parse_size
 
 
 # ============================================================================
@@ -67,61 +67,61 @@ class TestParseSize:
 # ============================================================================
 
 class TestParseLine:
-    """Test MacTrace._parse_line() with various DTrace output formats."""
+    """Test F8._parse_line() with various DTrace output formats."""
 
     def setup_method(self):
-        """Create a fresh MacTrace instance for each test."""
-        self.tracer = MacTrace(verbose=False)
+        """Create a fresh F8 instance for each test."""
+        self.tracer = F8(verbose=False)
         self.base_ts = 1000000  # base timestamp for relative calculations
 
     def test_start_line(self):
-        """MACTRACE_START sets start timestamp and records PID."""
-        self.tracer._parse_line("MACTRACE_START 1234 5000000", self.base_ts)
+        """F8_START sets start timestamp and records PID."""
+        self.tracer._parse_line("F8_START 1234 5000000", self.base_ts)
         assert 1234 in self.tracer.pids_traced
         assert self.tracer.start_timestamp == 5000000
 
     def test_end_line(self):
-        """MACTRACE_END sets end timestamp."""
-        self.tracer._parse_line("MACTRACE_END 9000000", self.base_ts)
+        """F8_END sets end timestamp."""
+        self.tracer._parse_line("F8_END 9000000", self.base_ts)
         assert self.tracer.end_timestamp == 9000000
 
     def test_child_line(self):
-        """MACTRACE_CHILD records child PID and parent mapping."""
+        """F8_CHILD records child PID and parent mapping."""
         self.tracer.start_timestamp = self.base_ts
-        self.tracer._parse_line("MACTRACE_CHILD 200 100 2000000", self.base_ts)
+        self.tracer._parse_line("F8_CHILD 200 100 2000000", self.base_ts)
         assert 200 in self.tracer.pids_traced
         assert self.tracer.process_tree[200] == 100
 
     def test_fork_child_line(self):
-        """MACTRACE_FORK_CHILD records parent→child relationship."""
+        """F8_FORK_CHILD records parent→child relationship."""
         self.tracer.start_timestamp = self.base_ts
-        self.tracer._parse_line("MACTRACE_FORK_CHILD 100 201 1 3000000", self.base_ts)
+        self.tracer._parse_line("F8_FORK_CHILD 100 201 1 3000000", self.base_ts)
         assert 201 in self.tracer.pids_traced
         assert self.tracer.process_tree[201] == 100
         assert len(self.tracer.process_events) == 1
         assert self.tracer.process_events[0].event_type == "fork"
 
     def test_exit_line(self):
-        """MACTRACE_EXIT records exit event."""
+        """F8_EXIT records exit event."""
         self.tracer.start_timestamp = self.base_ts
-        self.tracer._parse_line("MACTRACE_EXIT 200 100 0 4000000", self.base_ts)
+        self.tracer._parse_line("F8_EXIT 200 100 0 4000000", self.base_ts)
         assert any(pe.event_type == "exit" for pe in self.tracer.process_events)
 
     def test_allsyscall_line(self):
-        """MACTRACE_ALLSYSCALL records syscall counts."""
-        self.tracer._parse_line("MACTRACE_ALLSYSCALL open 42", self.base_ts)
+        """F8_ALLSYSCALL records syscall counts."""
+        self.tracer._parse_line("F8_ALLSYSCALL open 42", self.base_ts)
         assert self.tracer.all_syscall_counts['open'] == 42
 
     def test_allsyscall_init_skipped(self):
-        """MACTRACE_ALLSYSCALL __init__ (our marker) is ignored."""
-        self.tracer._parse_line("MACTRACE_ALLSYSCALL __init__ 1", self.base_ts)
+        """F8_ALLSYSCALL __init__ (our marker) is ignored."""
+        self.tracer._parse_line("F8_ALLSYSCALL __init__ 1", self.base_ts)
         assert '__init__' not in self.tracer.all_syscall_counts
 
     def test_syscall_line(self):
-        """MACTRACE_SYSCALL records a syscall event."""
+        """F8_SYSCALL records a syscall event."""
         self.tracer.start_timestamp = self.base_ts
         self.tracer._parse_line(
-            "MACTRACE_SYSCALL 1234 1 open 3 0 2000000 \"/etc/passwd\" 0x0 0644",
+            "F8_SYSCALL 1234 1 open 3 0 2000000 \"/etc/passwd\" 0x0 0644",
             self.base_ts
         )
         assert len(self.tracer.events) == 1
@@ -138,8 +138,8 @@ class TestParseLine:
         self.tracer._parse_line("   ", self.base_ts)
         assert len(self.tracer.events) == 0
 
-    def test_non_mactrace_line_ignored(self):
-        """Lines not starting with MACTRACE_ are ignored."""
+    def test_non_f8_line_ignored(self):
+        """Lines not starting with F8_ are ignored."""
         self.tracer._parse_line("dtrace: some warning message", self.base_ts)
         self.tracer._parse_line("random garbage", self.base_ts)
         assert len(self.tracer.events) == 0
@@ -147,23 +147,23 @@ class TestParseLine:
     def test_truncated_line_no_crash(self):
         """Truncated lines shouldn't crash the parser."""
         # These are all malformed but should not raise exceptions
-        self.tracer._parse_line("MACTRACE_SYSCALL", self.base_ts)
-        self.tracer._parse_line("MACTRACE_SYSCALL 1234", self.base_ts)
-        self.tracer._parse_line("MACTRACE_START", self.base_ts)
-        self.tracer._parse_line("MACTRACE_CHILD 100", self.base_ts)
+        self.tracer._parse_line("F8_SYSCALL", self.base_ts)
+        self.tracer._parse_line("F8_SYSCALL 1234", self.base_ts)
+        self.tracer._parse_line("F8_START", self.base_ts)
+        self.tracer._parse_line("F8_CHILD 100", self.base_ts)
         assert len(self.tracer.events) == 0  # Nothing valid parsed
 
     def test_garbled_timestamp_no_crash(self):
         """Non-numeric timestamps shouldn't crash."""
         # DTrace can produce garbled output under load
-        self.tracer._parse_line("MACTRACE_START 1234 notanumber", self.base_ts)
+        self.tracer._parse_line("F8_START 1234 notanumber", self.base_ts)
         # Should either ignore or handle gracefully
 
     def test_negative_return_value(self):
         """Negative return values (error indicators) are preserved."""
         self.tracer.start_timestamp = self.base_ts
         self.tracer._parse_line(
-            "MACTRACE_SYSCALL 1234 1 open -1 2 2000000 \"/nonexistent\" 0x0 0644",
+            "F8_SYSCALL 1234 1 open -1 2 2000000 \"/nonexistent\" 0x0 0644",
             self.base_ts
         )
         if self.tracer.events:
@@ -172,14 +172,14 @@ class TestParseLine:
 
 
 # ============================================================================
-# render_terminal_lines (standalone function in mactrace)
+# render_terminal_lines (standalone function in f8)
 # ============================================================================
 
 class TestRenderTerminalLines:
-    """Test render_terminal_lines() in the mactrace module."""
+    """Test render_terminal_lines() in the f8 module."""
 
     def setup_method(self):
-        self.render = mactrace_mod.render_terminal_lines
+        self.render = f8_mod.render_terminal_lines
 
     def test_empty(self):
         assert self.render([]) == []
@@ -202,28 +202,28 @@ class TestRenderTerminalLines:
 
 
 # ============================================================================
-# MACTRACE_IOV parsing
+# F8_IOV parsing
 # ============================================================================
 
 class TestParseIovData:
-    """Test parsing of MACTRACE_IOV lines (vectored I/O buffer capture)."""
+    """Test parsing of F8_IOV lines (vectored I/O buffer capture)."""
 
     def setup_method(self):
         """Create a tracer with a writev event to attach IOV data to."""
-        self.tracer = MacTrace(verbose=False)
+        self.tracer = F8(verbose=False)
         self.base_ts = 1000000
         # Create a writev syscall event first
         self.tracer._parse_line(
-            "MACTRACE_SYSCALL 1234 5678 writev 12 0 2000000 4 3", self.base_ts)
+            "F8_SYSCALL 1234 5678 writev 12 0 2000000 4 3", self.base_ts)
 
     def _find_writev(self):
         """Find the writev event."""
         return [e for e in self.tracer.events if e.syscall == 'writev'][0]
 
     def test_single_iov_buffer(self):
-        """A single MACTRACE_IOV line attaches one buffer."""
+        """A single F8_IOV line attaches one buffer."""
         self.tracer._parse_iov_data(
-            "MACTRACE_IOV 1234 5678 writev 4 0/3 4 48454144", self.base_ts)
+            "F8_IOV 1234 5678 writev 4 0/3 4 48454144", self.base_ts)
         ev = self._find_writev()
         assert 'iov_buffers' in ev.args
         assert len(ev.args['iov_buffers']) == 1
@@ -234,13 +234,13 @@ class TestParseIovData:
         assert buf['data_len'] == 4
 
     def test_multiple_iov_buffers(self):
-        """Multiple MACTRACE_IOV lines accumulate on the same event."""
+        """Multiple F8_IOV lines accumulate on the same event."""
         self.tracer._parse_iov_data(
-            "MACTRACE_IOV 1234 5678 writev 4 0/3 4 48454144", self.base_ts)
+            "F8_IOV 1234 5678 writev 4 0/3 4 48454144", self.base_ts)
         self.tracer._parse_iov_data(
-            "MACTRACE_IOV 1234 5678 writev 4 1/3 4 424f4459", self.base_ts)
+            "F8_IOV 1234 5678 writev 4 1/3 4 424f4459", self.base_ts)
         self.tracer._parse_iov_data(
-            "MACTRACE_IOV 1234 5678 writev 4 2/3 4 5441494c", self.base_ts)
+            "F8_IOV 1234 5678 writev 4 2/3 4 5441494c", self.base_ts)
         ev = self._find_writev()
         bufs = ev.args['iov_buffers']
         assert len(bufs) == 3
@@ -250,7 +250,7 @@ class TestParseIovData:
     def test_iov_index_and_total(self):
         """index/total parsed correctly from 'idx/total' format."""
         self.tracer._parse_iov_data(
-            "MACTRACE_IOV 1234 5678 writev 4 2/6 2 4141", self.base_ts)
+            "F8_IOV 1234 5678 writev 4 2/6 2 4141", self.base_ts)
         buf = self._find_writev().args['iov_buffers'][0]
         assert buf['index'] == 2
         assert buf['total'] == 6
@@ -259,7 +259,7 @@ class TestParseIovData:
         """Hex data longer than nbytes should be trimmed."""
         # 8 hex bytes but nbytes=3 — trim to 3
         self.tracer._parse_iov_data(
-            "MACTRACE_IOV 1234 5678 writev 4 0/1 3 4142434400", self.base_ts)
+            "F8_IOV 1234 5678 writev 4 0/1 3 4142434400", self.base_ts)
         buf = self._find_writev().args['iov_buffers'][0]
         assert buf['data_len'] == 3
         assert buf['data'] == '414243'  # trimmed to "ABC"
@@ -267,7 +267,7 @@ class TestParseIovData:
     def test_empty_hex_data(self):
         """IOV line with no hex data still creates a buffer entry."""
         self.tracer._parse_iov_data(
-            "MACTRACE_IOV 1234 5678 writev 4 0/1 0", self.base_ts)
+            "F8_IOV 1234 5678 writev 4 0/1 0", self.base_ts)
         buf = self._find_writev().args['iov_buffers'][0]
         assert buf['data'] == ''
         assert buf['data_len'] == 0
@@ -275,14 +275,14 @@ class TestParseIovData:
     def test_malformed_index_ignored(self):
         """Malformed index/total (no slash) is silently ignored."""
         self.tracer._parse_iov_data(
-            "MACTRACE_IOV 1234 5678 writev 4 BADINDEX 4 48454144", self.base_ts)
+            "F8_IOV 1234 5678 writev 4 BADINDEX 4 48454144", self.base_ts)
         ev = self._find_writev()
         assert 'iov_buffers' not in ev.args
 
     def test_short_line_ignored(self):
         """Line with too few fields is silently ignored."""
         self.tracer._parse_iov_data(
-            "MACTRACE_IOV 1234 5678 writev 4", self.base_ts)
+            "F8_IOV 1234 5678 writev 4", self.base_ts)
         ev = self._find_writev()
         assert 'iov_buffers' not in ev.args
 
@@ -290,6 +290,6 @@ class TestParseIovData:
         """IOV line for non-existent event doesn't crash."""
         # Different fd (99) — won't match the writev on fd 4
         self.tracer._parse_iov_data(
-            "MACTRACE_IOV 1234 5678 writev 99 0/1 4 48454144", self.base_ts)
+            "F8_IOV 1234 5678 writev 99 0/1 4 48454144", self.base_ts)
         ev = self._find_writev()
         assert 'iov_buffers' not in ev.args

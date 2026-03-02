@@ -40,7 +40,7 @@ syscall::readv:return,
 syscall::readv_nocancel:return
 /TRACED && self->readv_ts/
 {
-    printf("MACTRACE_SYSCALL %d %d readv %d %d %d %d %d\n",
+    printf("F8_SYSCALL %d %d readv %d %d %d %d %d\n",
         pid, tid, (int)arg1, errno, self->readv_ts,
         self->readv_fd, self->readv_iovcnt);
     self->readv_ts = 0;
@@ -60,7 +60,7 @@ syscall::writev:return,
 syscall::writev_nocancel:return
 /TRACED && self->writev_ts/
 {
-    printf("MACTRACE_SYSCALL %d %d writev %d %d %d %d %d\n",
+    printf("F8_SYSCALL %d %d writev %d %d %d %d %d\n",
         pid, tid, (int)arg1, errno, self->writev_ts,
         self->writev_fd, self->writev_iovcnt);
     self->writev_ts = 0;
@@ -79,7 +79,7 @@ syscall::preadv:entry
 syscall::preadv:return
 /TRACED && self->preadv_ts/
 {
-    printf("MACTRACE_SYSCALL %d %d preadv %d %d %d %d %d %d\n",
+    printf("F8_SYSCALL %d %d preadv %d %d %d %d %d %d\n",
         pid, tid, (int)arg1, errno, self->preadv_ts,
         self->preadv_fd, self->preadv_iovcnt, self->preadv_off);
     self->preadv_ts = 0;
@@ -98,7 +98,7 @@ syscall::pwritev:entry
 syscall::pwritev:return
 /TRACED && self->pwritev_ts/
 {
-    printf("MACTRACE_SYSCALL %d %d pwritev %d %d %d %d %d %d\n",
+    printf("F8_SYSCALL %d %d pwritev %d %d %d %d %d %d\n",
         pid, tid, (int)arg1, errno, self->pwritev_ts,
         self->pwritev_fd, self->pwritev_iovcnt, self->pwritev_off);
     self->pwritev_ts = 0;

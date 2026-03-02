@@ -28,30 +28,30 @@ jq --arg pid "12346" '.events[] | select(.pid == ($pid | tonumber))' trace.json
 
 ## Analysis Tools (Detail)
 
-### mactrace_analyze
+### f8_analyze
 
 Analyze trace output to get a human-readable summary:
 
 ```bash
 # Basic analysis
-./mactrace_analyze trace.json
+./f8_analyze trace.json
 
 # Filter by category
-./mactrace_analyze trace.json --category file
-./mactrace_analyze trace.json --category network
+./f8_analyze trace.json --category file
+./f8_analyze trace.json --category network
 
 # Show only errors
-./mactrace_analyze trace.json --errors-only
+./f8_analyze trace.json --errors-only
 
 # Hide startup/library files
-./mactrace_analyze trace.json --hide-startup
+./f8_analyze trace.json --hide-startup
 
 # Output JSON for further processing
-./mactrace_analyze trace.json --json
+./f8_analyze trace.json --json
 
 # Extract I/O data to files (requires --capture-io during trace)
-./mactrace_analyze trace.json --save-io ./io_output
-./mactrace_analyze trace.json --save-io ./io_output --hexdump --render-terminal
+./f8_analyze trace.json --save-io ./io_output
+./f8_analyze trace.json --save-io ./io_output --hexdump --render-terminal
 ```
 
 Output includes:
@@ -63,12 +63,12 @@ Output includes:
 - Error summary
 - I/O data extraction (with `--save-io`)
 
-### mactrace_timeline
+### f8_timeline
 
 Generate an interactive HTML timeline:
 
 ```bash
-./mactrace_timeline trace.json -o timeline.html
+./f8_timeline trace.json -o timeline.html
 ```
 
 Features:
@@ -84,20 +84,20 @@ The `server/` directory contains a web-based timeline viewer:
 
 ```bash
 # Import trace into SQLite database
-mactrace_import trace.json --db mactrace.db
+f8_import trace.json --db f8.db
 
 # Start the web server
-mactrace_server --db mactrace.db
+f8_server --db f8.db
 # Opens at http://localhost:3000
 ```
 
-Set `MACTRACE_DB` and `MACTRACE_PORT` environment variables to avoid repeating flags.
+Set `F8_DB` and `F8_PORT` environment variables to avoid repeating flags.
 
 ### Import Options
 
 | Flag | Default | Description |
 |------|---------|-------------|
-| `--db <path>` | `mactrace.db` | SQLite database file |
+| `--db <path>` | `f8.db` | SQLite database file |
 | `--io-dir <path>` | `<trace_name>/` | Directory for I/O binary files |
 
 The importer automatically:
@@ -109,8 +109,8 @@ The importer automatically:
 
 | Flag | Default | Description |
 |------|---------|-------------|
-| `--db <path>` | `$MACTRACE_DB` or `mactrace.db` | SQLite database file |
-| `--port <port>` | `$MACTRACE_PORT` or `3000` | Server port |
+| `--db <path>` | `$F8_DB` or `f8.db` | SQLite database file |
+| `--port <port>` | `$F8_PORT` or `3000` | Server port |
 
 ### Web UI Features
 
@@ -122,10 +122,10 @@ The importer automatically:
 ### Database Management
 
 ```bash
-mactrace_data list              # List all imported traces
-mactrace_data info <id>         # Show details for a trace
-mactrace_data delete <id>       # Delete a trace
-mactrace_data vacuum            # Compact the database
-mactrace_data stats             # Show database statistics
+f8_data list              # List all imported traces
+f8_data info <id>         # Show details for a trace
+f8_data delete <id>       # Delete a trace
+f8_data vacuum            # Compact the database
+f8_data stats             # Show database statistics
 ```
 

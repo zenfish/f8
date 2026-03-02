@@ -1,12 +1,12 @@
 #!/bin/bash
 #
-# install.sh — Set up mactrace for use
+# install.sh — Set up f8 for use
 #
 # What it does:
 #   1. Installs Node.js dependencies (server/node_modules)
-#   2. Creates ~/.mactrace/config with sensible defaults
+#   2. Creates ~/.f8/config with sensible defaults
 #   3. Creates ~/traces/ directory for output
-#   4. Adds mactrace to PATH (via symlinks in /usr/local/bin or prints instructions)
+#   4. Adds f8 to PATH (via symlinks in /usr/local/bin or prints instructions)
 #
 # Usage:
 #   ./install.sh              # Interactive install
@@ -15,7 +15,7 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-MACTRACE_HOME="${HOME}/.mactrace"
+F8_HOME="${HOME}/.f8"
 TRACES_DIR="${HOME}/traces"
 LINK_DIR="/usr/local/bin"
 NO_LINK=false
@@ -31,7 +31,7 @@ for arg in "$@"; do
     esac
 done
 
-echo "=== mactrace installer ==="
+echo "=== f8 installer ==="
 echo "Source: ${SCRIPT_DIR}"
 echo ""
 
@@ -49,21 +49,21 @@ fi
 
 echo ""
 echo "2. Setting up config..."
-mkdir -p "${MACTRACE_HOME}"
+mkdir -p "${F8_HOME}"
 mkdir -p "${TRACES_DIR}"
 
-if [[ -f "${MACTRACE_HOME}/config" ]]; then
-    echo "   ✓ ${MACTRACE_HOME}/config already exists (not overwriting)"
+if [[ -f "${F8_HOME}/config" ]]; then
+    echo "   ✓ ${F8_HOME}/config already exists (not overwriting)"
 else
-    cat > "${MACTRACE_HOME}/config" << EOF
-# mactrace configuration
+    cat > "${F8_HOME}/config" << EOF
+# f8 configuration
 # See ENVIRONMENT.md for full syntax (supports ~, \$VAR expansion, comments)
 
-MACTRACE_HOME=~/.mactrace
-MACTRACE_OUTPUT=~/traces
-MACTRACE_DB=\$MACTRACE_HOME/mactrace.db
+F8_HOME=~/.f8
+F8_OUTPUT=~/traces
+F8_DB=\$F8_HOME/f8.db
 EOF
-    echo "   ✓ Created ${MACTRACE_HOME}/config"
+    echo "   ✓ Created ${F8_HOME}/config"
 fi
 echo "   ✓ Trace output directory: ${TRACES_DIR}"
 
@@ -72,19 +72,19 @@ echo "   ✓ Trace output directory: ${TRACES_DIR}"
 echo ""
 echo "3. PATH setup..."
 
-TOOLS=(mactrace mactrace_analyze mactrace_timeline mactrace_import mactrace_server mactrace_data mactrace_open mactrace_run_all.sh)
+TOOLS=(f8 f8_analyze f8_timeline f8_import f8_server f8_data f8_open f8_run_all.sh)
 
 if [[ "$NO_LINK" == true ]]; then
     echo "   Skipped (--no-link). Add to PATH manually:"
     echo "   export PATH=\"${SCRIPT_DIR}:\$PATH\""
 else
     # Check if already on PATH
-    if command -v mactrace >/dev/null 2>&1; then
-        EXISTING=$(command -v mactrace)
-        if [[ "$(readlink -f "$EXISTING" 2>/dev/null || echo "$EXISTING")" == "${SCRIPT_DIR}/mactrace" ]]; then
-            echo "   ✓ mactrace already on PATH (${EXISTING})"
+    if command -v f8 >/dev/null 2>&1; then
+        EXISTING=$(command -v f8)
+        if [[ "$(readlink -f "$EXISTING" 2>/dev/null || echo "$EXISTING")" == "${SCRIPT_DIR}/f8" ]]; then
+            echo "   ✓ f8 already on PATH (${EXISTING})"
         else
-            echo "   ⚠ mactrace found at ${EXISTING} (different location)"
+            echo "   ⚠ f8 found at ${EXISTING} (different location)"
             echo "     To use this installation, add to your shell config:"
             echo "     export PATH=\"${SCRIPT_DIR}:\$PATH\""
         fi
@@ -116,7 +116,7 @@ elif csrutil status 2>/dev/null | grep -qi "disabled"; then
     echo "   ✓ SIP disabled — full tracing available"
 else
     echo "   ⚠ SIP dtrace restrictions appear to be ENABLED"
-    echo "     mactrace requires DTrace access. To disable dtrace restrictions:"
+    echo "     f8 requires DTrace access. To disable dtrace restrictions:"
     echo "     1. Reboot into Recovery Mode (hold power button on Apple Silicon)"
     echo "     2. Open Terminal from Utilities menu"
     echo "     3. Run: csrutil enable --without dtrace"
@@ -130,8 +130,8 @@ echo ""
 echo "=== Done ==="
 echo ""
 echo "Quick test:"
-echo "  sudo mactrace -o test.json -jp echo hello"
+echo "  sudo f8 -o test.json -jp echo hello"
 echo ""
 echo "Then view in browser:"
-echo "  mactrace_import test.json && mactrace_server"
+echo "  f8_import test.json && f8_server"
 echo "  → http://localhost:3000"

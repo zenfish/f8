@@ -1,7 +1,7 @@
 {
-  "name": "mactrace-server",
+  "name": "f8-server",
   "version": "1.0.0",
-  "description": "Web server for mactrace timeline viewing",
+  "description": "Web server for f8 timeline viewing",
   "type": "module",
   "scripts": {
     "start": "node server.js",

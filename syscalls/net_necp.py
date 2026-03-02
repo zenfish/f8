@@ -26,7 +26,7 @@ syscall::necp_open:entry
 syscall::necp_open:return
 /TRACED && self->necp_open_ts/
 {
-    printf("MACTRACE_SYSCALL %d %d necp_open %d %d %d 0x%x\n",
+    printf("F8_SYSCALL %d %d necp_open %d %d %d 0x%x\n",
         pid, tid, (int)arg1, errno, self->necp_open_ts, self->necp_open_flags);
     self->necp_open_ts = 0;
 }
@@ -42,7 +42,7 @@ syscall::necp_client_action:entry
 syscall::necp_client_action:return
 /TRACED && self->necp_ca_ts/
 {
-    printf("MACTRACE_SYSCALL %d %d necp_client_action %d %d %d %d %d\n",
+    printf("F8_SYSCALL %d %d necp_client_action %d %d %d %d %d\n",
         pid, tid, (int)arg1, errno, self->necp_ca_ts, self->necp_ca_fd, self->necp_ca_action);
     self->necp_ca_ts = 0;
 }
@@ -57,7 +57,7 @@ syscall::necp_session_open:entry
 syscall::necp_session_open:return
 /TRACED && self->necp_so_ts/
 {
-    printf("MACTRACE_SYSCALL %d %d necp_session_open %d %d %d 0x%x\n",
+    printf("F8_SYSCALL %d %d necp_session_open %d %d %d 0x%x\n",
         pid, tid, (int)arg1, errno, self->necp_so_ts, self->necp_so_flags);
     self->necp_so_ts = 0;
 }
@@ -73,7 +73,7 @@ syscall::necp_session_action:entry
 syscall::necp_session_action:return
 /TRACED && self->necp_sa_ts/
 {
-    printf("MACTRACE_SYSCALL %d %d necp_session_action %d %d %d %d %d\n",
+    printf("F8_SYSCALL %d %d necp_session_action %d %d %d %d %d\n",
         pid, tid, (int)arg1, errno, self->necp_sa_ts, self->necp_sa_fd, self->necp_sa_action);
     self->necp_sa_ts = 0;
 }

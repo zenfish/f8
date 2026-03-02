@@ -71,7 +71,7 @@ The output is JSON with the following structure:
 
 ## Traced Syscalls
 
-mactrace traces 111 of the 454 named macOS syscalls across 7 categories. Use `--trace help` for live details, or see **[COVERAGE.md](COVERAGE.md)** for the full breakdown, cross-version data, and the coverage gathering script.
+f8 traces 111 of the 454 named macOS syscalls across 7 categories. Use `--trace help` for live details, or see **[COVERAGE.md](COVERAGE.md)** for the full breakdown, cross-version data, and the coverage gathering script.
 
 | Category | Traced | Coverage | Key syscalls |
 |----------|-------:|---------:|--------------|
@@ -89,7 +89,7 @@ Use `--trace=net` to load only network probes (reduces DTrace overhead by 56%). 
 
 ## Process Tracking
 
-mactrace comprehensively tracks all process lifecycle events:
+f8 comprehensively tracks all process lifecycle events:
 
 ### Process Creation
 - `proc:::create` — Catches process creation before child runs (most reliable)

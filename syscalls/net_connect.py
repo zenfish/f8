@@ -1,4 +1,4 @@
-"""Socket connect/bind/accept — with sockaddr capture via MACTRACE_SOCKADDR."""
+"""Socket connect/bind/accept — with sockaddr capture via F8_SOCKADDR."""
 
 from . import SyscallHandler, register
 
@@ -37,7 +37,7 @@ syscall::connect_nocancel:return
     this->sa = (struct sockaddr *)copyin(self->conn_addr, self->conn_len);
     this->family = this->sa->sa_family;
     
-    printf("MACTRACE_SOCKADDR %d %d connect %d %d %d %d %d ",
+    printf("F8_SOCKADDR %d %d connect %d %d %d %d %d ",
         pid, tid, (int)arg1, errno, self->conn_ts, self->conn_fd, this->family);
     tracemem(this->sa, 128, self->conn_len);
     printf("\n");
@@ -48,7 +48,7 @@ syscall::connect:return,
 syscall::connect_nocancel:return
 /TRACED && self->conn_ts && (self->conn_len == 0 || self->conn_len > 128)/
 {
-    printf("MACTRACE_SYSCALL %d %d connect %d %d %d %d\n",
+    printf("F8_SYSCALL %d %d connect %d %d %d %d\n",
         pid, tid, (int)arg1, errno, self->conn_ts, self->conn_fd);
     self->conn_ts = 0;
 }
@@ -68,7 +68,7 @@ syscall::bind:return
     this->sa = (struct sockaddr *)copyin(self->bind_addr, self->bind_len);
     this->family = this->sa->sa_family;
     
-    printf("MACTRACE_SOCKADDR %d %d bind %d %d %d %d %d ",
+    printf("F8_SOCKADDR %d %d bind %d %d %d %d %d ",
         pid, tid, (int)arg1, errno, self->bind_ts, self->bind_fd, this->family);
     tracemem(this->sa, 128, self->bind_len);
     printf("\n");
@@ -78,7 +78,7 @@ syscall::bind:return
 syscall::bind:return
 /TRACED && self->bind_ts && (self->bind_len == 0 || self->bind_len > 128)/
 {
-    printf("MACTRACE_SYSCALL %d %d bind %d %d %d %d\n",
+    printf("F8_SYSCALL %d %d bind %d %d %d %d\n",
         pid, tid, (int)arg1, errno, self->bind_ts, self->bind_fd);
     self->bind_ts = 0;
 }
@@ -102,7 +102,7 @@ syscall::accept_nocancel:return
         this->addrlen > 128 ? 128 : this->addrlen);
     this->family = this->sa->sa_family;
     
-    printf("MACTRACE_SOCKADDR %d %d accept %d %d %d %d %d ",
+    printf("F8_SOCKADDR %d %d accept %d %d %d %d %d ",
         pid, tid, (int)arg1, errno, self->accept_ts, self->accept_fd, this->family);
     tracemem(this->sa, 128, this->addrlen > 128 ? 128 : this->addrlen);
     printf("\n");
@@ -113,7 +113,7 @@ syscall::accept:return,
 syscall::accept_nocancel:return
 /TRACED && self->accept_ts && (self->accept_addr == 0 || arg1 < 0)/
 {
-    printf("MACTRACE_SYSCALL %d %d accept %d %d %d %d\n",
+    printf("F8_SYSCALL %d %d accept %d %d %d %d\n",
         pid, tid, (int)arg1, errno, self->accept_ts, self->accept_fd);
     self->accept_ts = 0;
 }
@@ -144,7 +144,7 @@ syscall::connectx:return
         this->dstlen > 128 ? 128 : this->dstlen);
     this->family = this->sa->sa_family;
 
-    printf("MACTRACE_SOCKADDR %d %d connectx %d %d %d %d %d ",
+    printf("F8_SOCKADDR %d %d connectx %d %d %d %d %d ",
         pid, tid, (int)arg1, errno, self->connx_ts, self->connx_fd, this->family);
     tracemem(this->sa, 128, this->dstlen > 128 ? 128 : this->dstlen);
     printf("\n");
@@ -154,7 +154,7 @@ syscall::connectx:return
 syscall::connectx:return
 /TRACED && self->connx_ts && self->connx_endpoints == 0/
 {
-    printf("MACTRACE_SYSCALL %d %d connectx %d %d %d %d\n",
+    printf("F8_SYSCALL %d %d connectx %d %d %d %d\n",
         pid, tid, (int)arg1, errno, self->connx_ts, self->connx_fd);
     self->connx_ts = 0;
 }
@@ -173,7 +173,7 @@ syscall::disconnectx:entry
 syscall::disconnectx:return
 /TRACED && self->dconnx_ts/
 {
-    printf("MACTRACE_SYSCALL %d %d disconnectx %d %d %d %d %d %d\n",
+    printf("F8_SYSCALL %d %d disconnectx %d %d %d %d %d %d\n",
         pid, tid, (int)arg1, errno, self->dconnx_ts,
         self->dconnx_fd, (int)self->dconnx_aid, (int)self->dconnx_cid);
     self->dconnx_ts = 0;
@@ -192,7 +192,7 @@ syscall::peeloff:entry
 syscall::peeloff:return
 /TRACED && self->peel_ts/
 {
-    printf("MACTRACE_SYSCALL %d %d peeloff %d %d %d %d %d\n",
+    printf("F8_SYSCALL %d %d peeloff %d %d %d %d %d\n",
         pid, tid, (int)arg1, errno, self->peel_ts,
         self->peel_fd, (int)self->peel_aid);
     self->peel_ts = 0;
@@ -200,7 +200,7 @@ syscall::peeloff:return
 '''
 
     def parse_args(self, syscall, args):
-        """Parse fallback MACTRACE_SYSCALL args (when sockaddr capture fails)."""
+        """Parse fallback F8_SYSCALL args (when sockaddr capture fails)."""
         result = {}
         if syscall in ("connect", "connect_nocancel", "connectx", "disconnectx", "bind"):
             if len(args) >= 1:

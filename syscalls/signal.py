@@ -27,7 +27,7 @@ syscall::kill:entry
 syscall::kill:return
 /TRACED && self->kill_ts/
 {
-    printf("MACTRACE_SYSCALL %d %d kill %d %d %d %d %d\n",
+    printf("F8_SYSCALL %d %d kill %d %d %d %d %d\n",
         pid, tid, (int)arg1, errno, self->kill_ts, self->kill_pid, self->kill_sig);
     self->kill_ts = 0;
 }

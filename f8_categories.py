@@ -1,18 +1,18 @@
 #!/usr/bin/env python3
 """
-mactrace_categories.py - Syscall category definitions (loaded from syscalls.json)
+f8_categories.py - Syscall category definitions (loaded from syscalls.json)
 
 This module provides the mapping of syscalls to categories, colors, and display
 order. All data is loaded from syscalls.json — edit THAT file to add/remove
 syscalls or categories.
 
 Usage as module:
-    from mactrace_categories import get_category, get_color, get_text_color
+    from f8_categories import get_category, get_color, get_text_color
 
 Usage standalone:
-    ./mactrace_categories.py           # Summary
-    ./mactrace_categories.py -a        # All syscalls
-    ./mactrace_categories.py --verify  # Verify no duplicates, valid colors
+    ./f8_categories.py           # Summary
+    ./f8_categories.py -a        # All syscalls
+    ./f8_categories.py --verify  # Verify no duplicates, valid colors
 """
 
 import json
@@ -205,7 +205,7 @@ if __name__ == '__main__':
     import argparse
     
     parser = argparse.ArgumentParser(
-        description='Display mactrace syscall categories (from syscalls.json).',
+        description='Display f8 syscall categories (from syscalls.json).',
         epilog='Edit syscalls.json to add/remove syscalls or categories.'
     )
     parser.add_argument('-a', '--all', action='store_true',
@@ -249,7 +249,7 @@ if __name__ == '__main__':
             sys.exit(1)
         sys.exit(0)
     
-    print("mactrace syscall categories (from syscalls.json)\n")
+    print("f8 syscall categories (from syscalls.json)\n")
     print(f"{'Category':<12} {'Count':>6}  Syscalls")
     print("-" * 70)
     

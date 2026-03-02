@@ -77,9 +77,9 @@ class TestDTraceProbes:
             assert 'entry' in dtrace or 'return' in dtrace or 'BEGIN' in dtrace, \
                 f"{cls} has dtrace text but no entry probes"
 
-    def test_probes_contain_mactrace_prefix(self):
-        """All probes should output MACTRACE_ prefixed lines."""
-        assert 'MACTRACE_' in ALL_DTRACE_PROBES
+    def test_probes_contain_f8_prefix(self):
+        """All probes should output F8_ prefixed lines."""
+        assert 'F8_' in ALL_DTRACE_PROBES
 
     def test_no_syntax_errors_in_probes(self):
         """Basic syntax checks on DTrace text."""

@@ -5,28 +5,28 @@
 
 ## Environment Variables
 
-Set these to run mactrace from anywhere:
+Set these to run f8 from anywhere:
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `MACTRACE_HOME` | `$HOME/.mactrace` | Base directory for all mactrace data |
-| `MACTRACE_DB` | `$MACTRACE_HOME/mactrace.db` | SQLite database for timeline server |
-| `MACTRACE_OUTPUT` | `.` (cwd) | Where to save/read JSON trace files |
-| `MACTRACE_PORT` | `3000` | Default port for timeline server |
-| `MACTRACE_USER` | (none) | Default user to run traced programs as |
+| `F8_HOME` | `$HOME/.f8` | Base directory for all f8 data |
+| `F8_DB` | `$F8_HOME/f8.db` | SQLite database for timeline server |
+| `F8_OUTPUT` | `.` (cwd) | Where to save/read JSON trace files |
+| `F8_PORT` | `3000` | Default port for timeline server |
+| `F8_USER` | (none) | Default user to run traced programs as |
 
 Add to your shell config:
 
 ```bash
 # Add to PATH
-export PATH="$HOME/phd/src/mactrace:$PATH"
+export PATH="$HOME/phd/src/f8:$PATH"
 
 # Create config file (works without sudo -E)
-mkdir -p ~/.mactrace ~/traces
-cat > ~/.mactrace/config << 'EOF'
-MACTRACE_HOME=~/.mactrace
-MACTRACE_OUTPUT=~/traces
-MACTRACE_DB=$MACTRACE_HOME/mactrace.db
+mkdir -p ~/.f8 ~/traces
+cat > ~/.f8/config << 'EOF'
+F8_HOME=~/.f8
+F8_OUTPUT=~/traces
+F8_DB=$F8_HOME/f8.db
 EOF
 ```
 
@@ -39,33 +39,33 @@ The config file is read using `SUDO_USER`, so it works even though sudo resets e
 Output filenames automatically include a Unix epoch timestamp to prevent collisions:
 
 ```bash
-sudo mactrace -o make ./configure      # → make.1740000000.json (auto epoch)
-sudo mactrace -o make ./configure      # → make.1740000001.json (no collision)
-sudo mactrace -o make.json ./configure # → make.json (explicit .json = exact name)
+sudo f8 -o make ./configure      # → make.1740000000.json (auto epoch)
+sudo f8 -o make ./configure      # → make.1740000001.json (no collision)
+sudo f8 -o make.json ./configure # → make.json (explicit .json = exact name)
 ```
 
 If you specify `.json` explicitly, the filename is used as-is — no epoch, no rewriting.
 Otherwise the epoch and `.json` are appended automatically.
 
-The import and `mactrace_data` tools strip the epoch suffix for display:
+The import and `f8_data` tools strip the epoch suffix for display:
 `make.1740000000.json` shows as **make** in listings and the web UI.
 
 ## Path Resolution
 
-All mactrace tools use consistent path resolution:
+All f8 tools use consistent path resolution:
 
 - **Absolute paths** (`/path/to/file`) → used as-is
 - **Explicit relative** (`./file`, `../file`) → used as-is
-- **Simple filename** (`make`) → prefixed with `$MACTRACE_OUTPUT`, epoch appended
+- **Simple filename** (`make`) → prefixed with `$F8_OUTPUT`, epoch appended
 
 ```bash
-# With MACTRACE_OUTPUT="$HOME/traces":
-sudo mactrace -o make ./configure     # Writes to ~/traces/make.1740000000.json
-sudo mactrace -o ./make ./configure   # Writes to ./make.1740000000.json (explicit)
+# With F8_OUTPUT="$HOME/traces":
+sudo f8 -o make ./configure     # Writes to ~/traces/make.1740000000.json
+sudo f8 -o ./make ./configure   # Writes to ./make.1740000000.json (explicit)
 
-# Import and mactrace_data handle timestamped names transparently:
-mactrace_import make.1740000000.json  # Reads from ~/traces/make.1740000000.json
-mactrace_data list                    # Shows as "make"
+# Import and f8_data handle timestamped names transparently:
+f8_import make.1740000000.json  # Reads from ~/traces/make.1740000000.json
+f8_data list                    # Shows as "make"
 ```
 
 See [ENVIRONMENT.md](ENVIRONMENT.md) for full details.
@@ -75,56 +75,56 @@ See [ENVIRONMENT.md](ENVIRONMENT.md) for full details.
 
 ```bash
 # Basic usage - outputs JSON to stdout
-sudo ./mactrace ls -la
+sudo ./f8 ls -la
 
 # Write to file with pretty printing
-sudo ./mactrace -o trace.json -jp ls -la
+sudo ./f8 -o trace.json -jp ls -la
 
 # Attach to a running process by PID (like strace -p)
-sudo ./mactrace -p 12345
-sudo ./mactrace -p 12345 -o trace.json -t 30   # with output file and 30s timeout
+sudo ./f8 -p 12345
+sudo ./f8 -p 12345 -o trace.json -t 30   # with output file and 30s timeout
 
 # Run traced program as a specific user (not root)
-sudo ./mactrace -u zen -o trace.json ./myapp
-sudo ./mactrace -u 501 -o trace.json ./myapp  # By UID
+sudo ./f8 -u zen -o trace.json ./myapp
+sudo ./f8 -u 501 -o trace.json ./myapp  # By UID
 
 # With timeout (seconds)
-sudo ./mactrace -t 10 ./long_running_command
+sudo ./f8 -t 10 ./long_running_command
 
 # Verbose mode (shows DTrace activity on stderr)
-sudo ./mactrace -v -o trace.json ./my_program
+sudo ./f8 -v -o trace.json ./my_program
 
 # Show untraced syscalls (detect gaps in coverage)
-sudo ./mactrace -e -o trace.json ./my_program
+sudo ./f8 -e -o trace.json ./my_program
 
 # Capture I/O data (read/write buffer contents)
-sudo ./mactrace --capture-io -o trace.json ./my_program
+sudo ./f8 --capture-io -o trace.json ./my_program
 
 # Adjust buffer sizes for heavy tracing
-sudo ./mactrace --capture-io --strsize 65536 --io-size 65536 -o trace.json ./my_program
+sudo ./f8 --capture-io --strsize 65536 --io-size 65536 -o trace.json ./my_program
 ```
 
 ### Running as a Non-Root User
 
-**By default, mactrace automatically detects who ran sudo and runs the traced program as that user.** This avoids common issues:
+**By default, f8 automatically detects who ran sudo and runs the traced program as that user.** This avoids common issues:
 - Files created by the traced program are owned by you, not root
 - The program behaves the same as when run normally
 - Programs that refuse to run as root work correctly
 
 ```bash
 # Automatic: if you're 'zen' running sudo, the traced program runs as 'zen'
-sudo ./mactrace -o trace.json ./myapp
+sudo ./f8 -o trace.json ./myapp
 
 # Explicit user (overrides auto-detection)
-sudo ./mactrace -u testuser -o trace.json ./myapp
+sudo ./f8 -u testuser -o trace.json ./myapp
 
 # Run as root explicitly
-sudo ./mactrace -u root -o trace.json ./myapp
+sudo ./f8 -u root -o trace.json ./myapp
 ```
 
 User selection priority:
 1. `-u`/`--user` flag
-2. `MACTRACE_USER` env var
+2. `F8_USER` env var
 3. `SUDO_USER` (auto-detected)
 4. root (fallback)
 
@@ -134,7 +134,7 @@ User selection priority:
 Use `-e`/`--untraced` to identify syscalls your traced process makes that aren't explicitly captured:
 
 ```bash
-sudo ./mactrace -e -o trace.json /bin/ls
+sudo ./f8 -e -o trace.json /bin/ls
 # Output includes:
 # --- Untraced syscalls ---
 #   getattrlistbulk: 2

@@ -1,6 +1,6 @@
 ## Testing
 
-mactrace has a comprehensive test suite covering unit tests, integration tests, cross-language consistency checks, and end-to-end tracing.
+f8 has a comprehensive test suite covering unit tests, integration tests, cross-language consistency checks, and end-to-end tracing.
 
 ### Quick Start
 
@@ -19,7 +19,7 @@ tests/
 ├── conftest.py                    # Shared fixtures (traces, temp dirs, configs)
 ├── unit/
 │   ├── test_categories.py         # syscalls.json integrity, lookups, colors (35 tests)
-│   ├── test_lib.py                # mactrace_lib shared utilities (76 tests)
+│   ├── test_lib.py                # f8_lib shared utilities (76 tests)
 │   ├── test_parse_dtrace.py       # DTrace output parsing, all event types (24 tests)
 │   └── test_parse_malformed.py    # Bad input: truncated, garbled, drops (29 tests)
 ├── consistency/
@@ -37,8 +37,8 @@ tests/
 
 ### What's Tested
 
-- **Unit (164 tests):** Format functions, path resolution, hex dump rendering, terminal escape processing, file classification, config parsing, syscall category lookups, JSON schema integrity, DTrace line parsing for all `MACTRACE_*` event types, malformed/truncated input handling, DTrace drop/warning messages
-- **Consistency (8 tests):** Python `mactrace_categories.py` and JS `import.js`/`server.js` produce identical category mappings, colors, and text colors from the shared `syscalls.json`
+- **Unit (164 tests):** Format functions, path resolution, hex dump rendering, terminal escape processing, file classification, config parsing, syscall category lookups, JSON schema integrity, DTrace line parsing for all `F8_*` event types, malformed/truncated input handling, DTrace drop/warning messages
+- **Consistency (8 tests):** Python `f8_categories.py` and JS `import.js`/`server.js` produce identical category mappings, colors, and text colors from the shared `syscalls.json`
 - **Integration (32 tests):** Import roundtrip (JSON → SQLite → query), server API endpoints (traces, events, process-tree, categories), pagination, filtering, search, error handling
 - **E2E (16 tests):** Deterministic C programs traced with real DTrace. Tests file ops, fork/exec, and network syscalls. Requires `sudo` and SIP dtrace restrictions disabled.
 
@@ -54,7 +54,7 @@ cd server && npm install             # better-sqlite3 for integration/consistenc
 ```bash
 make test-cov
 # Current: 48% overall (322 tests)
-# Highlights: syscalls/ handlers 80-100%, mactrace_lib 77%, mactrace_data 63%
-# The main tracer (mactrace) is 22% — most of it requires real DTrace (E2E tests)
+# Highlights: syscalls/ handlers 80-100%, f8_lib 77%, f8_data 63%
+# The main tracer (f8) is 22% — most of it requires real DTrace (E2E tests)
 ```
 

@@ -1,8 +1,8 @@
 /*
- * test_forkexec.c - Deterministic fork/exec for mactrace testing.
+ * test_forkexec.c - Deterministic fork/exec for f8 testing.
  *
- * Forks a child that execs /bin/echo "mactrace_test_output", parent waits.
- * Expected: fork → (child) execve("/bin/echo") → write("mactrace_test_output\n")
+ * Forks a child that execs /bin/echo "f8_test_output", parent waits.
+ * Expected: fork → (child) execve("/bin/echo") → write("f8_test_output\n")
  *           → exit(0) → (parent) wait4 → exit(0)
  */
 #include <stdio.h>
@@ -20,7 +20,7 @@ int main(void) {
 
     if (pid == 0) {
         /* Child: exec echo */
-        execl("/bin/echo", "echo", "mactrace_test_output", NULL);
+        execl("/bin/echo", "echo", "f8_test_output", NULL);
         perror("execl");
         _exit(127);
     }

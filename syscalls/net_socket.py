@@ -29,7 +29,7 @@ syscall::socket:entry
 syscall::socket:return
 /TRACED && self->sock_ts/
 {
-    printf("MACTRACE_SYSCALL %d %d socket %d %d %d %d %d %d\n",
+    printf("F8_SYSCALL %d %d socket %d %d %d %d %d %d\n",
         pid, tid, (int)arg1, errno, self->sock_ts,
         self->sock_domain, self->sock_type, self->sock_proto);
     self->sock_ts = 0;
@@ -49,7 +49,7 @@ syscall::socket_delegate:entry
 syscall::socket_delegate:return
 /TRACED && self->sdel_ts/
 {
-    printf("MACTRACE_SYSCALL %d %d socket_delegate %d %d %d %d %d %d %d\n",
+    printf("F8_SYSCALL %d %d socket_delegate %d %d %d %d %d %d %d\n",
         pid, tid, (int)arg1, errno, self->sdel_ts,
         self->sdel_domain, self->sdel_type, self->sdel_proto, self->sdel_target_pid);
     self->sdel_ts = 0;
@@ -67,7 +67,7 @@ syscall::socketpair:entry
 syscall::socketpair:return
 /TRACED && self->spair_ts/
 {
-    printf("MACTRACE_SYSCALL %d %d socketpair %d %d %d %d %d %d\n",
+    printf("F8_SYSCALL %d %d socketpair %d %d %d %d %d %d\n",
         pid, tid, (int)arg1, errno, self->spair_ts,
         self->spair_domain, self->spair_type, self->spair_proto);
     self->spair_ts = 0;
@@ -84,7 +84,7 @@ syscall::listen:entry
 syscall::listen:return
 /TRACED && self->listen_ts/
 {
-    printf("MACTRACE_SYSCALL %d %d listen %d %d %d %d %d\n",
+    printf("F8_SYSCALL %d %d listen %d %d %d %d %d\n",
         pid, tid, (int)arg1, errno, self->listen_ts, self->listen_fd, self->listen_backlog);
     self->listen_ts = 0;
 }
@@ -100,7 +100,7 @@ syscall::shutdown:entry
 syscall::shutdown:return
 /TRACED && self->shut_ts/
 {
-    printf("MACTRACE_SYSCALL %d %d shutdown %d %d %d %d %d\n",
+    printf("F8_SYSCALL %d %d shutdown %d %d %d %d %d\n",
         pid, tid, (int)arg1, errno, self->shut_ts, self->shut_fd, self->shut_how);
     self->shut_ts = 0;
 }
@@ -117,7 +117,7 @@ syscall::setsockopt:entry
 syscall::setsockopt:return
 /TRACED && self->sso_ts/
 {
-    printf("MACTRACE_SYSCALL %d %d setsockopt %d %d %d %d %d %d\n",
+    printf("F8_SYSCALL %d %d setsockopt %d %d %d %d %d %d\n",
         pid, tid, (int)arg1, errno, self->sso_ts,
         self->sso_fd, self->sso_level, self->sso_opt);
     self->sso_ts = 0;
@@ -135,7 +135,7 @@ syscall::getsockopt:entry
 syscall::getsockopt:return
 /TRACED && self->gso_ts/
 {
-    printf("MACTRACE_SYSCALL %d %d getsockopt %d %d %d %d %d %d\n",
+    printf("F8_SYSCALL %d %d getsockopt %d %d %d %d %d %d\n",
         pid, tid, (int)arg1, errno, self->gso_ts,
         self->gso_fd, self->gso_level, self->gso_opt);
     self->gso_ts = 0;

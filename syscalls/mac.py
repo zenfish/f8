@@ -30,7 +30,7 @@ syscall::__mac_execve:entry
 syscall::__mac_execve:return
 /TRACED && self->mac_execve_path != NULL/
 {
-    printf("MACTRACE_SYSCALL %d %d __mac_execve %d %d %d \"%s\"\n",
+    printf("F8_SYSCALL %d %d __mac_execve %d %d %d \"%s\"\n",
         pid, tid, (int)arg1, errno, self->mac_execve_ts, self->mac_execve_path);
     self->mac_execve_path = NULL;
 }
@@ -46,7 +46,7 @@ syscall::__mac_syscall:entry
 syscall::__mac_syscall:return
 /TRACED && self->mac_syscall_ts/
 {
-    printf("MACTRACE_SYSCALL %d %d __mac_syscall %d %d %d \"%s\" %d\n",
+    printf("F8_SYSCALL %d %d __mac_syscall %d %d %d \"%s\" %d\n",
         pid, tid, (int)arg1, errno, self->mac_syscall_ts, 
         self->mac_syscall_policy != NULL ? self->mac_syscall_policy : "", self->mac_syscall_call);
     self->mac_syscall_ts = 0;
@@ -64,7 +64,7 @@ syscall::__mac_get_file:return,
 syscall::__mac_set_file:return
 /TRACED && self->mac_file_path != NULL/
 {
-    printf("MACTRACE_SYSCALL %d %d %s %d %d %d \"%s\"\n",
+    printf("F8_SYSCALL %d %d %s %d %d %d \"%s\"\n",
         pid, tid, probefunc, (int)arg1, errno, self->mac_file_ts, self->mac_file_path);
     self->mac_file_path = NULL;
 }
@@ -81,7 +81,7 @@ syscall::__mac_get_link:return,
 syscall::__mac_set_link:return
 /TRACED && self->mac_link_path != NULL/
 {
-    printf("MACTRACE_SYSCALL %d %d %s %d %d %d \"%s\"\n",
+    printf("F8_SYSCALL %d %d %s %d %d %d \"%s\"\n",
         pid, tid, probefunc, (int)arg1, errno, self->mac_link_ts, self->mac_link_path);
     self->mac_link_path = NULL;
 }
@@ -97,7 +97,7 @@ syscall::__mac_get_proc:return,
 syscall::__mac_set_proc:return
 /TRACED && self->mac_proc_ts/
 {
-    printf("MACTRACE_SYSCALL %d %d %s %d %d %d\n",
+    printf("F8_SYSCALL %d %d %s %d %d %d\n",
         pid, tid, probefunc, (int)arg1, errno, self->mac_proc_ts);
     self->mac_proc_ts = 0;
 }
@@ -114,7 +114,7 @@ syscall::__mac_get_fd:return,
 syscall::__mac_set_fd:return
 /TRACED && self->mac_fd_ts/
 {
-    printf("MACTRACE_SYSCALL %d %d %s %d %d %d %d\n",
+    printf("F8_SYSCALL %d %d %s %d %d %d %d\n",
         pid, tid, probefunc, (int)arg1, errno, self->mac_fd_ts, self->mac_fd_fd);
     self->mac_fd_ts = 0;
 }
@@ -129,7 +129,7 @@ syscall::__mac_get_pid:entry
 syscall::__mac_get_pid:return
 /TRACED && self->mac_pid_ts/
 {
-    printf("MACTRACE_SYSCALL %d %d __mac_get_pid %d %d %d %d\n",
+    printf("F8_SYSCALL %d %d __mac_get_pid %d %d %d %d\n",
         pid, tid, (int)arg1, errno, self->mac_pid_ts, self->mac_pid_pid);
     self->mac_pid_ts = 0;
 }

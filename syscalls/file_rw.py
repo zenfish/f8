@@ -31,7 +31,7 @@ syscall::read:return,
 syscall::read_nocancel:return
 /TRACED && self->read_ts/
 {
-    printf("MACTRACE_SYSCALL %d %d read %d %d %d %d %d\n",
+    printf("F8_SYSCALL %d %d read %d %d %d %d %d\n",
         pid, tid, (int)arg1, errno, self->read_ts, self->read_fd, self->read_size);
     self->read_ts = 0;
 }
@@ -50,7 +50,7 @@ syscall::pread:return,
 syscall::pread_nocancel:return
 /TRACED && self->pread_ts/
 {
-    printf("MACTRACE_SYSCALL %d %d pread %d %d %d %d %d %d\n",
+    printf("F8_SYSCALL %d %d pread %d %d %d %d %d %d\n",
         pid, tid, (int)arg1, errno, self->pread_ts, 
         self->pread_fd, self->pread_size, self->pread_off);
     self->pread_ts = 0;
@@ -69,7 +69,7 @@ syscall::write:return,
 syscall::write_nocancel:return
 /TRACED && self->write_ts/
 {
-    printf("MACTRACE_SYSCALL %d %d write %d %d %d %d %d\n",
+    printf("F8_SYSCALL %d %d write %d %d %d %d %d\n",
         pid, tid, (int)arg1, errno, self->write_ts, self->write_fd, self->write_size);
     self->write_ts = 0;
 }
@@ -88,7 +88,7 @@ syscall::pwrite:return,
 syscall::pwrite_nocancel:return
 /TRACED && self->pwrite_ts/
 {
-    printf("MACTRACE_SYSCALL %d %d pwrite %d %d %d %d %d %d\n",
+    printf("F8_SYSCALL %d %d pwrite %d %d %d %d %d %d\n",
         pid, tid, (int)arg1, errno, self->pwrite_ts,
         self->pwrite_fd, self->pwrite_size, self->pwrite_off);
     self->pwrite_ts = 0;

@@ -1,12 +1,12 @@
-# Source this file to set up mactrace environment variables.
+# Source this file to set up f8 environment variables.
 # Adjust paths to match your installation.
 
-# Where mactrace stores its database and trace output
-export MACTRACE_HOME="$HOME/mactrace"
-export MACTRACE_DB="$MACTRACE_HOME/mactrace.db"
-export MACTRACE_OUTPUT="$MACTRACE_HOME/traces"
+# Where f8 stores its database and trace output
+export F8_HOME="$HOME/f8"
+export F8_DB="$F8_HOME/f8.db"
+export F8_OUTPUT="$F8_HOME/traces"
 
-# Add mactrace to PATH (adjust if you cloned elsewhere)
+# Add f8 to PATH (adjust if you cloned elsewhere)
 export PATH="$(dirname "${BASH_SOURCE[0]}"):$PATH"
 
-mkdir -p "$MACTRACE_HOME" "$MACTRACE_OUTPUT"
+mkdir -p "$F8_HOME" "$F8_OUTPUT"

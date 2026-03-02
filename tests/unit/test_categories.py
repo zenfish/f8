@@ -1,5 +1,5 @@
 """
-Tests for mactrace_categories.py — syscall→category mappings from syscalls.json.
+Tests for f8_categories.py — syscall→category mappings from syscalls.json.
 
 Validates:
 - Every syscall maps to exactly one category (no duplicates)
@@ -15,7 +15,7 @@ import re
 import json
 import pytest
 
-from mactrace_categories import (
+from f8_categories import (
     get_category, get_color, get_text_color, get_label,
     get_categories_for_display, get_all_category_data, get_all_syscall_mappings,
     SYSCALL_CATEGORIES, CATEGORY_COLORS, CATEGORY_ORDER,

@@ -1,10 +1,10 @@
 """
-End-to-end tests for EVERY major mactrace option and combination.
+End-to-end tests for EVERY major f8 option and combination.
 
 Tests --capture-io, --trace (all categories), --iovec variants, --throttle,
 --io-size, -e/--untraced, -jp/--json-pretty, --strsize, and key combos.
 
-Each test class runs mactrace with a specific option set and verifies:
+Each test class runs f8 with a specific option set and verifies:
   1. DTrace compiles (no DIF/DOF errors — exit code 0)
   2. Events are captured (syscall_count > 0)
   3. Option-specific behavior works (IO data present, categories filtered, etc.)
@@ -20,25 +20,25 @@ import tempfile
 import pytest
 
 PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-MACTRACE = os.path.join(PROJECT_ROOT, 'mactrace')
+F8_CMD = os.path.join(PROJECT_ROOT, 'f8')
 PROGRAMS_DIR = os.path.join(os.path.dirname(__file__), 'programs')
 
 
-def run_mactrace(program_path, extra_args=None, timeout=45):
-    """Run mactrace on a program, return parsed JSON trace and stderr."""
+def run_f8(program_path, extra_args=None, timeout=45):
+    """Run f8 on a program, return parsed JSON trace and stderr."""
     with tempfile.NamedTemporaryFile(suffix='.json', delete=False) as f:
         output_path = f.name
-    os.unlink(output_path)  # remove so mactrace can create it
+    os.unlink(output_path)  # remove so f8 can create it
 
     try:
-        cmd = ['sudo', sys.executable, MACTRACE, '-o', output_path]
+        cmd = ['sudo', sys.executable, F8_CMD, '-o', output_path]
         if extra_args:
             cmd.extend(extra_args)
         cmd.append(program_path)
 
         result = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
         assert result.returncode == 0, (
-            f"mactrace failed (exit {result.returncode}):\n{result.stderr}"
+            f"f8 failed (exit {result.returncode}):\n{result.stderr}"
         )
         # Fail explicitly on DIF/DOF errors even if exit code is 0
         assert 'DIF program exceeds' not in result.stderr, (
@@ -70,7 +70,7 @@ class TestCaptureIO:
 
     @pytest.fixture(autouse=True)
     def trace(self, compile_programs):
-        self.data, self.stderr = run_mactrace(
+        self.data, self.stderr = run_f8(
             os.path.join(PROGRAMS_DIR, 'test_fileops'),
             extra_args=['--capture-io']
         )
@@ -110,14 +110,14 @@ class TestCaptureIO:
         )
 
     def test_write_data_contains_test_string(self):
-        """The write to test file should contain 'Hello mactrace' in hex."""
-        expected_hex = b"Hello mactrace".hex()
+        """The write to test file should contain 'Hello f8' in hex."""
+        expected_hex = b"Hello f8".hex()
         writes = [e for e in self.data['events']
                   if e['syscall'] in ('write', 'write_nocancel')
                   and e['return_value'] == 14
                   and expected_hex in e.get('args', {}).get('data', '')]
         assert len(writes) >= 1, (
-            "Expected write with 'Hello mactrace' payload"
+            "Expected write with 'Hello f8' payload"
         )
 
     def test_dof_maxsize_adjusted(self):
@@ -132,7 +132,7 @@ class TestCaptureIONetwork:
 
     @pytest.fixture(autouse=True)
     def trace(self, compile_programs):
-        self.data, self.stderr = run_mactrace(
+        self.data, self.stderr = run_f8(
             os.path.join(PROGRAMS_DIR, 'test_udp_io'),
             extra_args=['--capture-io']
         )
@@ -142,7 +142,7 @@ class TestCaptureIONetwork:
 
     def test_sendto_has_data(self):
         """sendto should capture the UDP payload."""
-        expected_hex = b"MACTRACE_UDP_TEST_DATA".hex()
+        expected_hex = b"F8_UDP_TEST_DATA".hex()
         sendtos = [e for e in self.data['events']
                    if e['syscall'] in ('sendto', 'sendto_nocancel')
                    and e['return_value'] == 22]
@@ -150,12 +150,12 @@ class TestCaptureIONetwork:
         with_data = [s for s in sendtos
                      if expected_hex in s.get('args', {}).get('data', '')]
         assert len(with_data) >= 1, (
-            "sendto should have captured 'MACTRACE_UDP_TEST_DATA' payload"
+            "sendto should have captured 'F8_UDP_TEST_DATA' payload"
         )
 
     def test_recvfrom_has_data(self):
         """recvfrom should capture the UDP payload."""
-        expected_hex = b"MACTRACE_UDP_TEST_DATA".hex()
+        expected_hex = b"F8_UDP_TEST_DATA".hex()
         recvs = [e for e in self.data['events']
                  if e['syscall'] in ('recvfrom', 'recvfrom_nocancel')
                  and e['return_value'] == 22]
@@ -163,7 +163,7 @@ class TestCaptureIONetwork:
         with_data = [r for r in recvs
                      if expected_hex in r.get('args', {}).get('data', '')]
         assert len(with_data) >= 1, (
-            "recvfrom should have captured 'MACTRACE_UDP_TEST_DATA' payload"
+            "recvfrom should have captured 'F8_UDP_TEST_DATA' payload"
         )
 
 
@@ -172,7 +172,7 @@ class TestCaptureIOSmallSize:
 
     @pytest.fixture(autouse=True)
     def trace(self, compile_programs):
-        self.data, self.stderr = run_mactrace(
+        self.data, self.stderr = run_f8(
             os.path.join(PROGRAMS_DIR, 'test_fileops'),
             extra_args=['--capture-io', '--io-size', '256']
         )
@@ -198,7 +198,7 @@ class TestTraceFile:
 
     @pytest.fixture(autouse=True)
     def trace(self, compile_programs):
-        self.data, self.stderr = run_mactrace(
+        self.data, self.stderr = run_f8(
             os.path.join(PROGRAMS_DIR, 'test_fileops'),
             extra_args=['--trace=file']
         )
@@ -219,7 +219,7 @@ class TestTraceNet:
 
     @pytest.fixture(autouse=True)
     def trace(self, compile_programs):
-        self.data, self.stderr = run_mactrace(
+        self.data, self.stderr = run_f8(
             os.path.join(PROGRAMS_DIR, 'test_network'),
             extra_args=['--trace=net']
         )
@@ -238,7 +238,7 @@ class TestTraceNetCaptureIO:
 
     @pytest.fixture(autouse=True)
     def trace(self, compile_programs):
-        self.data, self.stderr = run_mactrace(
+        self.data, self.stderr = run_f8(
             os.path.join(PROGRAMS_DIR, 'test_udp_io'),
             extra_args=['--trace=net', '--capture-io']
         )
@@ -258,7 +258,7 @@ class TestTraceProcess:
 
     @pytest.fixture(autouse=True)
     def trace(self, compile_programs):
-        self.data, self.stderr = run_mactrace(
+        self.data, self.stderr = run_f8(
             os.path.join(PROGRAMS_DIR, 'test_forkexec'),
             extra_args=['--trace=process']
         )
@@ -279,7 +279,7 @@ class TestTraceMemory:
     @pytest.fixture(autouse=True)
     def trace(self, compile_programs):
         # Any program uses mmap/mprotect during dyld load
-        self.data, self.stderr = run_mactrace(
+        self.data, self.stderr = run_f8(
             os.path.join(PROGRAMS_DIR, 'test_fileops'),
             extra_args=['--trace=memory']
         )
@@ -299,7 +299,7 @@ class TestTraceMultiCategory:
 
     @pytest.fixture(autouse=True)
     def trace(self, compile_programs):
-        self.data, self.stderr = run_mactrace(
+        self.data, self.stderr = run_f8(
             os.path.join(PROGRAMS_DIR, 'test_network'),
             extra_args=['--trace=file,net']
         )
@@ -317,7 +317,7 @@ class TestTraceIO:
 
     @pytest.fixture(autouse=True)
     def trace(self, compile_programs):
-        self.data, self.stderr = run_mactrace(
+        self.data, self.stderr = run_f8(
             os.path.join(PROGRAMS_DIR, 'test_fileops'),
             extra_args=['--trace=io']
         )
@@ -331,7 +331,7 @@ class TestTraceAll:
 
     @pytest.fixture(autouse=True)
     def trace(self, compile_programs):
-        self.data, self.stderr = run_mactrace(
+        self.data, self.stderr = run_f8(
             os.path.join(PROGRAMS_DIR, 'test_fileops'),
             extra_args=['--trace=all']
         )
@@ -345,7 +345,7 @@ class TestTraceAllCaptureIO:
 
     @pytest.fixture(autouse=True)
     def trace(self, compile_programs):
-        self.data, self.stderr = run_mactrace(
+        self.data, self.stderr = run_f8(
             os.path.join(PROGRAMS_DIR, 'test_fileops'),
             extra_args=['--trace=all', '--capture-io']
         )
@@ -366,7 +366,7 @@ class TestTraceSingleSyscall:
 
     @pytest.fixture(autouse=True)
     def trace(self, compile_programs):
-        self.data, self.stderr = run_mactrace(
+        self.data, self.stderr = run_f8(
             os.path.join(PROGRAMS_DIR, 'test_fileops'),
             extra_args=['--trace=open']
         )
@@ -396,7 +396,7 @@ class TestIovecAllCategories:
 
     @pytest.fixture(autouse=True)
     def trace(self, compile_programs):
-        self.data, self.stderr = run_mactrace(
+        self.data, self.stderr = run_f8(
             os.path.join(PROGRAMS_DIR, 'test_iovec'),
             extra_args=['--iovec', '4']
         )
@@ -420,7 +420,7 @@ class TestIovecHighN:
 
     @pytest.fixture(autouse=True)
     def trace(self, compile_programs):
-        self.data, self.stderr = run_mactrace(
+        self.data, self.stderr = run_f8(
             os.path.join(PROGRAMS_DIR, 'test_iovec'),
             extra_args=['--iovec', '8', '--trace=file']
         )
@@ -440,7 +440,7 @@ class TestIovecSyscallsFilter:
 
     @pytest.fixture(autouse=True)
     def trace(self, compile_programs):
-        self.data, self.stderr = run_mactrace(
+        self.data, self.stderr = run_f8(
             os.path.join(PROGRAMS_DIR, 'test_iovec'),
             extra_args=['--iovec', '4', '--iovec-syscalls=writev', '--trace=file']
         )
@@ -473,7 +473,7 @@ class TestThrottle:
 
     @pytest.fixture(autouse=True)
     def trace(self, compile_programs):
-        self.data, self.stderr = run_mactrace(
+        self.data, self.stderr = run_f8(
             os.path.join(PROGRAMS_DIR, 'test_fileops'),
             extra_args=['--throttle']
         )
@@ -490,7 +490,7 @@ class TestThrottleCaptureIO:
 
     @pytest.fixture(autouse=True)
     def trace(self, compile_programs):
-        self.data, self.stderr = run_mactrace(
+        self.data, self.stderr = run_f8(
             os.path.join(PROGRAMS_DIR, 'test_fileops'),
             extra_args=['--throttle', '--capture-io']
         )
@@ -515,7 +515,7 @@ class TestUntraced:
 
     @pytest.fixture(autouse=True)
     def trace(self, compile_programs):
-        self.data, self.stderr = run_mactrace(
+        self.data, self.stderr = run_f8(
             os.path.join(PROGRAMS_DIR, 'test_fileops'),
             extra_args=['-e']
         )
@@ -533,7 +533,7 @@ class TestUntracedWithTrace:
 
     @pytest.fixture(autouse=True)
     def trace(self, compile_programs):
-        self.data, self.stderr = run_mactrace(
+        self.data, self.stderr = run_f8(
             os.path.join(PROGRAMS_DIR, 'test_fileops'),
             extra_args=['-e', '--trace=file']
         )
@@ -551,7 +551,7 @@ class TestJsonPretty:
 
     @pytest.fixture(autouse=True)
     def trace(self, compile_programs):
-        self.data, self.stderr = run_mactrace(
+        self.data, self.stderr = run_f8(
             os.path.join(PROGRAMS_DIR, 'test_fileops'),
             extra_args=['-jp']
         )
@@ -560,7 +560,7 @@ class TestJsonPretty:
         assert_has_events(self.data, min_events=10)
 
     def test_valid_json(self):
-        """Output should be valid JSON (already parsed by run_mactrace)."""
+        """Output should be valid JSON (already parsed by run_f8)."""
         assert isinstance(self.data, dict)
 
 
@@ -573,7 +573,7 @@ class TestStrsize:
 
     @pytest.fixture(autouse=True)
     def trace(self, compile_programs):
-        self.data, self.stderr = run_mactrace(
+        self.data, self.stderr = run_f8(
             os.path.join(PROGRAMS_DIR, 'test_fileops'),
             extra_args=['--strsize', '512']
         )
@@ -598,7 +598,7 @@ class TestVerbose:
 
     @pytest.fixture(autouse=True)
     def trace(self, compile_programs):
-        self.data, self.stderr = run_mactrace(
+        self.data, self.stderr = run_f8(
             os.path.join(PROGRAMS_DIR, 'test_fileops'),
             extra_args=['-v']
         )
@@ -620,7 +620,7 @@ class TestKitchenSinkFile:
 
     @pytest.fixture(autouse=True)
     def trace(self, compile_programs):
-        self.data, self.stderr = run_mactrace(
+        self.data, self.stderr = run_f8(
             os.path.join(PROGRAMS_DIR, 'test_fileops'),
             extra_args=['--capture-io', '--trace=file', '-e', '-jp', '-v']
         )
@@ -641,7 +641,7 @@ class TestKitchenSinkNet:
 
     @pytest.fixture(autouse=True)
     def trace(self, compile_programs):
-        self.data, self.stderr = run_mactrace(
+        self.data, self.stderr = run_f8(
             os.path.join(PROGRAMS_DIR, 'test_udp_io'),
             extra_args=['--capture-io', '--trace=net', '-v']
         )
@@ -655,7 +655,7 @@ class TestKitchenSinkIovec:
 
     @pytest.fixture(autouse=True)
     def trace(self, compile_programs):
-        self.data, self.stderr = run_mactrace(
+        self.data, self.stderr = run_f8(
             os.path.join(PROGRAMS_DIR, 'test_iovec'),
             extra_args=['--iovec', '4', '-v', '-e']
         )
@@ -672,7 +672,7 @@ class TestKitchenSinkAll:
 
     @pytest.fixture(autouse=True)
     def trace(self, compile_programs):
-        self.data, self.stderr = run_mactrace(
+        self.data, self.stderr = run_f8(
             os.path.join(PROGRAMS_DIR, 'test_iovec'),
             extra_args=['--capture-io', '--iovec', '4', '--trace=file',
                         '-e', '-jp', '-v', '--throttle']
@@ -705,7 +705,7 @@ class TestFullProbesCaptureIOIovec:
 
     @pytest.fixture(autouse=True)
     def trace(self, compile_programs):
-        self.data, self.stderr = run_mactrace(
+        self.data, self.stderr = run_f8(
             os.path.join(PROGRAMS_DIR, 'test_iovec'),
             extra_args=['--capture-io', '--iovec', '4'],
             timeout=60  # extra time for heavy probe set

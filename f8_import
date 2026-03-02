@@ -1,31 +1,31 @@
 #!/bin/bash
 #
-# mactrace-import - Import trace JSON files into the mactrace SQLite database
+# f8-import - Import trace JSON files into the f8 SQLite database
 #
-# Imports trace data for timeline viewing and analysis with mactrace-server.
+# Imports trace data for timeline viewing and analysis with f8-server.
 #
 # USAGE:
-#   mactrace-import <trace.json> [options]
+#   f8-import <trace.json> [options]
 #
 # OPTIONS:
-#   --db <path>      Database path (default: $MACTRACE_DB or $MACTRACE_HOME/mactrace.db)
+#   --db <path>      Database path (default: $F8_DB or $F8_HOME/f8.db)
 #   --io-dir <path>  Directory containing I/O capture files
 #   --help           Show this help
 #
 # ENVIRONMENT:
-#   MACTRACE_HOME    Base directory (default: ~/.mactrace)
-#   MACTRACE_DB      Database path
-#   MACTRACE_OUTPUT  Trace file directory (prepended to relative paths)
+#   F8_HOME    Base directory (default: ~/.f8)
+#   F8_DB      Database path
+#   F8_OUTPUT  Trace file directory (prepended to relative paths)
 #
 # PATH RESOLUTION:
 #   - Absolute paths (/path/to/file) used as-is
 #   - Explicit relative (./file, ../file) used as-is
-#   - Simple filenames (trace.json) prefixed with $MACTRACE_OUTPUT
+#   - Simple filenames (trace.json) prefixed with $F8_OUTPUT
 #
 # EXAMPLES:
-#   mactrace-import myapp.json              # Import from $MACTRACE_OUTPUT/myapp.json
-#   mactrace-import ./myapp.json            # Import from current directory
-#   mactrace-import myapp.json --io-dir io/ # Include I/O files
+#   f8-import myapp.json              # Import from $F8_OUTPUT/myapp.json
+#   f8-import ./myapp.json            # Import from current directory
+#   f8-import myapp.json --io-dir io/ # Include I/O files
 #
 
 set -e
@@ -41,7 +41,7 @@ SCRIPT_DIR="$(cd "$(dirname "$SOURCE")" && pwd)"
 SERVER_DIR="$SCRIPT_DIR/server"
 
 # Shared config reader and path resolver
-source "$SCRIPT_DIR/mactrace_common.sh"
+source "$SCRIPT_DIR/f8_common.sh"
 
 # Load config before anything else
 read_config
@@ -49,32 +49,32 @@ read_config
 # Show help
 show_help() {
     cat << 'EOF'
-mactrace-import - Import trace JSON files into the mactrace SQLite database
+f8-import - Import trace JSON files into the f8 SQLite database
 
-Imports trace data for timeline viewing and analysis with mactrace-server.
+Imports trace data for timeline viewing and analysis with f8-server.
 
 USAGE:
-  mactrace-import <trace.json> [options]
+  f8-import <trace.json> [options]
 
 OPTIONS:
-  --db <path>      Database path (default: $MACTRACE_DB or $MACTRACE_HOME/mactrace.db)
+  --db <path>      Database path (default: $F8_DB or $F8_HOME/f8.db)
   --io-dir <path>  Directory containing I/O capture files
   --help           Show this help
 
 ENVIRONMENT:
-  MACTRACE_HOME    Base directory (default: ~/.mactrace)
-  MACTRACE_DB      Database path
-  MACTRACE_OUTPUT  Trace file directory (prepended to relative paths)
+  F8_HOME    Base directory (default: ~/.f8)
+  F8_DB      Database path
+  F8_OUTPUT  Trace file directory (prepended to relative paths)
 
 PATH RESOLUTION:
   - Absolute paths (/path/to/file) used as-is
   - Explicit relative (./file, ../file) used as-is
-  - Simple filenames (trace.json) prefixed with $MACTRACE_OUTPUT
+  - Simple filenames (trace.json) prefixed with $F8_OUTPUT
 
 EXAMPLES:
-  mactrace-import myapp.json              # Import from $MACTRACE_OUTPUT/myapp.json
-  mactrace-import ./myapp.json            # Import from current directory
-  mactrace-import myapp.json --io-dir io/ # Include I/O files
+  f8-import myapp.json              # Import from $F8_OUTPUT/myapp.json
+  f8-import ./myapp.json            # Import from current directory
+  f8-import myapp.json --io-dir io/ # Include I/O files
 EOF
 }
 
@@ -83,18 +83,18 @@ if [[ "$1" == "--help" || "$1" == "-h" || -z "$1" ]]; then
     exit 0
 fi
 
-# Resolve MACTRACE_HOME (use $HOME, not hardcoded ~)
-MACTRACE_HOME="${MACTRACE_HOME:-${HOME}/.mactrace}"
-mkdir -p "$MACTRACE_HOME"
+# Resolve F8_HOME (use $HOME, not hardcoded ~)
+F8_HOME="${F8_HOME:-${HOME}/.f8}"
+mkdir -p "$F8_HOME"
 
-# resolve_path is now provided by mactrace_common.sh (sourced above)
+# resolve_path is now provided by f8_common.sh (sourced above)
 
 # Build default args from environment
 env_args=()
 
-# Database: explicit arg > MACTRACE_DB > default
+# Database: explicit arg > F8_DB > default
 if [[ ! " $* " =~ " --db " ]]; then
-    db="${MACTRACE_DB:-$MACTRACE_HOME/mactrace.db}"
+    db="${F8_DB:-$F8_HOME/f8.db}"
     env_args+=(--db "$db")
 fi
 
@@ -104,8 +104,8 @@ prev_opt=""
 for arg in "$@"; do
     case "$prev_opt" in
         --io-dir)
-            # I/O directory - resolve with MACTRACE_OUTPUT
-            resolved=$(resolve_path "$arg" "MACTRACE_OUTPUT")
+            # I/O directory - resolve with F8_OUTPUT
+            resolved=$(resolve_path "$arg" "F8_OUTPUT")
             # Make absolute for cd later
             if [[ -d "$resolved" ]]; then
                 args+=("$(cd "$resolved" && pwd)")
@@ -115,8 +115,8 @@ for arg in "$@"; do
             prev_opt=""
             ;;
         --db)
-            # Database path - resolve with MACTRACE_HOME
-            resolved=$(resolve_path "$arg" "MACTRACE_HOME")
+            # Database path - resolve with F8_HOME
+            resolved=$(resolve_path "$arg" "F8_HOME")
             if [[ -e "$resolved" ]] || [[ "$arg" == /* ]] || [[ "$arg" == ./* ]] || [[ "$arg" == ../* ]]; then
                 # Make absolute if it exists or is explicitly relative/absolute
                 if [[ -e "$(dirname "$resolved")" ]]; then
@@ -137,8 +137,8 @@ for arg in "$@"; do
                 # Other flags pass through
                 args+=("$arg")
             else
-                # Positional argument (trace file) - resolve with MACTRACE_OUTPUT
-                resolved=$(resolve_path "$arg" "MACTRACE_OUTPUT")
+                # Positional argument (trace file) - resolve with F8_OUTPUT
+                resolved=$(resolve_path "$arg" "F8_OUTPUT")
                 # Make absolute for cd later
                 if [[ -e "$resolved" ]]; then
                     args+=("$(cd "$(dirname "$resolved")" && pwd)/$(basename "$resolved")")

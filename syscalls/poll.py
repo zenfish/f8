@@ -30,7 +30,7 @@ syscall::select:return,
 syscall::select_nocancel:return
 /TRACED && self->sel_ts/
 {
-    printf("MACTRACE_SYSCALL %d %d select %d %d %d %d\n",
+    printf("F8_SYSCALL %d %d select %d %d %d %d\n",
         pid, tid, (int)arg1, errno, self->sel_ts, self->sel_nfds);
     self->sel_ts = 0;
 }
@@ -48,7 +48,7 @@ syscall::poll:return,
 syscall::poll_nocancel:return
 /TRACED && self->poll_ts/
 {
-    printf("MACTRACE_SYSCALL %d %d poll %d %d %d %d %d\n",
+    printf("F8_SYSCALL %d %d poll %d %d %d %d %d\n",
         pid, tid, (int)arg1, errno, self->poll_ts, self->poll_nfds, self->poll_timeout);
     self->poll_ts = 0;
 }
@@ -65,7 +65,7 @@ syscall::kevent:return,
 syscall::kevent64:return
 /TRACED && self->kev_ts/
 {
-    printf("MACTRACE_SYSCALL %d %d kevent %d %d %d %d\n",
+    printf("F8_SYSCALL %d %d kevent %d %d %d %d\n",
         pid, tid, (int)arg1, errno, self->kev_ts, self->kev_fd);
     self->kev_ts = 0;
 }
@@ -73,7 +73,7 @@ syscall::kevent64:return
 syscall::kqueue:return
 /TRACED/
 {
-    printf("MACTRACE_SYSCALL %d %d kqueue %d %d %d\n",
+    printf("F8_SYSCALL %d %d kqueue %d %d %d\n",
         pid, tid, (int)arg1, errno, walltimestamp/1000);
 }
 '''

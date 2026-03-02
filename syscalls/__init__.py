@@ -1,5 +1,5 @@
 """
-syscalls — Modular syscall handler framework for mactrace.
+syscalls — Modular syscall handler framework for f8.
 
 Each handler module in this package defines DTrace probes and Python
 parsers for a family of related syscalls.  The main tracer auto-discovers
@@ -36,11 +36,11 @@ class SyscallHandler:
     At minimum, provide:
       - syscalls:   list of syscall names this handler covers
       - dtrace:     D-language probe text (entry + return probes)
-      - parse_args: method to parse MACTRACE_SYSCALL argument tokens
+      - parse_args: method to parse F8_SYSCALL argument tokens
 
     Optionally:
       - update_fd_info:  update fd tracking after this syscall
-      - parse_sockaddr:  parse MACTRACE_SOCKADDR data for this syscall
+      - parse_sockaddr:  parse F8_SOCKADDR data for this syscall
     """
 
     # List of syscall names this handler covers
@@ -48,7 +48,7 @@ class SyscallHandler:
 
     # D-language probe text — concatenated into the DTrace script.
     # Use the TRACED predicate, self-> for thread-local vars, and
-    # MACTRACE_SYSCALL output format.  See existing handlers for examples.
+    # F8_SYSCALL output format.  See existing handlers for examples.
     dtrace = ""
 
     # ── Helpers available to all handlers ────────────────────────────
@@ -92,7 +92,7 @@ class SyscallHandler:
     # ── Methods to override in subclasses ────────────────────────────
 
     def parse_args(self, syscall, args):
-        """Parse MACTRACE_SYSCALL argument tokens into a dict.
+        """Parse F8_SYSCALL argument tokens into a dict.
 
         Args:
             syscall: the syscall name (e.g. "open", "openat")
@@ -115,7 +115,7 @@ class SyscallHandler:
         pass
 
     def parse_sockaddr(self, syscall, parts, base_timestamp, tracer):
-        """Parse a MACTRACE_SOCKADDR line for this syscall.
+        """Parse a F8_SOCKADDR line for this syscall.
 
         Override for syscalls that capture socket addresses (connect, bind,
         accept, sendto, recvfrom, getpeername, getsockname).

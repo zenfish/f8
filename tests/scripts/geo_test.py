@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-geo_test.py — Connect to servers across the globe for mactrace geo flag testing.
+geo_test.py — Connect to servers across the globe for f8 geo flag testing.
 
 Makes HTTPS connections to well-known sites hosted in different countries
 and continents.  Targets are chosen to be *locally hosted* (universities,
@@ -8,7 +8,7 @@ government sites, NICs) rather than behind US CDNs, so the IP addresses
 geo-locate to their actual countries.
 
 Usage:
-    sudo mactrace -o geo_test.json --capture-io -jp python3 tests/scripts/geo_test.py
+    sudo f8 -o geo_test.json --capture-io -jp python3 tests/scripts/geo_test.py
 """
 
 import socket
@@ -57,11 +57,11 @@ SSL_CONTEXT = ssl.create_default_context()
 def probe_host(hostname, description):
     """Connect to a host via HTTPS, triggering DNS + TLS."""
     try:
-        # DNS resolution (getaddrinfo → recorded by mactrace)
+        # DNS resolution (getaddrinfo → recorded by f8)
         addrs = socket.getaddrinfo(hostname, 443, socket.AF_INET, socket.SOCK_STREAM)
         ip = addrs[0][4][0] if addrs else "?"
 
-        # TLS connection (connect/send/recv → recorded by mactrace)
+        # TLS connection (connect/send/recv → recorded by f8)
         with socket.create_connection((hostname, 443), timeout=TIMEOUT_SECONDS) as sock:
             with SSL_CONTEXT.wrap_socket(sock, server_hostname=hostname) as ssock:
                 # Send a minimal HTTP request

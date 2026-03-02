@@ -31,7 +31,7 @@ syscall::open:return,
 syscall::open_nocancel:return
 /TRACED && self->open_path != NULL/
 {
-    printf("MACTRACE_SYSCALL %d %d open %d %d %d \"%s\" 0x%x 0%o\n",
+    printf("F8_SYSCALL %d %d open %d %d %d \"%s\" 0x%x 0%o\n",
         pid, tid, (int)arg1, errno, self->open_ts, 
         self->open_path, self->open_flags, self->open_mode);
     self->open_path = NULL;
@@ -52,7 +52,7 @@ syscall::openat:return,
 syscall::openat_nocancel:return
 /TRACED && self->openat_path != NULL/
 {
-    printf("MACTRACE_SYSCALL %d %d openat %d %d %d %d \"%s\" 0x%x 0%o\n",
+    printf("F8_SYSCALL %d %d openat %d %d %d %d \"%s\" 0x%x 0%o\n",
         pid, tid, (int)arg1, errno, self->openat_ts,
         self->openat_fd, self->openat_path, self->openat_flags, self->openat_mode);
     self->openat_path = NULL;

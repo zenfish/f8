@@ -1,7 +1,7 @@
 """
 Integration tests for the import pipeline: JSON → SQLite → query.
 
-Tests that traces imported via mactrace_import produce correct database
+Tests that traces imported via f8_import produce correct database
 contents: event counts, categories, targets, process tree, error tracking.
 Uses golden fixture files and a real SQLite database.
 """
@@ -20,7 +20,7 @@ IMPORT_JS = os.path.join(SERVER_DIR, 'import.js')
 
 
 def import_trace(json_path, db_path):
-    """Run mactrace_import on a JSON file, return subprocess result."""
+    """Run f8_import on a JSON file, return subprocess result."""
     result = subprocess.run(
         ['node', IMPORT_JS, json_path, '--db', db_path],
         capture_output=True, text=True, cwd=SERVER_DIR, timeout=30

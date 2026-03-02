@@ -1,5 +1,5 @@
 /*
- * test_iovec.c — Deterministic vectored I/O test for mactrace --iovec.
+ * test_iovec.c — Deterministic vectored I/O test for f8 --iovec.
  *
  * Tests: writev (3 buffers), readv (3 buffers), truncation case (6 buffers).
  * All data is deterministic for assertion in tests.

@@ -1,5 +1,5 @@
 """
-Integration tests for the mactrace server API endpoints.
+Integration tests for the f8 server API endpoints.
 
 Starts the server with a test database, hits each API endpoint,
 and verifies the response structure and content.

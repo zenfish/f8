@@ -1,5 +1,5 @@
 """
-Tests for mactrace_data — trace data management CLI.
+Tests for f8_data — trace data management CLI.
 
 Tests the list, info, delete, and stats subcommands against a fixture database.
 """
@@ -12,7 +12,7 @@ import tempfile
 import pytest
 
 PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-MACTRACE_DATA = os.path.join(PROJECT_ROOT, 'mactrace_data')
+F8_DATA = os.path.join(PROJECT_ROOT, 'f8_data')
 FIXTURES_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'fixtures', 'traces')
 SERVER_DIR = os.path.join(PROJECT_ROOT, 'server')
 IMPORT_JS = os.path.join(SERVER_DIR, 'import.js')
@@ -34,11 +34,11 @@ def test_db(tmp_path):
 
 
 def run_data(args, db_path, timeout=15):
-    """Run mactrace_data with given args and return result."""
+    """Run f8_data with given args and return result."""
     env = os.environ.copy()
-    env['MACTRACE_DB'] = db_path
+    env['F8_DB'] = db_path
     return subprocess.run(
-        [sys.executable, MACTRACE_DATA] + args,
+        [sys.executable, F8_DATA] + args,
         capture_output=True, text=True, env=env, timeout=timeout
     )
 
@@ -123,7 +123,7 @@ class TestDataHelp:
     def test_help(self, test_db):
         result = run_data(['--help'], test_db)
         assert result.returncode == 0
-        assert 'usage' in result.stdout.lower() or 'mactrace_data' in result.stdout.lower()
+        assert 'usage' in result.stdout.lower() or 'f8_data' in result.stdout.lower()
 
     def test_db_help(self, test_db):
         result = run_data(['db', '--help'], test_db)

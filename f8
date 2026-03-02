@@ -1,13 +1,13 @@
 #!/usr/bin/env python3
 """
-mactrace - strace-like utility for macOS using DTrace
+f8 - strace-like utility for macOS using DTrace
 
 Traces system calls for a command (or a running process) and all its
 children, outputting JSON suitable for timeline analysis.
 
 Requires: sudo (DTrace needs root privileges)
-Usage: sudo ./mactrace [-o name] command [args...]
-       sudo ./mactrace -p PID [-o name]
+Usage: sudo ./f8 [-o name] command [args...]
+       sudo ./f8 -p PID [-o name]
 
 Author: Dan Farmer
 """
@@ -127,13 +127,13 @@ from syscalls._constants import (
 
 DTRACE_HEADER = r'''
 /*
- * mactrace DTrace script — auto-assembled from syscalls/ handlers
+ * f8 DTrace script — auto-assembled from syscalls/ handlers
  * Uses progenyof() for child process tracking (no proc::: probes)
  * $target_pid is replaced with $target when using dtrace -c
  */
 
 /* DTrace options — ALL values MUST use $VARIABLE$ substitution.
- * Defaults live in MacTrace.DEFAULT_* class constants.
+ * Defaults live in F8.DEFAULT_* class constants.
  * Never hardcode values here. */
 #pragma D option quiet
 #pragma D option switchrate=$SWITCHRATE$
@@ -151,15 +151,15 @@ $RAWIO_PRAGMA$
 
 dtrace:::BEGIN
 {
-    printf("MACTRACE_START %d %d\n", $target_pid, walltimestamp/1000);
+    printf("F8_START %d %d\n", $target_pid, walltimestamp/1000);
     /* Initialize aggregation so it exists for END */
     @all_syscalls["__init__"] = count();
 }
 
 dtrace:::END
 {
-    printf("MACTRACE_END %d\n", walltimestamp/1000);
-    printa("MACTRACE_ALLSYSCALL %s %@d\n", @all_syscalls);
+    printf("F8_END %d\n", walltimestamp/1000);
+    printa("F8_ALLSYSCALL %s %@d\n", @all_syscalls);
 }
 
 /* Mark child processes on first syscall */
@@ -167,7 +167,7 @@ syscall:::entry
 /progenyof($target_pid) && self->is_child == 0/
 {
     self->is_child = 1;
-    printf("MACTRACE_CHILD %d %d %d\n", pid, ppid, walltimestamp/1000);
+    printf("F8_CHILD %d %d %d\n", pid, ppid, walltimestamp/1000);
 }
 
 /* Count ALL syscalls for summary (to detect untraced syscalls) */
@@ -308,7 +308,7 @@ class FdTracker:
     """Adapter for fd tracking — passed to handler update_fd_info() methods.
 
     Provides a clean interface for handlers to manipulate fd state without
-    directly accessing MacTrace internals.
+    directly accessing F8 internals.
     """
 
     def __init__(self, fd_info: Dict[tuple, str], fd_is_socket: Dict[tuple, bool]):
@@ -336,7 +336,7 @@ class FdTracker:
         self._fd_is_socket.pop((pid, fd), None)
 
 
-class MacTrace:
+class F8:
     """Main tracer class"""
     
     # DTrace tuning defaults
@@ -450,7 +450,7 @@ class MacTrace:
     def _parse_line(self, line: str, base_timestamp: int) -> None:
         """Parse a single line of DTrace output"""
         line = line.strip()
-        if not line or not line.startswith("MACTRACE_"):
+        if not line or not line.startswith("F8_"):
             return
             
         parts = line.split(maxsplit=6)
@@ -460,24 +460,24 @@ class MacTrace:
         event_type = parts[0]
         
         try:
-            if event_type == "MACTRACE_START":
-                # MACTRACE_START pid timestamp_us
+            if event_type == "F8_START":
+                # F8_START pid timestamp_us
                 self.start_timestamp = int(parts[2]) if len(parts) > 2 else base_timestamp
                 self.pids_traced.add(int(parts[1]))
                 
-            elif event_type == "MACTRACE_END":
-                # MACTRACE_END timestamp_us
+            elif event_type == "F8_END":
+                # F8_END timestamp_us
                 self.end_timestamp = int(parts[1])
                 
-            elif event_type == "MACTRACE_ALLSYSCALL":
-                # MACTRACE_ALLSYSCALL syscall_name count
+            elif event_type == "F8_ALLSYSCALL":
+                # F8_ALLSYSCALL syscall_name count
                 syscall_name = parts[1]
                 if syscall_name != "__init__":  # Skip our initialization marker
                     count = int(parts[2])
                     self.all_syscall_counts[syscall_name] = count
                 
-            elif event_type == "MACTRACE_CHILD":
-                # MACTRACE_CHILD pid ppid timestamp_us - first syscall from a child
+            elif event_type == "F8_CHILD":
+                # F8_CHILD pid ppid timestamp_us - first syscall from a child
                 child_pid, ppid, ts = int(parts[1]), int(parts[2]), int(parts[3])
                 self.pids_traced.add(child_pid)
                 self.process_tree[child_pid] = ppid
@@ -489,8 +489,8 @@ class MacTrace:
                     details={"parent_pid": ppid}
                 ))
                 
-            elif event_type == "MACTRACE_FORK_CHILD":
-                # MACTRACE_FORK_CHILD ppid child_pid tid timestamp_us
+            elif event_type == "F8_FORK_CHILD":
+                # F8_FORK_CHILD ppid child_pid tid timestamp_us
                 ppid, child_pid, tid, ts = int(parts[1]), int(parts[2]), int(parts[3]), int(parts[4])
                 self.pids_traced.add(child_pid)
                 self.process_tree[child_pid] = ppid
@@ -502,8 +502,8 @@ class MacTrace:
                     details={"parent_pid": ppid}
                 ))
                 
-            elif event_type == "MACTRACE_EXEC":
-                # MACTRACE_EXEC pid ppid tid "path" timestamp_us
+            elif event_type == "F8_EXEC":
+                # F8_EXEC pid ppid tid "path" timestamp_us
                 pid, ppid, tid = int(parts[1]), int(parts[2]), int(parts[3])
                 # Extract path from quotes
                 rest = " ".join(parts[4:])
@@ -522,8 +522,8 @@ class MacTrace:
                         details={"path": path, "parent_pid": ppid}
                     ))
                     
-            elif event_type == "MACTRACE_EXEC_ATTEMPT":
-                # MACTRACE_EXEC_ATTEMPT pid ppid tid "path" timestamp_us
+            elif event_type == "F8_EXEC_ATTEMPT":
+                # F8_EXEC_ATTEMPT pid ppid tid "path" timestamp_us
                 pid, ppid, tid = int(parts[1]), int(parts[2]), int(parts[3])
                 rest = " ".join(parts[4:])
                 match = re.match(r'"([^"]*)"(?:\s+(\d+))?', rest)
@@ -538,8 +538,8 @@ class MacTrace:
                         details={"path": path, "parent_pid": ppid}
                     ))
                     
-            elif event_type == "MACTRACE_EXEC_FAIL":
-                # MACTRACE_EXEC_FAIL pid ppid tid errno timestamp_us
+            elif event_type == "F8_EXEC_FAIL":
+                # F8_EXEC_FAIL pid ppid tid errno timestamp_us
                 pid, ppid, tid, err, ts = int(parts[1]), int(parts[2]), int(parts[3]), int(parts[4]), int(parts[5])
                 self.process_events.append(ProcessEvent(
                     timestamp_us=ts - (self.start_timestamp or base_timestamp),
@@ -549,8 +549,8 @@ class MacTrace:
                     details={"errno": err, "parent_pid": ppid}
                 ))
                     
-            elif event_type == "MACTRACE_EXIT":
-                # MACTRACE_EXIT pid ppid exit_code timestamp_us
+            elif event_type == "F8_EXIT":
+                # F8_EXIT pid ppid exit_code timestamp_us
                 pid, ppid, exit_code, ts = int(parts[1]), int(parts[2]), int(parts[3]), int(parts[4])
                 self.process_events.append(ProcessEvent(
                     timestamp_us=ts - (self.start_timestamp or base_timestamp),
@@ -560,8 +560,8 @@ class MacTrace:
                     details={"exit_code": exit_code, "parent_pid": ppid}
                 ))
                 
-            elif event_type == "MACTRACE_SIGNAL_SEND":
-                # MACTRACE_SIGNAL_SEND sender_pid target_pid signal timestamp_us
+            elif event_type == "F8_SIGNAL_SEND":
+                # F8_SIGNAL_SEND sender_pid target_pid signal timestamp_us
                 sender, target, sig, ts = int(parts[1]), int(parts[2]), int(parts[3]), int(parts[4])
                 self.process_events.append(ProcessEvent(
                     timestamp_us=ts - (self.start_timestamp or base_timestamp),
@@ -571,8 +571,8 @@ class MacTrace:
                     details={"target_pid": target, "signal": sig, "signal_name": self._signal_name(sig)}
                 ))
                 
-            elif event_type == "MACTRACE_SIGNAL_HANDLE":
-                # MACTRACE_SIGNAL_HANDLE pid tid signal timestamp_us
+            elif event_type == "F8_SIGNAL_HANDLE":
+                # F8_SIGNAL_HANDLE pid tid signal timestamp_us
                 pid, tid, sig, ts = int(parts[1]), int(parts[2]), int(parts[3]), int(parts[4])
                 self.process_events.append(ProcessEvent(
                     timestamp_us=ts - (self.start_timestamp or base_timestamp),
@@ -582,20 +582,20 @@ class MacTrace:
                     details={"signal": sig, "signal_name": self._signal_name(sig)}
                 ))
                 
-            elif event_type == "MACTRACE_SYSCALL":
-                # MACTRACE_SYSCALL pid tid syscall retval errno [args...]
+            elif event_type == "F8_SYSCALL":
+                # F8_SYSCALL pid tid syscall retval errno [args...]
                 self._parse_syscall(parts[1:], base_timestamp)
                 
-            elif event_type == "MACTRACE_IO":
-                # MACTRACE_IO pid tid syscall fd bytes <tracemem data>
+            elif event_type == "F8_IO":
+                # F8_IO pid tid syscall fd bytes <tracemem data>
                 # tracemem outputs hex bytes, parse and attach to corresponding syscall
                 self._parse_io_data(line, base_timestamp)
-            elif event_type == "MACTRACE_IOV":
-                # MACTRACE_IOV pid tid syscall fd idx/total bytes <hex>
+            elif event_type == "F8_IOV":
+                # F8_IOV pid tid syscall fd idx/total bytes <hex>
                 self._parse_iov_data(line, base_timestamp)
                 
-            elif event_type == "MACTRACE_SOCKADDR":
-                # MACTRACE_SOCKADDR pid tid syscall retval errno ts fd family <tracemem data>
+            elif event_type == "F8_SOCKADDR":
+                # F8_SOCKADDR pid tid syscall retval errno ts fd family <tracemem data>
                 # Socket address captured by connect/bind/accept/sendto/recvfrom
                 self._parse_sockaddr_line(line, base_timestamp)
                 
@@ -984,14 +984,14 @@ class MacTrace:
                 print(f"    {flag:30s} # {reason}", file=sys.stderr)
     
     def _merge_io_hexdumps(self, lines: List[str]) -> List[str]:
-        """Pre-process dtrace output to merge MACTRACE_IO/MACTRACE_SOCKADDR with tracemem hexdumps.
+        """Pre-process dtrace output to merge F8_IO/F8_SOCKADDR with tracemem hexdumps.
         
         tracemem() outputs a formatted hexdump like:
              0  1  2  3  4  5  6  7  8  9  a  b  c  d  e  f  0123456789abcdef
              0: 27 48 65 6c 6c 6f 20 00 ...  'Hello .........
             10: 00 00 00 00 00 00 00 00 ...  ................
         
-        We extract just the hex bytes and append them to the MACTRACE_IO/MACTRACE_SOCKADDR line.
+        We extract just the hex bytes and append them to the F8_IO/F8_SOCKADDR line.
         """
         result = []
         i = 0
@@ -999,7 +999,7 @@ class MacTrace:
             line = lines[i]
             stripped = line.strip()
             
-            if stripped.startswith("MACTRACE_IO") or stripped.startswith("MACTRACE_IOV") or stripped.startswith("MACTRACE_SOCKADDR"):
+            if stripped.startswith("F8_IO") or stripped.startswith("F8_IOV") or stripped.startswith("F8_SOCKADDR"):
                 # Found IO or SOCKADDR line - collect following hexdump
                 merged_line = stripped
                 i += 1
@@ -1038,8 +1038,8 @@ class MacTrace:
         return result
     
     def _parse_io_data(self, line: str, base_timestamp: int) -> None:
-        """Parse MACTRACE_IO line and attach data to corresponding syscall event."""
-        # Format after _merge_io_hexdumps: MACTRACE_IO pid tid syscall fd nbytes <hex_string>
+        """Parse F8_IO line and attach data to corresponding syscall event."""
+        # Format after _merge_io_hexdumps: F8_IO pid tid syscall fd nbytes <hex_string>
         # The hex_string has no spaces (concatenated from hexdump)
         try:
             parts = line.split()
@@ -1194,9 +1194,9 @@ class MacTrace:
     
 
     def _parse_iov_data(self, line: str, base_timestamp: int) -> None:
-        """Parse MACTRACE_IOV line and attach iovec buffer data to the syscall event.
+        """Parse F8_IOV line and attach iovec buffer data to the syscall event.
 
-        Format: MACTRACE_IOV pid tid syscall fd idx/total bytes <hex_string>
+        Format: F8_IOV pid tid syscall fd idx/total bytes <hex_string>
         Each vectored I/O call produces multiple IOV lines (one per buffer).
         They are stored as a list of {index, total, data, data_len} dicts
         in event.args['iov_buffers'].
@@ -1255,8 +1255,8 @@ class MacTrace:
                       file=sys.stderr)
 
     def _parse_sockaddr_line(self, line: str, base_timestamp: int) -> None:
-        """Parse MACTRACE_SOCKADDR line and create syscall event with address info."""
-        # Format: MACTRACE_SOCKADDR pid tid syscall retval errno ts fd family <hex>
+        """Parse F8_SOCKADDR line and create syscall event with address info."""
+        # Format: F8_SOCKADDR pid tid syscall retval errno ts fd family <hex>
         # Note: tracemem hexdump will be on following lines, already merged by _merge_io_hexdumps
         try:
             parts = line.split()
@@ -1327,7 +1327,7 @@ class MacTrace:
                     args["count"] = int(parts[9])  # len is before family in output
                     # Actually the format is: pid tid syscall ret errno ts fd len family flags hex
                     # Let me re-check the DTrace output format...
-                    # printf("MACTRACE_SOCKADDR %d %d sendto %d %d %d %d %d %d 0x%x ",
+                    # printf("F8_SOCKADDR %d %d sendto %d %d %d %d %d %d 0x%x ",
                     #     pid, tid, (int)arg1, errno, self->sendto_ts,
                     #     self->sendto_fd, self->sendto_len, this->family, self->sendto_flags);
                     # So: parts[7]=fd, parts[8]=len, parts[9]=family, parts[10]=flags
@@ -1456,7 +1456,7 @@ class MacTrace:
 /* I/O DATA CAPTURE (--capture-io)              */
 /* ============================================ */
 /* Captures actual buffer contents via tracemem() */
-/* Output: MACTRACE_IO pid tid syscall fd actual_bytes <hex data> */
+/* Output: F8_IO pid tid syscall fd actual_bytes <hex data> */
 /* tracemem outputs {io_size} bytes; trim to actual_bytes on parse */
 """)
 
@@ -1486,7 +1486,7 @@ syscall::read_nocancel:return
 /TRACED && arg1 > 0 && self->read_buf/
 {{
     this->nbytes = arg1 < {io_size} ? arg1 : {io_size};
-    printf("MACTRACE_IO %d %d read %d %d ", pid, tid, self->read_fd, (int)arg1);
+    printf("F8_IO %d %d read %d %d ", pid, tid, self->read_fd, (int)arg1);
     tracemem(copyin(self->read_buf, this->nbytes), {io_size}, this->nbytes);
     printf("\\n");
     self->read_buf = 0;
@@ -1499,7 +1499,7 @@ syscall::write_nocancel:return
 /TRACED && arg1 > 0 && self->write_buf/
 {{
     this->nbytes = arg1 < {io_size} ? arg1 : {io_size};
-    printf("MACTRACE_IO %d %d write %d %d ", pid, tid, self->write_fd, (int)arg1);
+    printf("F8_IO %d %d write %d %d ", pid, tid, self->write_fd, (int)arg1);
     tracemem(copyin(self->write_buf, this->nbytes), {io_size}, this->nbytes);
     printf("\\n");
     self->write_buf = 0;
@@ -1530,7 +1530,7 @@ syscall::sendto_nocancel:return
 /TRACED && arg1 > 0 && self->sendto_buf/
 {{
     this->nbytes = arg1 < {io_size} ? arg1 : {io_size};
-    printf("MACTRACE_IO %d %d sendto %d %d ", pid, tid, self->sendto_fd, (int)arg1);
+    printf("F8_IO %d %d sendto %d %d ", pid, tid, self->sendto_fd, (int)arg1);
     tracemem(copyin(self->sendto_buf, this->nbytes), {io_size}, this->nbytes);
     printf("\\n");
     self->sendto_buf = 0;
@@ -1541,7 +1541,7 @@ syscall::recvfrom_nocancel:return
 /TRACED && arg1 > 0 && self->recvfrom_buf/
 {{
     this->nbytes = arg1 < {io_size} ? arg1 : {io_size};
-    printf("MACTRACE_IO %d %d recvfrom %d %d ", pid, tid, self->recvfrom_fd, (int)arg1);
+    printf("F8_IO %d %d recvfrom %d %d ", pid, tid, self->recvfrom_fd, (int)arg1);
     tracemem(copyin(self->recvfrom_buf, this->nbytes), {io_size}, this->nbytes);
     printf("\\n");
     self->recvfrom_buf = 0;
@@ -1574,7 +1574,7 @@ syscall::sendmsg:entry,
 syscall::sendmsg_nocancel:entry
 /TRACED && this->name_p != 0 && this->name_len >= 4 && this->name_len <= 128/
 {{
-    printf("MACTRACE_SOCKADDR %d %d sendmsg_dest 0 0 %d %d %d ",
+    printf("F8_SOCKADDR %d %d sendmsg_dest 0 0 %d %d %d ",
         pid, tid, walltimestamp/1000, self->sendmsg_fd, *(uint8_t *)((uintptr_t)copyin(this->name_p, this->name_len) + 1));
     tracemem(copyin(this->name_p, this->name_len), 128, this->name_len);
     printf("\\n");
@@ -1590,7 +1590,7 @@ syscall::sendmsg_nocancel:entry
     this->nbytes = this->len < {io_size} ? this->len : {io_size};
     /* Round copyin to 64-byte boundary — ARM64 DTrace corrupts byte 32 */
     this->copyin_sz = (this->nbytes + 63) & ~63;
-    printf("MACTRACE_IO %d %d sendmsg %d %d ", pid, tid, self->sendmsg_fd, (int)this->len);
+    printf("F8_IO %d %d sendmsg %d %d ", pid, tid, self->sendmsg_fd, (int)this->len);
     tracemem(copyin(this->base, this->copyin_sz), {io_size}, this->nbytes);
     printf("\\n");
     self->sendmsg_captured = 1;
@@ -1601,7 +1601,7 @@ syscall::sendmsg:return,
 syscall::sendmsg_nocancel:return
 /TRACED && arg1 > 0 && self->sendmsg_captured == 0/
 {{
-    printf("MACTRACE_IO %d %d sendmsg %d %d\\n", pid, tid, self->sendmsg_fd, (int)arg1);
+    printf("F8_IO %d %d sendmsg %d %d\\n", pid, tid, self->sendmsg_fd, (int)arg1);
 }}
 
 /* recvmsg entry — save buffer pointer (split); kernel fills buffer by return */
@@ -1639,7 +1639,7 @@ syscall::recvmsg_nocancel:return
     this->nbytes = arg1 < {io_size} ? (int)arg1 : {io_size};
     /* Round copyin size to 64-byte boundary — DTrace ARM64 corrupts byte 32 */
     this->copyin_sz = (this->nbytes + 63) & ~63;
-    printf("MACTRACE_IO %d %d recvmsg %d %d ", pid, tid, self->recvmsg_fd, (int)arg1);
+    printf("F8_IO %d %d recvmsg %d %d ", pid, tid, self->recvmsg_fd, (int)arg1);
     tracemem(copyin(this->buf, this->copyin_sz), {io_size}, this->nbytes);
     printf("\\n");
     self->recvmsg_buf_hi = 0;
@@ -1652,7 +1652,7 @@ syscall::recvmsg:return,
 syscall::recvmsg_nocancel:return
 /TRACED && arg1 > 0 && self->recvmsg_buf_hi == 0 && self->recvmsg_buf_lo == 0/
 {{
-    printf("MACTRACE_IO %d %d recvmsg %d %d\\n", pid, tid, self->recvmsg_fd, (int)arg1);
+    printf("F8_IO %d %d recvmsg %d %d\\n", pid, tid, self->recvmsg_fd, (int)arg1);
 }}
 
 
@@ -1673,7 +1673,7 @@ syscall::recvmsg:return,
 syscall::recvmsg_nocancel:return
 /TRACED && this->rm_name_p != 0 && this->rm_name_len >= 4 && this->rm_name_len <= 128/
 {{
-    printf("MACTRACE_SOCKADDR %d %d recvmsg_src 0 0 %d %d %d ",
+    printf("F8_SOCKADDR %d %d recvmsg_src 0 0 %d %d %d ",
         pid, tid, walltimestamp/1000, self->recvmsg_fd,
         *(uint8_t *)((uintptr_t)copyin(this->rm_name_p, this->rm_name_len) + 1));
     tracemem(copyin(this->rm_name_p, this->rm_name_len), 128, this->rm_name_len);
@@ -1737,7 +1737,7 @@ syscall::recvmsg_nocancel:return
 /* ============================================ */
 /* Unrolled iovec buffer capture: up to {max_iovec} buffers per call.    */
 /* struct iovec {{ void *iov_base; size_t iov_len; }} = 16 bytes each   */
-/* Output: MACTRACE_IOV pid tid syscall fd idx/total len <hex>          */
+/* Output: F8_IOV pid tid syscall fd idx/total len <hex>          */
 """)
 
         IOV_ENTRY_SIZE = 16  # sizeof(struct iovec) on 64-bit
@@ -1766,7 +1766,7 @@ syscall::recvmsg_nocancel:return
     this->iov_base_{slot} = *(uintptr_t *)copyin(self->{prefix}_iov + {offset}, 8);
     this->iov_len_{slot} = *(size_t *)copyin(self->{prefix}_iov + {offset + 8}, 8);
     this->iov_cap_{slot} = this->iov_len_{slot} < {io_size} ? this->iov_len_{slot} : {io_size};
-    printf("MACTRACE_IOV %d %d {primary} %d {slot}/%d %d ",
+    printf("F8_IOV %d %d {primary} %d {slot}/%d %d ",
         pid, tid, self->{prefix}_fd, self->{prefix}_iovcnt, (int)this->iov_len_{slot});
     tracemem(copyin(this->iov_base_{slot}, this->iov_cap_{slot}), {io_size}, this->iov_cap_{slot});
     printf("\\n");
@@ -1855,7 +1855,7 @@ syscall::recvmsg_nocancel:return
                              'TERM'}  # TERM set separately below
                 
                 with tempfile.NamedTemporaryFile(mode='w', suffix='.sh',
-                                                  prefix='mactrace_env_',
+                                                  prefix='f8_env_',
                                                   delete=False) as ef:
                     ef.write('#!/bin/bash\n')
                     for key, val in sorted(user_env.items()):
@@ -1920,7 +1920,7 @@ syscall::recvmsg_nocancel:return
         if throttle and not env_wrapper_path:
             throttle_cmd = cmd_str
             with tempfile.NamedTemporaryFile(mode='w', suffix='.sh',
-                                              prefix='mactrace_throttle_',
+                                              prefix='f8_throttle_',
                                               delete=False) as tf:
                 tf.write('#!/bin/bash\n')
                 tf.write('/usr/sbin/taskpolicy -b -p $$\n')
@@ -2236,9 +2236,9 @@ syscall::recvmsg_nocancel:return
                 if self.verbose:
                     print(f"Error reading dtrace output: {e}", file=sys.stderr)
                     
-            # Extract target PID from MACTRACE_START
+            # Extract target PID from F8_START
             for line in dtrace_output:
-                if line.startswith("MACTRACE_START"):
+                if line.startswith("F8_START"):
                     parts = line.split()
                     if len(parts) >= 2:
                         target_pid = int(parts[1])
@@ -2291,7 +2291,7 @@ syscall::recvmsg_nocancel:return
         self.target_stdout = target_stdout_lines
         self.target_stderr = target_stderr_lines
         
-        # Pre-process: merge MACTRACE_IO/MACTRACE_SOCKADDR lines with following tracemem hexdump blocks
+        # Pre-process: merge F8_IO/F8_SOCKADDR lines with following tracemem hexdump blocks
         # Always run this since SOCKADDR lines have hexdumps even without --capture-io
         dtrace_output = self._merge_io_hexdumps(dtrace_output)
         
@@ -2555,13 +2555,13 @@ syscall::recvmsg_nocancel:return
         )
 
 
-def get_mactrace_config() -> Dict[str, str]:
+def get_f8_config() -> Dict[str, str]:
     """
-    Load mactrace configuration, handling sudo environment stripping.
+    Load f8 configuration, handling sudo environment stripping.
     
     Priority:
     1. Environment variables (if set)
-    2. Config file at $MACTRACE_HOME/config or ~SUDO_USER/.mactrace/config
+    2. Config file at $F8_HOME/config or ~SUDO_USER/.f8/config
     3. Defaults
     
     Config file format:
@@ -2571,7 +2571,7 @@ def get_mactrace_config() -> Dict[str, str]:
         KEY3=~/path           # ~ expands to sudo user's home
     
     Returns:
-        Dict with config values (MACTRACE_OUTPUT, MACTRACE_HOME, etc.)
+        Dict with config values (F8_OUTPUT, F8_HOME, etc.)
     """
     import pwd
     import re
@@ -2606,15 +2606,15 @@ def get_mactrace_config() -> Dict[str, str]:
         value = re.sub(r'\$\{(\w+)\}|\$(\w+)', replace_var, value)
         return value
     
-    # First, try to find MACTRACE_HOME
-    mactrace_home = os.environ.get('MACTRACE_HOME')
-    if not mactrace_home:
-        mactrace_home = os.path.join(sudo_home, '.mactrace')
+    # First, try to find F8_HOME
+    f8_home = os.environ.get('F8_HOME')
+    if not f8_home:
+        f8_home = os.path.join(sudo_home, '.f8')
     
-    config['MACTRACE_HOME'] = mactrace_home
+    config['F8_HOME'] = f8_home
     
     # Try to read config file
-    config_file = os.path.join(mactrace_home, 'config')
+    config_file = os.path.join(f8_home, 'config')
     if os.path.exists(config_file):
         try:
             with open(config_file) as f:
@@ -2630,7 +2630,7 @@ def get_mactrace_config() -> Dict[str, str]:
             pass
     
     # Environment variables override config file
-    for key in ['MACTRACE_OUTPUT', 'MACTRACE_HOME', 'MACTRACE_USER', 'MACTRACE_DB']:
+    for key in ['F8_OUTPUT', 'F8_HOME', 'F8_USER', 'F8_DB']:
         env_val = os.environ.get(key)
         if env_val:
             config[key] = env_val
@@ -2639,14 +2639,14 @@ def get_mactrace_config() -> Dict[str, str]:
 
 
 # Global config loaded once
-_mactrace_config: Optional[Dict[str, str]] = None
+_f8_config: Optional[Dict[str, str]] = None
 
 def get_config_value(key: str) -> Optional[str]:
-    """Get a mactrace config value."""
-    global _mactrace_config
-    if _mactrace_config is None:
-        _mactrace_config = get_mactrace_config()
-    return _mactrace_config.get(key)
+    """Get a f8 config value."""
+    global _f8_config
+    if _f8_config is None:
+        _f8_config = get_f8_config()
+    return _f8_config.get(key)
 
 
 def resolve_path(path: str, env_var: str, check_exists: bool = True) -> str:
@@ -2660,7 +2660,7 @@ def resolve_path(path: str, env_var: str, check_exists: bool = True) -> str:
     
     Args:
         path: The path to resolve
-        env_var: Config/environment variable name to use as prefix (e.g., 'MACTRACE_OUTPUT')
+        env_var: Config/environment variable name to use as prefix (e.g., 'F8_OUTPUT')
         check_exists: If True, check if the resolved path exists before returning
                      (falls back to original path if not found)
     
@@ -2731,15 +2731,15 @@ def resolve_user(user_spec: Optional[str]) -> Optional[tuple]:
         raise ValueError(f"No user named '{user_spec}'")
 
 
-def get_mactrace_home() -> str:
-    """Get MACTRACE_HOME, defaulting to ~/.mactrace using MACTRACE_HOME or HOME."""
-    mactrace_home = os.environ.get('MACTRACE_HOME')
-    if mactrace_home:
-        return mactrace_home
+def get_f8_home() -> str:
+    """Get F8_HOME, defaulting to ~/.f8 using F8_HOME or HOME."""
+    f8_home = os.environ.get('F8_HOME')
+    if f8_home:
+        return f8_home
     
-    # Fall back to $HOME/.mactrace (not hardcoded ~)
+    # Fall back to $HOME/.f8 (not hardcoded ~)
     home = os.environ.get('HOME', os.path.expanduser('~'))
-    return os.path.join(home, '.mactrace')
+    return os.path.join(home, '.f8')
 
 
 def filter_wrapper_processes(result: 'TraceResult', original_command: List[str], 
@@ -2903,7 +2903,7 @@ class CapitalizedHelpFormatter(argparse.RawDescriptionHelpFormatter):
 
 def main():
     parser = argparse.ArgumentParser(
-        description="""mactrace - strace-like utility for macOS using DTrace
+        description="""f8 - strace-like utility for macOS using DTrace
 
 By default, all syscall categories are traced (file, network, process, memory,
 etc). DTrace can consume a great deal of resources and storage to run. Rather
@@ -2913,7 +2913,7 @@ even a single system call or small group of system calls. The options below
 are meant to give you more flexibility in how the tool is used.
 
 DTrace kernel limits (kern.dtrace.difo_maxsize) are automatically adjusted
-to fit your tracing configuration and restored when mactrace exits.""",
+to fit your tracing configuration and restored when f8 exits.""",
         formatter_class=CapitalizedHelpFormatter,
         usage="%(prog)s [options] command [args ...]",
         epilog="""
@@ -2921,19 +2921,19 @@ Requires root privileges.
 
 Examples:
   # Network activity only (DNS, connections, transfers):
-  sudo mactrace --trace=net curl -fsSL https://example.com
+  sudo f8 --trace=net curl -fsSL https://example.com
 
   # Exec + filesystem (see what a build spawns and touches):
-  sudo mactrace --trace=exec,file make -j4
+  sudo f8 --trace=exec,file make -j4
 
   # Capture I/O data with vectored I/O buffers, save to file:
-  sudo mactrace -o server -c --iovec 4 --trace=net,file ./server
+  sudo f8 -o server -c --iovec 4 --trace=net,file ./server
 
   # Attach to a running process for 60 seconds:
-  sudo mactrace -p 12345 -o app -t 60
+  sudo f8 -p 12345 -o app -t 60
 
   # Trace a pipeline (wrap with sh -c):
-  sudo mactrace sh -c 'curl -s example.com | wc -c'
+  sudo f8 sh -c 'curl -s example.com | wc -c'
 
 Output naming:
   -o make       ->  make.seconds-since-1970.json  (UNIX epoch auto-appended to prevent collisions)
@@ -2942,8 +2942,8 @@ Output naming:
 Full documentation: README.md  |  --trace help
 """
     )
-    parser.add_argument("--version", action="version", version=f"mactrace {VERSION}")
-    parser.add_argument("-o", "--output", help="Output name. -o make → make.EPOCH.json (auto). -o make.json → exact name. -o - → stdout. Default: auto-derived from command name. Relative paths use $MACTRACE_OUTPUT.")
+    parser.add_argument("--version", action="version", version=f"f8 {VERSION}")
+    parser.add_argument("-o", "--output", help="Output name. -o make → make.EPOCH.json (auto). -o make.json → exact name. -o - → stdout. Default: auto-derived from command name. Relative paths use $F8_OUTPUT.")
     parser.add_argument("-u", "--user", 
                         help="Run traced program as this user (name or UID). Default: auto-detect from $SUDO_USER")
     parser.add_argument("-t", "--timeout", type=int, help="Timeout in seconds")
@@ -2982,16 +2982,16 @@ Full documentation: README.md  |  --trace help
                              f"Restored on exit.")
     parser.add_argument("--cache", type=str, default=None,
                         help="Copy local files up to SIZE to cache dir (e.g., 10M, 500k, 1G)")
-    parser.add_argument("--strsize", type=parse_size, default=MacTrace.DEFAULT_STRSIZE,
-                        help=f"DTrace strsize - max copyinstr length for paths (default: {MacTrace.DEFAULT_STRSIZE})")
-    parser.add_argument("--bufsize", type=str, default=MacTrace.DEFAULT_BUFSIZE,
-                        help=f"DTrace bufsize - per-CPU trace buffer (default: {MacTrace.DEFAULT_BUFSIZE})")
-    parser.add_argument("--dynvarsize", type=str, default=MacTrace.DEFAULT_DYNVARSIZE,
-                        help=f"DTrace dynvarsize - thread-local variable pool (default: {MacTrace.DEFAULT_DYNVARSIZE})")
-    parser.add_argument("--switchrate", type=str, default=MacTrace.DEFAULT_SWITCHRATE,
-                        help=f"DTrace switchrate - buffer drain frequency (default: {MacTrace.DEFAULT_SWITCHRATE})")
-    parser.add_argument("--cleanrate", type=str, default=MacTrace.DEFAULT_CLEANRATE,
-                        help=f"DTrace cleanrate - dead dynvar reclaim frequency (default: {MacTrace.DEFAULT_CLEANRATE})")
+    parser.add_argument("--strsize", type=parse_size, default=F8.DEFAULT_STRSIZE,
+                        help=f"DTrace strsize - max copyinstr length for paths (default: {F8.DEFAULT_STRSIZE})")
+    parser.add_argument("--bufsize", type=str, default=F8.DEFAULT_BUFSIZE,
+                        help=f"DTrace bufsize - per-CPU trace buffer (default: {F8.DEFAULT_BUFSIZE})")
+    parser.add_argument("--dynvarsize", type=str, default=F8.DEFAULT_DYNVARSIZE,
+                        help=f"DTrace dynvarsize - thread-local variable pool (default: {F8.DEFAULT_DYNVARSIZE})")
+    parser.add_argument("--switchrate", type=str, default=F8.DEFAULT_SWITCHRATE,
+                        help=f"DTrace switchrate - buffer drain frequency (default: {F8.DEFAULT_SWITCHRATE})")
+    parser.add_argument("--cleanrate", type=str, default=F8.DEFAULT_CLEANRATE,
+                        help=f"DTrace cleanrate - dead dynvar reclaim frequency (default: {F8.DEFAULT_CLEANRATE})")
     parser.add_argument("--no-filter-wrapper", action="store_true",
                         help="Don't filter out wrapper processes (sudo/sh/bash) when using -u")
     parser.add_argument("--throttle", action="store_true",
@@ -3002,7 +3002,7 @@ Full documentation: README.md  |  --trace help
     parser.add_argument("command", nargs=argparse.REMAINDER,
                         help="Command to trace. Pipelines and shell metacharacters "
                              "(|, &, ;, >, etc.) must be wrapped: "
-                             "sudo mactrace sh -c 'cmd1 | cmd2'")
+                             "sudo f8 sh -c 'cmd1 | cmd2'")
     
     # Handle bare --iovec-syscalls (no argument) before argparse complains
     if '--iovec-syscalls' in sys.argv and not any(
@@ -3101,7 +3101,7 @@ The _nocancel variants are included automatically.""")
         
     # Check if running as root
     if os.geteuid() != 0:
-        print("Error: mactrace requires root privileges. Run with sudo.", file=sys.stderr)
+        print("Error: f8 requires root privileges. Run with sudo.", file=sys.stderr)
         sys.exit(1)
     
     # Auto-derive output name from command when no -o given
@@ -3133,14 +3133,14 @@ The _nocancel variants are included automatically.""")
     
     # Check output file doesn't exist (fail fast, before tracing)
     if args.output:
-        output_path = resolve_path(args.output, 'MACTRACE_OUTPUT', check_exists=False)
+        output_path = resolve_path(args.output, 'F8_OUTPUT', check_exists=False)
         if os.path.exists(output_path):
             print(f"Error: Output file already exists:\n\n    {output_path}\n", file=sys.stderr)
             print(f"Will not overwrite. Remove the file or choose a different output path.", file=sys.stderr)
             sys.exit(1)
     
-    # Resolve user: -u/--user flag > MACTRACE_USER env var > SUDO_USER (auto-detect)
-    user_spec = args.user or os.environ.get('MACTRACE_USER')
+    # Resolve user: -u/--user flag > F8_USER env var > SUDO_USER (auto-detect)
+    user_spec = args.user or os.environ.get('F8_USER')
     run_as_user = None
     
     if user_spec:
@@ -3172,10 +3172,10 @@ The _nocancel variants are included automatically.""")
             cache_size = parse_size(args.cache)
             # Create cache directory next to output file or in temp
             if args.output:
-                output_path = resolve_path(args.output, 'MACTRACE_OUTPUT', check_exists=False)
+                output_path = resolve_path(args.output, 'F8_OUTPUT', check_exists=False)
                 cache_dir = output_path.rsplit('.', 1)[0] + '_cache'
             else:
-                cache_dir = tempfile.mkdtemp(prefix='mactrace_cache_')
+                cache_dir = tempfile.mkdtemp(prefix='f8_cache_')
             dir_existed = os.path.exists(cache_dir)
             os.makedirs(cache_dir, exist_ok=True)
             # Chown cache dir to the user we'll run as
@@ -3207,7 +3207,7 @@ The _nocancel variants are included automatically.""")
         parser.error('--iovec N must be >= 1')
     if iovec_max is not None and iovec_max > 64:
         parser.error(f'--iovec {iovec_max} is extreme. Max supported: 64.')
-    tracer = MacTrace(
+    tracer = F8(
         verbose=args.verbose,
         capture_io=args.capture_io,
         iovec_max=iovec_max, iovec_syscalls=iovec_syscalls,
@@ -3464,7 +3464,7 @@ The _nocancel variants are included automatically.""")
         print(f"\nTrace interrupted — cleaning up.", file=sys.stderr)
         # Remove output JSON if it exists (shouldn't yet, but be safe)
         if args.output:
-            output_path = resolve_path(args.output, 'MACTRACE_OUTPUT', check_exists=False)
+            output_path = resolve_path(args.output, 'F8_OUTPUT', check_exists=False)
             if os.path.exists(output_path):
                 os.unlink(output_path)
                 print(f"  Removed: {output_path}", file=sys.stderr)
@@ -3480,7 +3480,7 @@ The _nocancel variants are included automatically.""")
     
     if args.output:
         # output_path was already resolved and validated at startup
-        output_path = resolve_path(args.output, 'MACTRACE_OUTPUT', check_exists=False)
+        output_path = resolve_path(args.output, 'F8_OUTPUT', check_exists=False)
         
         # Ensure output directory exists
         output_dir = os.path.dirname(output_path)

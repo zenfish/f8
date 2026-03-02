@@ -1,6 +1,6 @@
 # Syscall Coverage
 
-mactrace traces a subset of the macOS syscall table. This document tracks what we cover, what we don't, and how coverage varies across OS versions.
+f8 traces a subset of the macOS syscall table. This document tracks what we cover, what we don't, and how coverage varies across OS versions.
 
 ## Current Coverage
 
@@ -19,7 +19,7 @@ mactrace traces a subset of the macOS syscall table. This document tracks what w
 | Poll/Event | 7 | 18 | **39%** | select/poll/kqueue; aio_* untraced |
 | **Total** | **111** | **454** | **24%** | |
 
-¹ Coverage % depends on how broadly you define the category. mactrace covers 100% of the *core* file and process syscalls (open, read, write, stat, fork, exec, exit, etc.) but macOS has many extended/Apple-specific variants (guarded file descriptors, vectored I/O, xattr, pthread internals) that aren't traced. The "Available" column above counts only syscalls in mactrace's own category definitions.
+¹ Coverage % depends on how broadly you define the category. f8 covers 100% of the *core* file and process syscalls (open, read, write, stat, fork, exec, exit, etc.) but macOS has many extended/Apple-specific variants (guarded file descriptors, vectored I/O, xattr, pthread internals) that aren't traced. The "Available" column above counts only syscalls in f8's own category definitions.
 
 ### What's Not Traced (and Why)
 
@@ -114,7 +114,7 @@ jq '.os.version, .counts' scripts/coverage-data/*.json
 
 ## DTrace DIF Budget
 
-macOS DTrace has a compiled bytecode size limit per probe (`kern.dtrace.difo_maxsize`, default 256KB). mactrace's full probe set uses ~82% of this budget. The `--trace` flag lets you load only the categories you need:
+macOS DTrace has a compiled bytecode size limit per probe (`kern.dtrace.difo_maxsize`, default 256KB). f8's full probe set uses ~82% of this budget. The `--trace` flag lets you load only the categories you need:
 
 ```
 --trace=net           111 probes  ~44% of budget
@@ -128,10 +128,10 @@ Use `-d` to temporarily double the DIF budget (sets `kern.dtrace.difo_maxsize=52
 
 ## Category Reference
 
-Use `mactrace --trace help` for live category info, or `--trace help <name>` for details:
+Use `f8 --trace help` for live category info, or `--trace help <name>` for details:
 
 ```
-$ mactrace --trace help
+$ f8 --trace help
 Trace categories (7 categories, 111 traced syscalls):
 
   file           42 syscalls  File system operations: open, read, write, stat, link, chmod, directory ops
@@ -142,7 +142,7 @@ Trace categories (7 categories, 111 traced syscalls):
   process        24 syscalls  Process lifecycle and identity: fork, exec, exit, wait, getpid/uid
   signal          3 syscalls  Signal delivery and handling: kill, sigaction, sigprocmask
 
-$ mactrace --trace help network
+$ f8 --trace help network
   network
   ───────
   32 syscalls:
@@ -156,7 +156,7 @@ $ mactrace --trace help network
 
 ## Complete Syscall Reference
 
-Every syscall mactrace traces, what it does, and what fields appear in the JSON output.
+Every syscall f8 traces, what it does, and what fields appear in the JSON output.
 Syscalls marked with `_nocancel` are non-cancellable variants (identical semantics, won't be
 interrupted by thread cancellation). The `-c` flag enables I/O data capture (raw bytes in hex).
 

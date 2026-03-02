@@ -1,8 +1,8 @@
 """
-Shared pytest fixtures for mactrace test suite.
+Shared pytest fixtures for f8 test suite.
 
-This conftest.py ensures that the mactrace project root is on sys.path
-so that mactrace_lib, mactrace_categories, etc. can be imported by tests.
+This conftest.py ensures that the f8 project root is on sys.path
+so that f8_lib, f8_categories, etc. can be imported by tests.
 """
 
 import os
@@ -11,7 +11,7 @@ import json
 import tempfile
 import pytest
 
-# Add mactrace project root to sys.path
+# Add f8 project root to sys.path
 PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if PROJECT_ROOT not in sys.path:
     sys.path.insert(0, PROJECT_ROOT)
@@ -21,7 +21,7 @@ FIXTURES_DIR = os.path.join(os.path.dirname(__file__), 'fixtures')
 
 @pytest.fixture
 def project_root():
-    """Path to mactrace project root."""
+    """Path to f8 project root."""
     return PROJECT_ROOT
 
 
@@ -47,22 +47,22 @@ def syscalls_data(syscalls_json_path):
 @pytest.fixture
 def temp_dir():
     """Temporary directory for test outputs, cleaned up after test."""
-    with tempfile.TemporaryDirectory(prefix='mactrace_test_') as d:
+    with tempfile.TemporaryDirectory(prefix='f8_test_') as d:
         yield d
 
 
 @pytest.fixture
 def temp_config(temp_dir):
     """
-    Create a temporary mactrace config file.
+    Create a temporary f8 config file.
     
     Returns a function that writes config content and returns the path.
     Usage:
         def test_foo(temp_config):
-            config_path = temp_config("MACTRACE_HOME=~/mactrace\\nMACTRACE_OUTPUT=~/output")
+            config_path = temp_config("F8_HOME=~/f8\\nF8_OUTPUT=~/output")
     """
     def _write_config(content):
-        config_dir = os.path.join(temp_dir, '.mactrace')
+        config_dir = os.path.join(temp_dir, '.f8')
         os.makedirs(config_dir, exist_ok=True)
         config_path = os.path.join(config_dir, 'config')
         with open(config_path, 'w') as f:

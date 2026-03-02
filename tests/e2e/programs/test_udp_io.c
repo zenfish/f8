@@ -1,5 +1,5 @@
 /*
- * test_udp_io.c — Deterministic UDP I/O for mactrace --capture-io testing.
+ * test_udp_io.c — Deterministic UDP I/O for f8 --capture-io testing.
  *
  * Sends a known payload via sendto() to a loopback UDP socket, then
  * receives it back via recvfrom(). This exercises the network IO capture
@@ -15,7 +15,7 @@
 #include <sys/socket.h>
 #include <unistd.h>
 
-#define PAYLOAD      "MACTRACE_UDP_TEST_DATA"
+#define PAYLOAD      "F8_UDP_TEST_DATA"
 #define PAYLOAD_LEN  22
 
 int main(void) {

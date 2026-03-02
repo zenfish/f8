@@ -1,14 +1,14 @@
 #!/usr/bin/env python3
 """
-Generate an HTML timeline view of mactrace syscall data.
+Generate an HTML timeline view of f8 syscall data.
 
-Reads JSON output from mactrace and generates an interactive HTML
+Reads JSON output from f8 and generates an interactive HTML
 timeline with sortable/filterable table, syscall categorization,
 pagination, search, and I/O data links.
 
 Usage:
-    ./mactrace_timeline.py trace.json -o timeline.html
-    ./mactrace_timeline.py trace.json -o timeline.html -d ./io_output
+    ./f8_timeline.py trace.json -o timeline.html
+    ./f8_timeline.py trace.json -o timeline.html -d ./io_output
 """
 
 import sys
@@ -25,8 +25,8 @@ from collections import defaultdict, Counter
 from pathlib import Path
 
 # Shared utilities
-from mactrace_lib import (
-    get_mactrace_config, get_config_value, resolve_input_path,
+from f8_lib import (
+    get_f8_config, get_config_value, resolve_input_path,
     format_bytes_short as format_bytes, format_duration, sanitize_filename,
 )
 
@@ -56,12 +56,12 @@ DATA_COLORS = [lighten_color(c) for c in HEADER_COLORS]
 
 # Import categories from shared module
 try:
-    from mactrace_categories import (
+    from f8_categories import (
         get_category, get_color, get_text_color, get_categories_for_display,
         CATEGORY_COLORS, CATEGORY_ORDER
     )
 except ImportError:
-    print("Warning: mactrace_categories.py not found — using fallback colors/categories", file=sys.stderr)
+    print("Warning: f8_categories.py not found — using fallback colors/categories", file=sys.stderr)
     CATEGORY_COLORS = {
         'file': '#4CAF50', 'network': '#2196F3', 'process': '#FF9800',
         'memory': '#9C27B0', 'signal': '#F44336', 'other': '#607D8B',
@@ -86,11 +86,11 @@ IO_SYSCALLS = {
 }
 
 
-# format_bytes, format_duration, sanitize_filename now imported from mactrace_lib
+# format_bytes, format_duration, sanitize_filename now imported from f8_lib
 
 
 class TimelineGenerator:
-    """Generate HTML timeline from mactrace JSON data."""
+    """Generate HTML timeline from f8 JSON data."""
 
     def __init__(self, input_file: str = None, output_dir: str = None):
         self.input_file = input_file or "stdin"
@@ -175,7 +175,7 @@ class TimelineGenerator:
             if target_basename != sanitized:
                 patterns.append(target_basename)
         
-        # For sockets, also try matching by family/type (how mactrace_analyze names them)
+        # For sockets, also try matching by family/type (how f8_analyze names them)
         if fd is not None:
             fd_info = self.fd_map.get(pid, {}).get(fd, {})
             if fd_info.get('type') == 'socket':
@@ -589,7 +589,7 @@ class TimelineGenerator:
         # Category colors for JS
         cat_colors = {cat: {'bg': get_color(cat), 'text': get_text_color(cat)} for cat in CATEGORY_ORDER}
         
-        page_title = f"mactrace: {' '.join(cmd)}"
+        page_title = f"f8: {' '.join(cmd)}"
         
         return f'''<!DOCTYPE html>
 <html lang="en">
@@ -863,7 +863,7 @@ class TimelineGenerator:
                 <td style="background:{DATA_COLORS[5]}">{html.escape(row['details'])}</td>
             </tr>''')
 
-        page_title = f"mactrace: {' '.join(cmd)}"
+        page_title = f"f8: {' '.join(cmd)}"
 
         html_content = f'''<!DOCTYPE html>
 <html lang="en">
@@ -1265,12 +1265,12 @@ class TimelineGenerator:
 
 def main():
     parser = argparse.ArgumentParser(
-        description='Generate HTML timeline from mactrace JSON',
-        epilog='Reads JSON from mactrace and generates interactive HTML timeline.'
+        description='Generate HTML timeline from f8 JSON',
+        epilog='Reads JSON from f8 and generates interactive HTML timeline.'
     )
-    parser.add_argument('file', help='mactrace JSON file (use - for stdin)')
+    parser.add_argument('file', help='f8 JSON file (use - for stdin)')
     parser.add_argument('-o', '--output', required=True, help='Output HTML file')
-    parser.add_argument('-d', '--output-dir', help='Directory with I/O files from mactrace_analyze.py --save-io')
+    parser.add_argument('-d', '--output-dir', help='Directory with I/O files from f8_analyze.py --save-io')
     parser.add_argument('--max-rows', type=int, help='Limit output to first N rows (for huge traces)')
     parser.add_argument('--virtual', action='store_true', 
                         help='Use virtual scrolling (scales to 1M+ rows, auto-enabled for >50K events)')
@@ -1285,9 +1285,9 @@ def main():
     # Resolve output-dir if provided
     output_dir = args.output_dir
     if output_dir and not os.path.isabs(output_dir) and not output_dir.startswith('./'):
-        mactrace_output = get_config_value('MACTRACE_OUTPUT')
-        if mactrace_output:
-            output_dir = os.path.join(mactrace_output, output_dir)
+        f8_output = get_config_value('F8_OUTPUT')
+        if f8_output:
+            output_dir = os.path.join(f8_output, output_dir)
     
     generator = TimelineGenerator(input_file=input_file, output_dir=output_dir)
     
@@ -1299,9 +1299,9 @@ def main():
             print(f"  (resolved from: {args.file})", file=sys.stderr)
         else:
             print(f"Error: File not found: {args.file}", file=sys.stderr)
-            mactrace_output = get_config_value('MACTRACE_OUTPUT')
-            if mactrace_output:
-                print(f"  (MACTRACE_OUTPUT={mactrace_output})", file=sys.stderr)
+            f8_output = get_config_value('F8_OUTPUT')
+            if f8_output:
+                print(f"  (F8_OUTPUT={f8_output})", file=sys.stderr)
         sys.exit(1)
     except json.JSONDecodeError as e:
         print(f"Error: Invalid JSON in {input_file}: {e}", file=sys.stderr)
@@ -1327,13 +1327,13 @@ def main():
     else:
         html_content = generator.generate(max_rows=args.max_rows)
     
-    # Resolve output path using MACTRACE_OUTPUT
+    # Resolve output path using F8_OUTPUT
     output_path = args.output
     if not os.path.isabs(output_path) and not output_path.startswith('./'):
-        mactrace_output = get_config_value('MACTRACE_OUTPUT')
-        if mactrace_output:
-            os.makedirs(mactrace_output, exist_ok=True)
-            output_path = os.path.join(mactrace_output, output_path)
+        f8_output = get_config_value('F8_OUTPUT')
+        if f8_output:
+            os.makedirs(f8_output, exist_ok=True)
+            output_path = os.path.join(f8_output, output_path)
     
     with open(output_path, 'w') as f:
         f.write(html_content)

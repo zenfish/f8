@@ -1,5 +1,5 @@
 """
-CLI argument parsing tests for mactrace and mactrace_data.
+CLI argument parsing tests for f8 and f8_data.
 
 Tests that all documented flags, subcommands, and option combinations
 parse correctly without hitting argparse errors. Uses subprocess to
@@ -14,8 +14,8 @@ import sys
 import pytest
 
 PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-MACTRACE = os.path.join(PROJECT_ROOT, 'mactrace')
-MACTRACE_DATA = os.path.join(PROJECT_ROOT, 'mactrace_data')
+F8_CMD = os.path.join(PROJECT_ROOT, 'f8')
+F8_DATA_CMD = os.path.join(PROJECT_ROOT, 'f8_data')
 
 
 def run_cli(cmd, args, timeout=10, expect_exit=None):
@@ -32,39 +32,39 @@ def run_cli(cmd, args, timeout=10, expect_exit=None):
 
 
 # =============================================================================
-# mactrace CLI tests
+# f8 CLI tests
 # =============================================================================
 
-class TestMactraceHelp:
+class TestF8Help:
     """Basic help and flag recognition."""
 
     def test_help_exits_zero(self):
-        run_cli(MACTRACE, ['--help'], expect_exit=0)
+        run_cli(F8_CMD, ['--help'], expect_exit=0)
 
     def test_help_contains_examples(self):
-        _, stdout, _ = run_cli(MACTRACE, ['--help'], expect_exit=0)
+        _, stdout, _ = run_cli(F8_CMD, ['--help'], expect_exit=0)
         assert 'Examples:' in stdout
         assert '--trace=net' in stdout
 
     def test_help_contains_output_naming(self):
-        _, stdout, _ = run_cli(MACTRACE, ['--help'], expect_exit=0)
+        _, stdout, _ = run_cli(F8_CMD, ['--help'], expect_exit=0)
         assert 'Output naming:' in stdout
         assert 'seconds-since-1970' in stdout
 
     def test_no_args_shows_help(self):
         """No command and no -p should print help, not crash."""
-        code, stdout, stderr = run_cli(MACTRACE, [])
+        code, stdout, stderr = run_cli(F8_CMD, [])
         # Should show help (exit 1) or usage, not a traceback
         assert code != 0
         assert 'Traceback' not in stderr
 
 
-class TestMactraceIovecSyscalls:
+class TestF8IovecSyscalls:
     """--iovec-syscalls flag parsing."""
 
     def test_bare_iovec_syscalls_shows_help(self):
         """Bare --iovec-syscalls (no argument) should show help, not error."""
-        code, stdout, stderr = run_cli(MACTRACE, ['--iovec-syscalls'])
+        code, stdout, stderr = run_cli(F8_CMD, ['--iovec-syscalls'])
         assert code == 0, f"Expected exit 0, got {code}\nstderr: {stderr}"
         assert 'Vectored I/O syscalls' in stdout
         assert 'readv' in stdout
@@ -72,32 +72,32 @@ class TestMactraceIovecSyscalls:
 
     def test_iovec_syscalls_help_explicit(self):
         """--iovec-syscalls=help should show the reference table."""
-        code, stdout, _ = run_cli(MACTRACE, ['--iovec-syscalls=help'])
+        code, stdout, _ = run_cli(F8_CMD, ['--iovec-syscalls=help'])
         assert code == 0
         assert 'Vectored I/O syscalls' in stdout
         assert 'DIF programs' in stdout
 
     def test_iovec_syscalls_help_space(self):
         """--iovec-syscalls help (space-separated) should also work."""
-        code, stdout, _ = run_cli(MACTRACE, ['--iovec-syscalls', 'help'])
+        code, stdout, _ = run_cli(F8_CMD, ['--iovec-syscalls', 'help'])
         assert code == 0
         assert 'Vectored I/O syscalls' in stdout
 
 
-class TestMactraceTraceHelp:
+class TestF8TraceHelp:
     """--trace help flag parsing."""
 
     def test_trace_help_exits_zero(self):
-        code, stdout, _ = run_cli(MACTRACE, ['--trace', 'help'])
+        code, stdout, _ = run_cli(F8_CMD, ['--trace', 'help'])
         assert code == 0
         assert 'Categories' in stdout or 'category' in stdout.lower()
 
     def test_trace_help_equals(self):
-        code, stdout, _ = run_cli(MACTRACE, ['--trace=help'])
+        code, stdout, _ = run_cli(F8_CMD, ['--trace=help'])
         assert code == 0
 
 
-class TestMactraceOutputNaming:
+class TestF8OutputNaming:
     """Output filename epoch injection logic."""
 
     def test_bare_name_gets_epoch(self):
@@ -105,207 +105,207 @@ class TestMactraceOutputNaming:
         # We can't easily test this without running as root, but we can
         # test the logic by checking the error message (file doesn't exist
         # is fine — it means the name was resolved)
-        code, _, stderr = run_cli(MACTRACE, ['-o', 'make', 'true'])
+        code, _, stderr = run_cli(F8_CMD, ['-o', 'make', 'true'])
         # Will fail with "requires root" — but should NOT fail with argparse error
         assert 'error: unrecognized' not in stderr
         assert 'expected one argument' not in stderr
 
     def test_json_extension_preserved(self):
         """'-o make.json' should keep exact name (no epoch)."""
-        code, _, stderr = run_cli(MACTRACE, ['-o', 'make.json', 'true'])
+        code, _, stderr = run_cli(F8_CMD, ['-o', 'make.json', 'true'])
         assert 'error: unrecognized' not in stderr
         assert 'expected one argument' not in stderr
 
 
 
 
-class TestMactraceDynamicMax:
+class TestF8DynamicMax:
     """DIF auto-sizing: -d flag and help text."""
 
     def test_help_shows_current_difo(self):
         """Help text for -d should show 'currently: NNNNN', not a hardcoded default."""
-        _, stdout, _ = run_cli(MACTRACE, ['--help'], expect_exit=0)
+        _, stdout, _ = run_cli(F8_CMD, ['--help'], expect_exit=0)
         assert 'currently:' in stdout, "Expected 'currently: NNNNN' in -d help text"
         # argparse wraps long lines, normalize whitespace
         assert 'overrides automatic DIF' in ' '.join(stdout.split())
 
     def test_help_mentions_auto_adjust(self):
         """Description should mention automatic DIF adjustment."""
-        _, stdout, _ = run_cli(MACTRACE, ['--help'], expect_exit=0)
+        _, stdout, _ = run_cli(F8_CMD, ['--help'], expect_exit=0)
         assert 'automatically adjusted' in stdout
 
 # =============================================================================
-# mactrace_data CLI tests
+# f8_data CLI tests
 # =============================================================================
 
-class TestMactraceDataHelp:
+class TestF8DataHelp:
     """Basic help and subcommand recognition."""
 
     def test_help_exits_zero(self):
-        run_cli(MACTRACE_DATA, ['--help'], expect_exit=0)
+        run_cli(F8_DATA_CMD, ['--help'], expect_exit=0)
 
     def test_no_args_shows_help(self):
-        code, stdout, _ = run_cli(MACTRACE_DATA, [])
+        code, stdout, _ = run_cli(F8_DATA_CMD, [])
         # Should show help, not crash
-        assert 'mactrace_data' in stdout or 'usage' in stdout.lower()
+        assert 'f8_data' in stdout or 'usage' in stdout.lower()
 
     def test_help_shows_all_subcommands(self):
-        _, stdout, _ = run_cli(MACTRACE_DATA, ['--help'], expect_exit=0)
+        _, stdout, _ = run_cli(F8_DATA_CMD, ['--help'], expect_exit=0)
         for cmd in ['list', 'info', 'delete', 'db', 'files', 'config']:
             assert cmd in stdout, f"Missing subcommand '{cmd}' in help"
 
 
-class TestMactraceDataConfig:
+class TestF8DataConfig:
     """config subcommand."""
 
     def test_config_runs(self):
-        code, stdout, _ = run_cli(MACTRACE_DATA, ['config'])
+        code, stdout, _ = run_cli(F8_DATA_CMD, ['config'])
         assert code == 0
         assert 'Config file:' in stdout
         assert 'Database:' in stdout
         assert 'Traces dir:' in stdout
 
     def test_config_alias_cfg(self):
-        code, stdout, _ = run_cli(MACTRACE_DATA, ['cfg'])
+        code, stdout, _ = run_cli(F8_DATA_CMD, ['cfg'])
         assert code == 0
         assert 'Config file:' in stdout
 
 
-class TestMactraceDataList:
+class TestF8DataList:
     """list subcommand."""
 
     def test_list_runs(self):
-        code, stdout, _ = run_cli(MACTRACE_DATA, ['list'])
+        code, stdout, _ = run_cli(F8_DATA_CMD, ['list'])
         assert code == 0
         # Should have header or "No traces"
         assert '#' in stdout or 'No traces' in stdout
 
     def test_list_alias_ls(self):
-        code, _, _ = run_cli(MACTRACE_DATA, ['ls'])
+        code, _, _ = run_cli(F8_DATA_CMD, ['ls'])
         assert code == 0
 
     def test_list_with_nonexistent_db(self):
         """--db pointing to nonexistent file should handle gracefully."""
-        code, stdout, stderr = run_cli(MACTRACE_DATA, ['--db', '/tmp/nonexistent.db', 'list'])
+        code, stdout, stderr = run_cli(F8_DATA_CMD, ['--db', '/tmp/nonexistent.db', 'list'])
         # Should not crash with traceback
         assert 'Traceback' not in stderr
 
 
-class TestMactraceDataDelete:
+class TestF8DataDelete:
     """delete subcommand argument parsing."""
 
     def test_delete_force_long(self):
         """'delete --all --force' should parse without error."""
         # Use nonexistent DB/traces so it doesn't scan real (slow) volumes
-        code, stdout, stderr = run_cli(MACTRACE_DATA,
+        code, stdout, stderr = run_cli(F8_DATA_CMD,
             ['--db', '/tmp/nonexistent.db', '-t', '/tmp/nonexistent_traces', 'delete', '--all', '--force'])
         assert 'unrecognized arguments' not in stderr, \
             f"--force not recognized: {stderr}"
 
     def test_delete_force_short(self):
         """'delete --all -f' should parse without error."""
-        code, stdout, stderr = run_cli(MACTRACE_DATA,
+        code, stdout, stderr = run_cli(F8_DATA_CMD,
             ['--db', '/tmp/nonexistent.db', '-t', '/tmp/nonexistent_traces', 'delete', '--all', '-f'])
         assert 'unrecognized arguments' not in stderr
 
     def test_delete_by_number_force(self):
         """'delete 1 --force' should parse."""
-        code, stdout, stderr = run_cli(MACTRACE_DATA,
+        code, stdout, stderr = run_cli(F8_DATA_CMD,
             ['--db', '/tmp/nonexistent.db', '-t', '/tmp/nonexistent_traces', 'delete', '1', '--force'])
         assert 'unrecognized arguments' not in stderr
 
     def test_delete_multiple_numbers(self):
         """'delete 1 2 3' should parse."""
-        code, stdout, stderr = run_cli(MACTRACE_DATA,
+        code, stdout, stderr = run_cli(F8_DATA_CMD,
             ['--db', '/tmp/nonexistent.db', '-t', '/tmp/nonexistent_traces', 'delete', '1', '2', '3'])
         assert 'unrecognized arguments' not in stderr
 
     def test_delete_no_args_errors(self):
         """'delete' with no IDs and no --all should error."""
-        code, stdout, stderr = run_cli(MACTRACE_DATA, ['delete'])
+        code, stdout, stderr = run_cli(F8_DATA_CMD, ['delete'])
         assert code != 0
 
     def test_delete_all_no_force_prompts(self):
         """'delete --all' without --force should prompt (and EOF → cancel)."""
-        code, stdout, stderr = run_cli(MACTRACE_DATA, ['delete', '--all'])
+        code, stdout, stderr = run_cli(F8_DATA_CMD, ['delete', '--all'])
         # Will try to prompt, get EOF, and cancel or error — but NOT argparse error
         assert 'unrecognized arguments' not in stderr
 
 
-class TestMactraceDataDbSubcommand:
+class TestF8DataDbSubcommand:
     """db subcommand and its sub-subcommands."""
 
     def test_db_help(self):
-        code, stdout, _ = run_cli(MACTRACE_DATA, ['db', '--help'])
+        code, stdout, _ = run_cli(F8_DATA_CMD, ['db', '--help'])
         assert code == 0
         assert 'list' in stdout
 
     def test_db_list(self):
-        code, stdout, stderr = run_cli(MACTRACE_DATA, ['db', 'list'])
+        code, stdout, stderr = run_cli(F8_DATA_CMD, ['db', 'list'])
         assert 'unrecognized' not in stderr
 
     def test_db_list_json(self):
-        code, stdout, stderr = run_cli(MACTRACE_DATA, ['db', 'list', '--json'])
+        code, stdout, stderr = run_cli(F8_DATA_CMD, ['db', 'list', '--json'])
         assert 'unrecognized' not in stderr
 
     def test_db_stats(self):
-        code, stdout, stderr = run_cli(MACTRACE_DATA, ['db', 'stats'])
+        code, stdout, stderr = run_cli(F8_DATA_CMD, ['db', 'stats'])
         assert 'unrecognized' not in stderr
 
     def test_db_delete_force(self):
         """'db delete 1 --force' should parse."""
-        code, _, stderr = run_cli(MACTRACE_DATA, ['db', 'delete', '1', '--force'])
+        code, _, stderr = run_cli(F8_DATA_CMD, ['db', 'delete', '1', '--force'])
         assert 'unrecognized arguments' not in stderr
 
     def test_db_delete_short_force(self):
         """'db delete 1 -f' should parse."""
-        code, _, stderr = run_cli(MACTRACE_DATA, ['db', 'delete', '1', '-f'])
+        code, _, stderr = run_cli(F8_DATA_CMD, ['db', 'delete', '1', '-f'])
         assert 'unrecognized arguments' not in stderr
 
     def test_db_vacuum(self):
-        code, _, stderr = run_cli(MACTRACE_DATA, ['--db', '/tmp/nonexistent.db', 'db', 'vacuum'])
+        code, _, stderr = run_cli(F8_DATA_CMD, ['--db', '/tmp/nonexistent.db', 'db', 'vacuum'])
         # Nonexistent DB → error, but not an argparse error
         assert 'unrecognized' not in stderr
 
     def test_db_info(self):
-        code, _, stderr = run_cli(MACTRACE_DATA, ['db', 'info', '1'])
+        code, _, stderr = run_cli(F8_DATA_CMD, ['db', 'info', '1'])
         assert 'unrecognized' not in stderr
 
 
-class TestMactraceDataFilesSubcommand:
+class TestF8DataFilesSubcommand:
     """files subcommand and its sub-subcommands."""
 
     def test_files_help(self):
-        code, stdout, _ = run_cli(MACTRACE_DATA, ['files', '--help'])
+        code, stdout, _ = run_cli(F8_DATA_CMD, ['files', '--help'])
         assert code == 0
 
     def test_files_list(self):
-        code, _, stderr = run_cli(MACTRACE_DATA, ['files', 'list'])
+        code, _, stderr = run_cli(F8_DATA_CMD, ['files', 'list'])
         assert 'unrecognized' not in stderr
 
     def test_files_list_json(self):
-        code, _, stderr = run_cli(MACTRACE_DATA, ['files', 'list', '--json'])
+        code, _, stderr = run_cli(F8_DATA_CMD, ['files', 'list', '--json'])
         assert 'unrecognized' not in stderr
 
     def test_files_delete_force(self):
         """'files delete 1 --force' should parse."""
-        code, _, stderr = run_cli(MACTRACE_DATA, ['files', 'delete', '1', '--force'])
+        code, _, stderr = run_cli(F8_DATA_CMD, ['files', 'delete', '1', '--force'])
         assert 'unrecognized arguments' not in stderr
 
     def test_files_delete_short_force(self):
         """'files delete 1 -f' should parse."""
-        code, _, stderr = run_cli(MACTRACE_DATA, ['files', 'delete', '1', '-f'])
+        code, _, stderr = run_cli(F8_DATA_CMD, ['files', 'delete', '1', '-f'])
         assert 'unrecognized arguments' not in stderr
 
 
-class TestMactraceDataVerbose:
+class TestF8DataVerbose:
     """Global flags work with subcommands."""
 
     def test_verbose_with_list(self):
-        code, _, stderr = run_cli(MACTRACE_DATA, ['-v', 'list'])
+        code, _, stderr = run_cli(F8_DATA_CMD, ['-v', 'list'])
         assert code == 0
         assert 'Database:' in stderr
 
     def test_verbose_with_config(self):
-        code, stdout, _ = run_cli(MACTRACE_DATA, ['-v', 'config'])
+        code, stdout, _ = run_cli(F8_DATA_CMD, ['-v', 'config'])
         assert code == 0

@@ -27,7 +27,7 @@ syscall::mkdir:entry
 syscall::mkdir:return
 /TRACED && self->mkdir_path != NULL/
 {
-    printf("MACTRACE_SYSCALL %d %d mkdir %d %d %d \"%s\" 0%o\n",
+    printf("F8_SYSCALL %d %d mkdir %d %d %d \"%s\" 0%o\n",
         pid, tid, (int)arg1, errno, self->mkdir_ts, self->mkdir_path, self->mkdir_mode);
     self->mkdir_path = NULL;
 }
@@ -42,7 +42,7 @@ syscall::rmdir:entry
 syscall::rmdir:return
 /TRACED && self->rmdir_path != NULL/
 {
-    printf("MACTRACE_SYSCALL %d %d rmdir %d %d %d \"%s\"\n",
+    printf("F8_SYSCALL %d %d rmdir %d %d %d \"%s\"\n",
         pid, tid, (int)arg1, errno, self->rmdir_ts, self->rmdir_path);
     self->rmdir_path = NULL;
 }
@@ -57,7 +57,7 @@ syscall::chdir:entry
 syscall::chdir:return
 /TRACED && self->chdir_path != NULL/
 {
-    printf("MACTRACE_SYSCALL %d %d chdir %d %d %d \"%s\"\n",
+    printf("F8_SYSCALL %d %d chdir %d %d %d \"%s\"\n",
         pid, tid, (int)arg1, errno, self->chdir_ts, self->chdir_path);
     self->chdir_path = NULL;
 }
@@ -72,7 +72,7 @@ syscall::fchdir:entry
 syscall::fchdir:return
 /TRACED && self->fchdir_ts/
 {
-    printf("MACTRACE_SYSCALL %d %d fchdir %d %d %d %d\n",
+    printf("F8_SYSCALL %d %d fchdir %d %d %d %d\n",
         pid, tid, (int)arg1, errno, self->fchdir_ts, self->fchdir_fd);
     self->fchdir_ts = 0;
 }
@@ -87,7 +87,7 @@ syscall::getdirentries64:entry
 syscall::getdirentries64:return
 /TRACED && self->getdents_ts/
 {
-    printf("MACTRACE_SYSCALL %d %d getdirentries64 %d %d %d %d\n",
+    printf("F8_SYSCALL %d %d getdirentries64 %d %d %d %d\n",
         pid, tid, (int)arg1, errno, self->getdents_ts, self->getdents_fd);
     self->getdents_ts = 0;
 }
@@ -102,7 +102,7 @@ syscall::getattrlistbulk:entry
 syscall::getattrlistbulk:return
 /TRACED && self->gab_ts/
 {
-    printf("MACTRACE_SYSCALL %d %d getattrlistbulk %d %d %d %d\n",
+    printf("F8_SYSCALL %d %d getattrlistbulk %d %d %d %d\n",
         pid, tid, (int)arg1, errno, self->gab_ts, self->gab_fd);
     self->gab_ts = 0;
 }

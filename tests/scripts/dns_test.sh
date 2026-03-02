@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# dns_test.sh — Exercise all DNS resolution paths that mactrace can capture
+# dns_test.sh — Exercise all DNS resolution paths that f8 can capture
 #
 # Path 1: System resolver → mDNSResponder (getaddrinfo + connect via Python)
 # Path 2: Direct port 53 via sendmsg (dig)
@@ -8,7 +8,7 @@
 # Targets chosen for country diversity (locally-hosted, not CDN-fronted).
 #
 # Usage:
-#   sudo mactrace --capture-io -o dns_test.json -jp bash tests/scripts/dns_test.sh
+#   sudo f8 --capture-io -o dns_test.json -jp bash tests/scripts/dns_test.sh
 #   cd server && node import.js ../dns_test.json && node server.js
 
 set -e
@@ -17,7 +17,7 @@ echo "=== DNS Test: exercising multiple resolution paths ==="
 
 # ── Path 1: System resolver (mDNSResponder + connect) ────────────
 # Python resolves via getaddrinfo (mDNSResponder IPC) then connects
-# to port 80 so mactrace can correlate the hostname → IP.
+# to port 80 so f8 can correlate the hostname → IP.
 echo ""
 echo "--- Path 1: System resolver + connect (Python) ---"
 python3 -c "
@@ -40,7 +40,7 @@ for host, country in targets:
             print(f'  {country:15s} {host:30s} → no result')
             continue
         ip = ips[0][4][0]
-        # Connect briefly so mactrace sees the connect() syscall
+        # Connect briefly so f8 sees the connect() syscall
         s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         s.settimeout(3)
         try:
