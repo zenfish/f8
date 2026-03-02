@@ -239,18 +239,21 @@ app.get('/api/traces/:id/events', (req, res) => {
 });
 
 // Serve I/O files (with on-the-fly hexdump generation)
-app.get('/api/traces/:id/io/:filename', (req, res) => {
+// Wildcard route supports subdirectory I/O paths (e.g. 58998-unknown/write-app.log.bin)
+app.get('/api/traces/:id/io/*', (req, res) => {
     const trace = queryOne('SELECT io_dir FROM traces WHERE id = ?', [req.params.id]);
     if (!trace?.io_dir) return res.status(404).json({ error: 'I/O directory not found' });
     
-    const filename = req.params.filename;
-    if (filename.includes('..') || filename.includes('/') || filename.includes('\\')) {
+    const filename = req.params[0];
+    if (!filename || filename.includes('..')) {
         return res.status(400).json({ error: 'Invalid filename' });
     }
     
-    // Defense-in-depth: strip any directory components that slipped past the check
-    const safeName = path.basename(filename);
-    const filepath = path.join(trace.io_dir, safeName);
+    // Resolve within io_dir and verify it doesn't escape
+    const filepath = path.resolve(trace.io_dir, filename);
+    if (!filepath.startsWith(path.resolve(trace.io_dir))) {
+        return res.status(400).json({ error: 'Path traversal rejected' });
+    }
     
     // If requesting a .hexdump file that doesn't exist, generate from .bin
     if (filename.endsWith('.hexdump') && !fs.existsSync(filepath)) {
@@ -317,23 +320,27 @@ app.get('/api/traces/:id/io/:filename', (req, res) => {
 // Supports existing .hexdump files OR on-the-fly generation from .bin.
 // Query params: offset (line #, default 0), limit (default 500)
 // Special: if limit=-1, returns only { totalLines } (cheap metadata call).
-app.get('/api/traces/:id/hexdump-lines/:filename', async (req, res) => {
+app.get('/api/traces/:id/hexdump-lines/*', async (req, res) => {
     try {
         const trace = queryOne('SELECT io_dir FROM traces WHERE id = ?', [req.params.id]);
         if (!trace?.io_dir) return res.status(404).json({ error: 'I/O directory not found' });
 
-        const filename = req.params.filename;
-        if (filename.includes('..') || filename.includes('/') || filename.includes('\\')) {
+        const filename = req.params[0];
+        if (!filename || filename.includes('..')) {
             return res.status(400).json({ error: 'Invalid filename' });
         }
 
-        const safeName = path.basename(filename);
+        const safeName = filename;
         // Resolve hexdump file path — accept either .hexdump or base name
         let hexPath;
         if (safeName.endsWith('.hexdump')) {
-            hexPath = path.join(trace.io_dir, safeName);
+            hexPath = path.resolve(trace.io_dir, safeName);
         } else {
-            hexPath = path.join(trace.io_dir, safeName.replace(/\.bin$/, '') + '.bin.hexdump');
+            hexPath = path.resolve(trace.io_dir, safeName.replace(/\.bin$/, '') + '.bin.hexdump');
+        }
+        // Verify resolved path doesn't escape io_dir
+        if (!hexPath.startsWith(path.resolve(trace.io_dir))) {
+            return res.status(400).json({ error: 'Path traversal rejected' });
         }
 
         // If hexdump doesn't exist, try generating from .bin on disk for next time
