@@ -352,6 +352,18 @@
             margin-left: 6px; 
             vertical-align: middle;
         }
+        .dns-source {
+            font-size: 9px;
+            padding: 1px 5px;
+            border-radius: 3px;
+            margin-left: 6px;
+            vertical-align: middle;
+            font-family: var(--f-mono);
+        }
+        .dns-source.src-mdns       { background: #2980b9; color: white; }
+        .dns-source.src-port53     { background: #27ae60; color: white; }
+        .dns-source.src-hosts      { background: #e67e22; color: white; }
+        .dns-source.src-unknown    { background: #7f8c8d; color: white; }
         /* Geo flag */
         .geo-flag {
             display: inline-block;
@@ -796,6 +808,16 @@
     let currentTrace = null;
     let allEvents = [];
     let filteredEvents = [];
+    function renderDnsSource(source) {
+        const labels = {
+            'mDNSResponder': ['system resolver', 'src-mdns'],
+            'port53':        ['port 53 (direct)', 'src-port53'],
+            '/etc/hosts':    ['/etc/hosts', 'src-hosts'],
+        };
+        const [label, cls] = labels[source] || [source || '?', 'src-unknown'];
+        return \`<span class="dns-source \${cls}">\${label}</span>\`;
+    }
+
     let ipToHostname = new Map();  // IP → hostname for DNS enrichment
     let dnsLookupSeqs = new Set(); // Seq numbers where DNS lookups happened
     let catColors = {};
@@ -1154,6 +1176,7 @@
                                 ${geoFlag}<span class="text-primary-dark font-semibold">${escapeHtml(d.hostname)}</span>
                                 <span class="arrow-sep">→</span>
                                 <span class="text-muted">${escapeHtml(ip)}</span>
+                                ${renderDnsSource(d.source)}
                                 ${seqLink}
                             </li>
                         `}).join('')}

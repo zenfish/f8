@@ -463,11 +463,14 @@ db.exec(`
         ip TEXT,
         lookup_seq INTEGER,
         connect_seq INTEGER,
+        source TEXT DEFAULT 'unknown',
         FOREIGN KEY (trace_id) REFERENCES traces(id) ON DELETE CASCADE
     )
 `);
 db.exec('CREATE INDEX IF NOT EXISTS idx_dns_trace ON dns_lookups(trace_id)');
 db.exec('CREATE INDEX IF NOT EXISTS idx_dns_ip ON dns_lookups(trace_id, ip)');
+// Migration: add source column if missing (existing DBs)
+try { db.exec("ALTER TABLE dns_lookups ADD COLUMN source TEXT DEFAULT 'unknown'"); } catch (e) { /* already exists */ }
 
 // Insert trace
 // Strip epoch timestamp suffix from filename for display name
@@ -1044,6 +1047,53 @@ function extractDnsLookups() {
     
     const correlations = new Map(); // hostname -> {ip, lookup_seq, connect_seq}
     
+    // ── Source 0: /etc/hosts (static resolution) ──────────────────
+    // Check if the traced program read /etc/hosts and parse any entries
+    const hostsRows = db.prepare(`
+        SELECT data_raw FROM events 
+        WHERE trace_id = ? AND target = '/etc/hosts'
+        AND data_raw IS NOT NULL AND syscall LIKE '%read%'
+        AND return_value > 0
+        ORDER BY seq LIMIT 5
+    `).all(traceId);
+    
+    const hostsEntries = new Map();  // hostname → ip
+    for (const row of hostsRows) {
+        try {
+            const text = Buffer.from(row.data_raw, 'hex').toString('utf8');
+            for (const line of text.split('\n')) {
+                const trimmed = line.replace(/#.*/, '').trim();
+                if (!trimmed) continue;
+                const parts = trimmed.split(/\s+/);
+                if (parts.length >= 2) {
+                    const ip = parts[0];
+                    for (let i = 1; i < parts.length; i++) {
+                        hostsEntries.set(parts[i].toLowerCase(), ip);
+                    }
+                }
+            }
+        } catch (e) { /* skip */ }
+    }
+    
+    // Add /etc/hosts entries to correlations
+    for (const [hostname, ip] of hostsEntries) {
+        if (hostname === 'localhost' || hostname === 'broadcasthost') continue;
+        // Only add if we see a connect to this IP
+        const conn = connectEvents.find(c => c.target.startsWith(ip + ':'));
+        if (conn) {
+            correlations.set(hostname, {
+                ip: conn.target,
+                lookup_seq: null,
+                connect_seq: conn.seq,
+                source: '/etc/hosts'
+            });
+        }
+    }
+    
+    if (hostsEntries.size > 0) {
+        console.log(`  /etc/hosts: ${hostsEntries.size} entries parsed`);
+    }
+    
     // ── Source 1: mDNSResponder IPC (system resolver) ──────────────
     const dnsRows = db.prepare(`
         SELECT seq, data_raw FROM events 
@@ -1309,12 +1359,12 @@ function extractDnsLookups() {
     }
     
     const dnsInsert = db.prepare(`
-        INSERT INTO dns_lookups (trace_id, hostname, ip, lookup_seq, connect_seq)
-        VALUES (?, ?, ?, ?, ?)
+        INSERT INTO dns_lookups (trace_id, hostname, ip, lookup_seq, connect_seq, source)
+        VALUES (?, ?, ?, ?, ?, ?)
     `);
     
     for (const [hostname, info] of correlations) {
-        dnsInsert.run(traceId, hostname, info.ip, info.lookup_seq, info.connect_seq);
+        dnsInsert.run(traceId, hostname, info.ip, info.lookup_seq, info.connect_seq, info.source || 'unknown');
     }
     
     console.log(`  Found ${correlations.size} hostname → IP correlations`);

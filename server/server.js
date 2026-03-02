@@ -147,7 +147,7 @@ app.get('/api/traces/:id', async (req, res) => {
     
     // Get DNS lookups for this trace, enriched with geo data
     const rawDns = query(
-        'SELECT hostname, ip FROM dns_lookups WHERE trace_id = ?',
+        'SELECT hostname, ip, source FROM dns_lookups WHERE trace_id = ?',
         [req.params.id]
     );
     const dnsLookups = await enrichDnsWithGeo(rawDns);
@@ -170,7 +170,7 @@ app.get('/api/traces/:id', async (req, res) => {
 // Get DNS lookups for a trace (with geo enrichment)
 app.get('/api/traces/:id/dns', async (req, res) => {
     const lookups = query(
-        'SELECT hostname, ip, lookup_seq, connect_seq FROM dns_lookups WHERE trace_id = ? ORDER BY hostname',
+        'SELECT hostname, ip, lookup_seq, connect_seq, source FROM dns_lookups WHERE trace_id = ? ORDER BY hostname',
         [req.params.id]
     );
     res.json(await enrichDnsWithGeo(lookups));
@@ -368,7 +368,7 @@ app.get('/api/traces/:id/objects', async (req, res) => {
     `, [traceId]);
     
     // Get DNS lookups for hostname enrichment
-    const dnsLookups = query('SELECT hostname, ip FROM dns_lookups WHERE trace_id = ?', [traceId]);
+    const dnsLookups = query('SELECT hostname, ip, source FROM dns_lookups WHERE trace_id = ?', [traceId]);
     const ipToHostname = new Map();
     for (const d of dnsLookups) {
         if (d.ip) {
