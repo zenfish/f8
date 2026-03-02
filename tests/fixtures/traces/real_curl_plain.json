@@ -1,0 +1,614 @@
+{
+  "command": [
+    "--",
+    "curl",
+    "-s",
+    "-o",
+    "/dev/null",
+    "http://example.com"
+  ],
+  "start_time": "2026-03-02T15:17:43.289347",
+  "end_time": "2026-03-02T15:17:49.646294",
+  "duration_ms": 6356.947,
+  "target_pid": 2010,
+  "exit_code": 0,
+  "pids_traced": [
+    2010,
+    2015
+  ],
+  "process_tree": {
+    "2010": 2004,
+    "2015": 2010
+  },
+  "syscall_count": 659,
+  "target_stdout": [],
+  "target_stderr": [],
+  "events": [
+    {
+      "timestamp_us": 506,
+      "pid": 2015,
+      "tid": 51963933,
+      "syscall": "socket",
+      "category": "network",
+      "return_value": 5,
+      "errno": 0,
+      "args": {
+        "domain": "AF_INET6",
+        "type": "SOCK_DGRAM",
+        "protocol": 0,
+        "errno_name": "OK"
+      }
+    },
+    {
+      "timestamp_us": 529,
+      "pid": 2015,
+      "tid": 51963944,
+      "syscall": "socket",
+      "category": "network",
+      "return_value": 9,
+      "errno": 0,
+      "args": {
+        "domain": "AF_UNIX",
+        "type": "SOCK_STREAM",
+        "protocol": 0,
+        "errno_name": "OK"
+      }
+    },
+    {
+      "timestamp_us": 534,
+      "pid": 2015,
+      "tid": 51963944,
+      "syscall": "connect",
+      "category": "network",
+      "return_value": 0,
+      "errno": 0,
+      "args": {
+        "fd": 9,
+        "errno_name": "OK",
+        "family": "AF_UNIX",
+        "path": "/var/run/mDNSResponder",
+        "display": "/var/run/mDNSResponder"
+      }
+    },
+    {
+      "timestamp_us": 535,
+      "pid": 2015,
+      "tid": 51963944,
+      "syscall": "sendto",
+      "category": "network",
+      "return_value": 28,
+      "errno": 0,
+      "args": {
+        "fd": 9,
+        "len": 28,
+        "flags": "0x0",
+        "errno_name": "OK"
+      }
+    },
+    {
+      "timestamp_us": 537,
+      "pid": 2015,
+      "tid": 51963944,
+      "syscall": "recvfrom",
+      "category": "network",
+      "return_value": 4,
+      "errno": 0,
+      "args": {
+        "fd": 9,
+        "len": 4,
+        "flags": "0x0",
+        "errno_name": "OK"
+      }
+    },
+    {
+      "timestamp_us": 540,
+      "pid": 2015,
+      "tid": 51963944,
+      "syscall": "sendto",
+      "category": "network",
+      "return_value": 76,
+      "errno": 0,
+      "args": {
+        "fd": 9,
+        "len": 76,
+        "flags": "0x0",
+        "errno_name": "OK"
+      }
+    },
+    {
+      "timestamp_us": 541,
+      "pid": 2015,
+      "tid": 51963944,
+      "syscall": "sendmsg",
+      "category": "network",
+      "return_value": 1,
+      "errno": 0,
+      "args": {
+        "fd": 9,
+        "flags": "0x0",
+        "errno_name": "OK"
+      }
+    },
+    {
+      "timestamp_us": 544,
+      "pid": 2015,
+      "tid": 51963944,
+      "syscall": "recvfrom",
+      "category": "network",
+      "return_value": 4,
+      "errno": 0,
+      "args": {
+        "fd": 10,
+        "len": 4,
+        "flags": "0x0",
+        "errno_name": "OK"
+      }
+    },
+    {
+      "timestamp_us": 548,
+      "pid": 2015,
+      "tid": 51963944,
+      "syscall": "sendto",
+      "category": "network",
+      "return_value": 76,
+      "errno": 0,
+      "args": {
+        "fd": 9,
+        "len": 76,
+        "flags": "0x0",
+        "errno_name": "OK"
+      }
+    },
+    {
+      "timestamp_us": 549,
+      "pid": 2015,
+      "tid": 51963944,
+      "syscall": "sendmsg",
+      "category": "network",
+      "return_value": 1,
+      "errno": 0,
+      "args": {
+        "fd": 9,
+        "flags": "0x0",
+        "errno_name": "OK"
+      }
+    },
+    {
+      "timestamp_us": 552,
+      "pid": 2015,
+      "tid": 51963944,
+      "syscall": "recvfrom",
+      "category": "network",
+      "return_value": 4,
+      "errno": 0,
+      "args": {
+        "fd": 10,
+        "len": 4,
+        "flags": "0x0",
+        "errno_name": "OK"
+      }
+    },
+    {
+      "timestamp_us": 557,
+      "pid": 2015,
+      "tid": 51963944,
+      "syscall": "recvfrom",
+      "category": "network",
+      "return_value": 28,
+      "errno": 0,
+      "args": {
+        "fd": 9,
+        "len": 28,
+        "flags": "0x0",
+        "errno_name": "OK"
+      }
+    },
+    {
+      "timestamp_us": 558,
+      "pid": 2015,
+      "tid": 51963944,
+      "syscall": "recvfrom",
+      "category": "network",
+      "return_value": 35,
+      "errno": 0,
+      "args": {
+        "fd": 9,
+        "len": 35,
+        "flags": "0x0",
+        "errno_name": "OK"
+      }
+    },
+    {
+      "timestamp_us": 567,
+      "pid": 2015,
+      "tid": 51963944,
+      "syscall": "recvfrom",
+      "category": "network",
+      "return_value": 28,
+      "errno": 0,
+      "args": {
+        "fd": 9,
+        "len": 28,
+        "flags": "0x0",
+        "errno_name": "OK"
+      }
+    },
+    {
+      "timestamp_us": 568,
+      "pid": 2015,
+      "tid": 51963944,
+      "syscall": "recvfrom",
+      "category": "network",
+      "return_value": 39,
+      "errno": 0,
+      "args": {
+        "fd": 9,
+        "len": 39,
+        "flags": "0x0",
+        "errno_name": "OK"
+      }
+    },
+    {
+      "timestamp_us": 571,
+      "pid": 2015,
+      "tid": 51963944,
+      "syscall": "recvfrom",
+      "category": "network",
+      "return_value": 28,
+      "errno": 0,
+      "args": {
+        "fd": 9,
+        "len": 28,
+        "flags": "0x0",
+        "errno_name": "OK"
+      }
+    },
+    {
+      "timestamp_us": 572,
+      "pid": 2015,
+      "tid": 51963944,
+      "syscall": "recvfrom",
+      "category": "network",
+      "return_value": 39,
+      "errno": 0,
+      "args": {
+        "fd": 9,
+        "len": 39,
+        "flags": "0x0",
+        "errno_name": "OK"
+      }
+    },
+    {
+      "timestamp_us": 575,
+      "pid": 2015,
+      "tid": 51963944,
+      "syscall": "sendto",
+      "category": "network",
+      "return_value": 28,
+      "errno": 0,
+      "args": {
+        "fd": 9,
+        "len": 28,
+        "flags": "0x0",
+        "errno_name": "OK"
+      }
+    },
+    {
+      "timestamp_us": 576,
+      "pid": 2015,
+      "tid": 51963944,
+      "syscall": "sendto",
+      "category": "network",
+      "return_value": 28,
+      "errno": 0,
+      "args": {
+        "fd": 9,
+        "len": 28,
+        "flags": "0x0",
+        "errno_name": "OK"
+      }
+    },
+    {
+      "timestamp_us": 586,
+      "pid": 2015,
+      "tid": 51963944,
+      "syscall": "socket",
+      "category": "network",
+      "return_value": 8,
+      "errno": 0,
+      "args": {
+        "domain": "AF_32",
+        "type": "SOCK_DGRAM",
+        "protocol": 2,
+        "errno_name": "OK"
+      }
+    },
+    {
+      "timestamp_us": 589,
+      "pid": 2015,
+      "tid": 51963944,
+      "syscall": "connect",
+      "category": "network",
+      "return_value": 0,
+      "errno": 0,
+      "args": {
+        "fd": 8,
+        "errno_name": "OK",
+        "family": "AF_32",
+        "display": "AF_SYSTEM"
+      }
+    },
+    {
+      "timestamp_us": 593,
+      "pid": 2015,
+      "tid": 51963944,
+      "syscall": "sendto",
+      "category": "network",
+      "return_value": 36,
+      "errno": 0,
+      "args": {
+        "fd": 8,
+        "len": 36,
+        "flags": "0x0",
+        "errno_name": "OK"
+      }
+    },
+    {
+      "timestamp_us": 594,
+      "pid": 2015,
+      "tid": 51963944,
+      "syscall": "recvfrom",
+      "category": "network",
+      "return_value": 56,
+      "errno": 0,
+      "args": {
+        "fd": 8,
+        "len": 56,
+        "flags": "0x0",
+        "errno_name": "OK"
+      }
+    },
+    {
+      "timestamp_us": 595,
+      "pid": 2015,
+      "tid": 51963944,
+      "syscall": "sendto",
+      "category": "network",
+      "return_value": 36,
+      "errno": 0,
+      "args": {
+        "fd": 8,
+        "len": 36,
+        "flags": "0x0",
+        "errno_name": "OK"
+      }
+    },
+    {
+      "timestamp_us": 596,
+      "pid": 2015,
+      "tid": 51963944,
+      "syscall": "recvfrom",
+      "category": "network",
+      "return_value": 56,
+      "errno": 0,
+      "args": {
+        "fd": 8,
+        "len": 56,
+        "flags": "0x0",
+        "errno_name": "OK"
+      }
+    },
+    {
+      "timestamp_us": 601,
+      "pid": 2015,
+      "tid": 51963933,
+      "syscall": "socket",
+      "category": "network",
+      "return_value": 5,
+      "errno": 0,
+      "args": {
+        "domain": "AF_INET",
+        "type": "SOCK_STREAM",
+        "protocol": 6,
+        "errno_name": "OK"
+      }
+    },
+    {
+      "timestamp_us": 609,
+      "pid": 2015,
+      "tid": 51963933,
+      "syscall": "connect",
+      "category": "network",
+      "return_value": -1,
+      "errno": 36,
+      "args": {
+        "fd": 5,
+        "errno_name": "ENAMETOOLONG",
+        "family": "AF_INET",
+        "address": "104.18.26.120",
+        "port": 80,
+        "display": "104.18.26.120:80"
+      }
+    },
+    {
+      "timestamp_us": 617,
+      "pid": 2015,
+      "tid": 51963933,
+      "syscall": "sendto",
+      "category": "network",
+      "return_value": 74,
+      "errno": 0,
+      "args": {
+        "fd": 5,
+        "len": 74,
+        "flags": "0x80000",
+        "errno_name": "OK"
+      }
+    },
+    {
+      "timestamp_us": 623,
+      "pid": 2015,
+      "tid": 51963933,
+      "syscall": "recvfrom",
+      "category": "network",
+      "return_value": 302,
+      "errno": 0,
+      "args": {
+        "fd": 5,
+        "len": 102400,
+        "flags": "0x0",
+        "errno_name": "OK"
+      }
+    },
+    {
+      "timestamp_us": 627,
+      "pid": 2015,
+      "tid": 51963933,
+      "syscall": "recvfrom",
+      "category": "network",
+      "return_value": 535,
+      "errno": 0,
+      "args": {
+        "fd": 5,
+        "len": 102400,
+        "flags": "0x0",
+        "errno_name": "OK"
+      }
+    },
+    {
+      "timestamp_us": 634,
+      "pid": 2015,
+      "tid": 51963933,
+      "syscall": "recvfrom",
+      "category": "network",
+      "return_value": 5,
+      "errno": 0,
+      "args": {
+        "fd": 5,
+        "len": 102400,
+        "flags": "0x0",
+        "errno_name": "OK"
+      }
+    }
+  ],
+  "process_events": [
+    {
+      "timestamp_us": 305,
+      "event_type": "child_detected",
+      "pid": 2010,
+      "tid": 0,
+      "parent_pid": 2004
+    },
+    {
+      "timestamp_us": 3506,
+      "event_type": "child_detected",
+      "pid": 2010,
+      "tid": 0,
+      "parent_pid": 2004
+    },
+    {
+      "timestamp_us": 54104,
+      "event_type": "child_detected",
+      "pid": 2015,
+      "tid": 0,
+      "parent_pid": 2010
+    },
+    {
+      "timestamp_us": 54800,
+      "event_type": "child_detected",
+      "pid": 2015,
+      "tid": 0,
+      "parent_pid": 2010
+    },
+    {
+      "timestamp_us": 59764,
+      "event_type": "child_detected",
+      "pid": 2015,
+      "tid": 0,
+      "parent_pid": 2010
+    },
+    {
+      "timestamp_us": 77946,
+      "event_type": "child_detected",
+      "pid": 2015,
+      "tid": 0,
+      "parent_pid": 2010
+    },
+    {
+      "timestamp_us": 78030,
+      "event_type": "child_detected",
+      "pid": 2015,
+      "tid": 0,
+      "parent_pid": 2010
+    },
+    {
+      "timestamp_us": 83807,
+      "event_type": "child_detected",
+      "pid": 2015,
+      "tid": 0,
+      "parent_pid": 2010
+    },
+    {
+      "timestamp_us": 113899,
+      "event_type": "exit",
+      "pid": 2015,
+      "tid": 0,
+      "exit_code": 0,
+      "parent_pid": 2010
+    },
+    {
+      "timestamp_us": 127748,
+      "event_type": "exit",
+      "pid": 2010,
+      "tid": 0,
+      "exit_code": 0,
+      "parent_pid": 2004
+    }
+  ],
+  "summary": {
+    "fcntl": 82,
+    "open": 68,
+    "fstat64": 29,
+    "mmap": 31,
+    "munmap": 27,
+    "close": 85,
+    "access": 7,
+    "read": 16,
+    "geteuid": 10,
+    "getppid": 2,
+    "getuid": 11,
+    "getgid": 5,
+    "getegid": 5,
+    "__mac_syscall": 13,
+    "openat": 7,
+    "stat64": 42,
+    "ioctl": 22,
+    "pipe": 5,
+    "getdirentries64": 11,
+    "faccessat": 5,
+    "pread": 10,
+    "mprotect": 42,
+    "fork": 1,
+    "getpid": 7,
+    "dup": 7,
+    "dup2": 2,
+    "execve": 2,
+    "fstatat64": 2,
+    "select": 23,
+    "socket": 4,
+    "necp_open": 1,
+    "necp_client_action": 13,
+    "kqueue": 1,
+    "kevent": 11,
+    "setsockopt": 11,
+    "connect": 3,
+    "sendto": 8,
+    "recvfrom": 14,
+    "socketpair": 2,
+    "sendmsg": 2,
+    "write": 3,
+    "getsockname": 4,
+    "getsockopt": 1,
+    "wait4": 2
+  }
+}
