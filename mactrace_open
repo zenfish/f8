@@ -163,9 +163,9 @@ echo ""
 
 if $use_run_all; then
     if ! $has_output_flag; then
-        exec mactrace_run_all -n "$app_name" "${passthrough_args[@]}" "$main_binary" "${app_args[@]}"
+        exec mactrace_run_all.sh -n "$app_name" "${passthrough_args[@]}" "$main_binary" "${app_args[@]}"
     else
-        exec mactrace_run_all "${passthrough_args[@]}" "$main_binary" "${app_args[@]}"
+        exec mactrace_run_all.sh "${passthrough_args[@]}" "$main_binary" "${app_args[@]}"
     fi
 else
     if ! $has_output_flag; then
