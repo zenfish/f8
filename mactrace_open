@@ -1,0 +1,176 @@
+#!/bin/bash
+# mactrace_open — Trace a macOS .app bundle by resolving its main executable.
+#
+# The macOS `open` command is a launcher that hands off to Launch Services.
+# mactrace can only trace the `open` process itself, not the app it launches.
+# This script reads the app's Info.plist to find the real binary, then traces it.
+#
+# Usage:
+#   mactrace_open /Applications/Steam.app
+#   mactrace_open /Applications/Steam.app -- --some-app-flag
+#   mactrace_open --list /Applications/Steam.app    # just show executables, don't trace
+#   mactrace_open --run-all /Applications/Steam.app  # use mactrace_run_all instead
+#
+# All other flags are passed through to mactrace (or mactrace_run_all with --run-all).
+
+set -e
+
+list_only=false
+use_run_all=false
+app_path=""
+passthrough_args=()
+post_separator=false
+
+# Parse arguments
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        --list|-l)
+            list_only=true
+            shift
+            ;;
+        --run-all|-a)
+            use_run_all=true
+            shift
+            ;;
+        --help|-h)
+            echo "Usage: mactrace_open [options] /path/to/App.app [-- app-args...]"
+            echo ""
+            echo "Trace a macOS .app bundle by resolving its main executable."
+            echo ""
+            echo "Options:"
+            echo "  --list, -l       List executables in the bundle (don't trace)"
+            echo "  --run-all, -a    Use mactrace_run_all instead of mactrace"
+            echo "  --help, -h       Show this help"
+            echo ""
+            echo "All other flags before '--' are passed to mactrace/mactrace_run_all."
+            echo "Flags after '--' are passed to the traced application."
+            echo ""
+            echo "Examples:"
+            echo "  mactrace_open /Applications/Steam.app"
+            echo "  mactrace_open --list /Applications/Steam.app"
+            echo "  mactrace_open --run-all /Applications/Steam.app"
+            echo "  mactrace_open -o steam /Applications/Steam.app -- --no-browser"
+            exit 0
+            ;;
+        --)
+            post_separator=true
+            shift
+            break
+            ;;
+        *.app|*.app/)
+            app_path="$1"
+            shift
+            ;;
+        *)
+            if [ -z "$app_path" ]; then
+                # Could be a mactrace flag or the app path
+                if [[ "$1" == -* ]]; then
+                    passthrough_args+=("$1")
+                else
+                    app_path="$1"
+                fi
+            else
+                passthrough_args+=("$1")
+            fi
+            shift
+            ;;
+    esac
+done
+
+# Remaining args after -- are app arguments
+app_args=()
+if $post_separator; then
+    app_args=("$@")
+fi
+
+if [ -z "$app_path" ]; then
+    echo "Error: No .app bundle specified." >&2
+    echo "Usage: mactrace_open [options] /path/to/App.app" >&2
+    exit 1
+fi
+
+# Strip trailing slash
+app_path="${app_path%/}"
+
+if [ ! -d "$app_path" ]; then
+    echo "Error: Not a directory: $app_path" >&2
+    exit 1
+fi
+
+plist="$app_path/Contents/Info.plist"
+if [ ! -f "$plist" ]; then
+    echo "Error: No Info.plist found at $plist" >&2
+    exit 1
+fi
+
+# Read CFBundleExecutable from Info.plist
+bundle_exec=$(/usr/libexec/PlistBuddy -c "Print :CFBundleExecutable" "$plist" 2>/dev/null)
+if [ -z "$bundle_exec" ]; then
+    echo "Error: No CFBundleExecutable in $plist" >&2
+    exit 1
+fi
+
+macos_dir="$app_path/Contents/MacOS"
+main_binary="$macos_dir/$bundle_exec"
+
+# List mode: show all executables in MacOS/
+if $list_only; then
+    echo "App: $app_path"
+    echo "CFBundleExecutable: $bundle_exec"
+    echo ""
+    echo "Executables in $macos_dir/:"
+    if [ -d "$macos_dir" ]; then
+        for f in "$macos_dir"/*; do
+            if [ -x "$f" ] && [ -f "$f" ]; then
+                size=$(stat -f "%z" "$f" 2>/dev/null || echo "?")
+                marker=""
+                if [ "$(basename "$f")" = "$bundle_exec" ]; then
+                    marker=" ← main"
+                fi
+                printf "  %-40s %10s bytes%s\n" "$(basename "$f")" "$size" "$marker"
+            fi
+        done
+    else
+        echo "  (no MacOS directory)"
+    fi
+    exit 0
+fi
+
+# Verify the binary exists
+if [ ! -x "$main_binary" ]; then
+    echo "Error: Binary not found or not executable: $main_binary" >&2
+    echo "" >&2
+    echo "Available executables in $macos_dir/:" >&2
+    for f in "$macos_dir"/*; do
+        [ -x "$f" ] && [ -f "$f" ] && echo "  $(basename "$f")" >&2
+    done
+    exit 1
+fi
+
+# Build the app name for -o flag (if not already specified)
+app_name=$(basename "$app_path" .app | tr '[:upper:]' '[:lower:]' | tr ' ' '_')
+has_output_flag=false
+for arg in "${passthrough_args[@]}"; do
+    if [[ "$arg" == "-o" || "$arg" == "--output" ]]; then
+        has_output_flag=true
+        break
+    fi
+done
+
+echo "App:    $app_path"
+echo "Binary: $main_binary"
+echo ""
+
+if $use_run_all; then
+    if ! $has_output_flag; then
+        exec mactrace_run_all -n "$app_name" "${passthrough_args[@]}" "$main_binary" "${app_args[@]}"
+    else
+        exec mactrace_run_all "${passthrough_args[@]}" "$main_binary" "${app_args[@]}"
+    fi
+else
+    if ! $has_output_flag; then
+        exec sudo mactrace -o "$app_name" "${passthrough_args[@]}" "$main_binary" "${app_args[@]}"
+    else
+        exec sudo mactrace "${passthrough_args[@]}" "$main_binary" "${app_args[@]}"
+    fi
+fi

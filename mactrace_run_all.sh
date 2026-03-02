@@ -98,7 +98,7 @@ cleanup_artifacts() {
         echo "  Removed: $io_dir/" >&2
     fi
     # Temp files
-    rm -f "$mactrace_stderr_capture" "$mactrace_health_capture" 2>/dev/null
+    rm -f "$mactrace_stderr_log" 2>/dev/null
     # DB entry (best-effort)
     local db_id
     db_id=$(mactrace_db list -j 2>/dev/null | jq -r ".[] | select(.name == \"$base\") | .id" 2>/dev/null || true)
@@ -133,18 +133,17 @@ fi
 echo -e "\nstarting mactrace run, using \"$base\" as base to use in run.... going to be tracing:\n"
 echo -e "    $traceme\n"
 
-# Temp files to capture mactrace stderr output
-mactrace_stderr_capture=$(mktemp)
-mactrace_health_capture=$(mktemp)
+# Temp file to capture mactrace stderr
+mactrace_stderr_log=$(mktemp)
 
 # ── Run mactrace ────────────────────────────────────────────────────
 if [ -n "$attach_pid" ]; then
     trap 'true' INT
-    sudo mactrace $performance_flags $throttle_flag --capture-io -o "$base" -jp -e -p "$attach_pid" 2> >(tee /dev/stderr | tee >(grep "^Trace written to:" > "$mactrace_stderr_capture") | sed -n '/^--- DTrace health ---$/,/^$/p; /^--- Rerun suggestions ---$/,/^$/p; /^--- Trace summary ---$/,/^$/p' > "$mactrace_health_capture")
+    sudo mactrace $performance_flags $throttle_flag --capture-io -o "$base" -jp -e -p "$attach_pid" 2> >(tee /dev/stderr >> "$mactrace_stderr_log")
     mactrace_exit=$?
     trap - INT
 else
-    sudo mactrace $throttle_flag --capture-io -o "$base" -jp -e $traceme 2> >(tee /dev/stderr | tee >(grep "^Trace written to:" > "$mactrace_stderr_capture") | sed -n '/^--- DTrace health ---$/,/^$/p; /^--- Rerun suggestions ---$/,/^$/p; /^--- Trace summary ---$/,/^$/p' > "$mactrace_health_capture")
+    sudo mactrace $throttle_flag --capture-io -o "$base" -jp -e $traceme 2> >(tee /dev/stderr >> "$mactrace_stderr_log")
     mactrace_exit=$?
 fi
 
@@ -155,8 +154,7 @@ if [ $mactrace_exit -eq 130 ]; then
 fi
 
 # Extract actual output path from mactrace (it injects epoch into filename)
-actual_json=$(sed -n 's/^Trace written to: //p' "$mactrace_stderr_capture" 2>/dev/null | head -1)
-rm -f "$mactrace_stderr_capture"
+actual_json=$(sed -n 's/^Trace written to: //p' "$mactrace_stderr_log" 2>/dev/null | head -1)
 
 if [ -n "$actual_json" ]; then
     json_path="$actual_json"
@@ -191,15 +189,23 @@ mactrace_import "$base.json" --io-dir "$base"
 trap - INT
 
 # ── Replay DTrace health/suggestions in red so they're visible ────
-if [ -s "$mactrace_health_capture" ]; then
+# Extract health + rerun suggestion sections from captured stderr
+mactrace_health=$(awk '
+    /^--- DTrace health ---$/ { capture=1 }
+    /^--- Rerun suggestions ---$/ { capture=1 }
+    capture { print }
+    capture && /^$/ { capture=0 }
+' "$mactrace_stderr_log" 2>/dev/null)
+rm -f "$mactrace_stderr_log"
+
+if [ -n "$mactrace_health" ]; then
     echo ""
     echo -e "\033[1;31m════════════════════════════════════════════════════════════\033[0m"
-    while IFS= read -r line; do
+    echo "$mactrace_health" | while IFS= read -r line; do
         echo -e "\033[1;31m${line}\033[0m"
-    done < "$mactrace_health_capture"
+    done
     echo -e "\033[1;31m════════════════════════════════════════════════════════════\033[0m"
 fi
-rm -f "$mactrace_health_capture"
 
 set +e
 killall mactrace_server

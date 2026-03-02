@@ -632,6 +632,30 @@ Install Node.js dependencies:
 cd server && npm install
 ```
 
+### Tracing macOS .app bundles (Steam, Safari, etc.)
+
+Running `mactrace open /Applications/Steam.app` only traces the `open` command itself — not Steam. The `open` command is a thin launcher that asks macOS Launch Services to start the app, then exits. mactrace traces `open`, which finishes in a few seconds, while Steam continues running as a completely separate process.
+
+**Use `mactrace_open` instead:**
+
+```bash
+# See what binary the app actually runs:
+mactrace_open --list /Applications/Steam.app
+
+# Trace it:
+mactrace_open /Applications/Steam.app
+
+# Full pipeline (trace + analyze + import + server):
+mactrace_open --run-all /Applications/Steam.app
+
+# Pass flags to the app:
+mactrace_open /Applications/Steam.app -- --no-browser
+```
+
+`mactrace_open` reads the app's `Info.plist` to find the real executable (`CFBundleExecutable`), then runs mactrace against that binary directly.
+
+**Note:** Some apps spawn additional helper processes after launch. mactrace traces the main process and its direct children, but helpers launched via XPC or Launch Services won't be captured.
+
 ### Empty or missing trace output
 
 - Check that the traced program actually ran (look for exit code in the JSON)
