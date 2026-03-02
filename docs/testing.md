@@ -53,7 +53,8 @@ cd server && npm install             # better-sqlite3 for integration/consistenc
 
 ```bash
 make test-cov
-# Current: mactrace_categories.py 56%, mactrace_lib.py 68%
-# (Unit tests only; integration tests not instrumented for Python coverage)
+# Current: 48% overall (322 tests)
+# Highlights: syscalls/ handlers 80-100%, mactrace_lib 77%, mactrace_data 63%
+# The main tracer (mactrace) is 22% — most of it requires real DTrace (E2E tests)
 ```
 
