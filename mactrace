@@ -2919,7 +2919,7 @@ Output naming:
 Full documentation: README.md  |  --trace help
 """
     )
-    parser.add_argument("-o", "--output", help="Output name (default: stdout). -o make → make.EPOCH.json (auto). -o make.json → exact name. Relative paths use $MACTRACE_OUTPUT.")
+    parser.add_argument("-o", "--output", help="Output name. -o make → make.EPOCH.json (auto). -o make.json → exact name. -o - → stdout. Default: auto-derived from command name. Relative paths use $MACTRACE_OUTPUT.")
     parser.add_argument("-u", "--user", 
                         help="Run traced program as this user (name or UID). Default: auto-detect from $SUDO_USER")
     parser.add_argument("-t", "--timeout", type=int, help="Timeout in seconds")
@@ -3082,7 +3082,10 @@ The _nocancel variants are included automatically.""")
     
     # Auto-derive output name from command when no -o given
     # "./configure" → "configure", "/usr/bin/ls" → "ls", "sh -c ..." → "sh"
-    if not args.output and args.command and not args.pid:
+    # Use -o - to explicitly send output to stdout
+    if args.output == '-':
+        args.output = None  # None = stdout
+    elif not args.output and args.command and not args.pid:
         import os.path as _osp
         _cmd_name = _osp.basename(args.command[0])
         # Strip common extensions (.sh, .py, .pl, .rb)
