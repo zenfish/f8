@@ -2877,6 +2877,16 @@ def _print_category_detail(cat: str, info: dict):
 
 
 
+def parse_size(value):
+    """Parse a human-readable size string (e.g., '2560K', '4M', '1G') to int bytes.
+    Accepts plain integers, or integers with K/M/G suffix (case-insensitive)."""
+    value = value.strip()
+    suffixes = {'k': 1024, 'm': 1024*1024, 'g': 1024*1024*1024}
+    if value and value[-1].lower() in suffixes:
+        return int(value[:-1]) * suffixes[value[-1].lower()]
+    return int(value)
+
+
 class CapitalizedHelpFormatter(argparse.RawDescriptionHelpFormatter):
     """Capitalize section headers (options → Options, positional arguments → Arguments)."""
     def start_section(self, heading):
@@ -2936,7 +2946,7 @@ Full documentation: README.md  |  --trace help
                         help="Show untraced syscalls summary to stderr")
     parser.add_argument("-c", "--capture-io", action="store_true",
                         help="Capture actual I/O data via tracemem (attached to syscall events as hex)")
-    parser.add_argument("--io-size", type=int, default=1*1024*1024,
+    parser.add_argument("--io-size", type=parse_size, default=1*1024*1024,
                         help="Max bytes to capture per I/O op (default: 1M, max ~4M due to dtrace limits)")
     parser.add_argument("--iovec", type=int, default=None, metavar="N",
                         help="Capture up to N scattered buffers per readv/writev call. "
@@ -2962,7 +2972,7 @@ Full documentation: README.md  |  --trace help
                              f"Restored on exit.")
     parser.add_argument("--cache", type=str, default=None,
                         help="Copy local files up to SIZE to cache dir (e.g., 10M, 500k, 1G)")
-    parser.add_argument("--strsize", type=int, default=MacTrace.DEFAULT_STRSIZE,
+    parser.add_argument("--strsize", type=parse_size, default=MacTrace.DEFAULT_STRSIZE,
                         help=f"DTrace strsize - max copyinstr length for paths (default: {MacTrace.DEFAULT_STRSIZE})")
     parser.add_argument("--bufsize", type=str, default=MacTrace.DEFAULT_BUFSIZE,
                         help=f"DTrace bufsize - per-CPU trace buffer (default: {MacTrace.DEFAULT_BUFSIZE})")
