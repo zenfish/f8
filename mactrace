@@ -967,8 +967,12 @@ class MacTrace:
 
         if suggestions:
             print(f"--- Rerun suggestions ---", file=sys.stderr)
+            # One-liner for easy copy-paste
+            flags_only = " ".join(flag for flag, _ in suggestions)
+            print(f"  {flags_only}", file=sys.stderr)
+            # Then individual explanations
             for flag, reason in suggestions:
-                print(f"  {flag:30s} # {reason}", file=sys.stderr)
+                print(f"    {flag:30s} # {reason}", file=sys.stderr)
     
     def _merge_io_hexdumps(self, lines: List[str]) -> List[str]:
         """Pre-process dtrace output to merge MACTRACE_IO/MACTRACE_SOCKADDR with tracemem hexdumps.

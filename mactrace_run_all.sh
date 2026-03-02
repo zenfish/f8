@@ -29,8 +29,10 @@ throttle_flag=""
 force_mode=""
 attach_pid=""
 custom_name=""
+mactrace_extra_flags=()
 
 # Parse flags (order-independent, before positional args)
+# Flags not recognized here are passed through to mactrace.
 while [[ "$1" == -* ]]; do
     case "$1" in
         --throttle) throttle_flag="--throttle"; shift ;;
@@ -47,13 +49,23 @@ while [[ "$1" == -* ]]; do
                 exit 1
             fi
             attach_pid="$2"; shift 2 ;;
-        *) echo "Unknown flag: $1"; exit 1 ;;
+        --) shift; break ;;
+        *)
+            # Pass unknown flags through to mactrace (e.g. --switchrate, --bufsize, --io-size, --cache)
+            mactrace_extra_flags+=("$1")
+            shift
+            # If next arg doesn't start with - and isn't a command, it's the flag's value
+            if [[ -n "$1" && "$1" != -* && ! -e "$1" ]]; then
+                mactrace_extra_flags+=("$1")
+                shift
+            fi
+            ;;
     esac
 done
 
 if [ -z "$attach_pid" ] && [ -z "$1" ]; then
-    echo "Usage: $0 [--throttle] [--force] [-n name] -p PID"
-    echo "       $0 [--throttle] [--force] [-n name] program-to-trace [args...]"
+    echo "Usage: $0 [--throttle] [--force] [-n name] [-p PID] [--mactrace-flags...] program [args...]"
+    echo "       Unknown flags are passed through to mactrace (e.g. --switchrate 200hz --bufsize 512m)."
     exit 1
 fi
 
@@ -139,11 +151,11 @@ mactrace_stderr_log=$(mktemp)
 # ── Run mactrace ────────────────────────────────────────────────────
 if [ -n "$attach_pid" ]; then
     trap 'true' INT
-    sudo mactrace $performance_flags $throttle_flag --capture-io -o "$base" -jp -e -p "$attach_pid" 2> >(tee /dev/stderr >> "$mactrace_stderr_log")
+    sudo mactrace $performance_flags $throttle_flag "${mactrace_extra_flags[@]}" --capture-io -o "$base" -jp -e -p "$attach_pid" 2> >(tee /dev/stderr >> "$mactrace_stderr_log")
     mactrace_exit=$?
     trap - INT
 else
-    sudo mactrace $throttle_flag --capture-io -o "$base" -jp -e $traceme 2> >(tee /dev/stderr >> "$mactrace_stderr_log")
+    sudo mactrace $throttle_flag "${mactrace_extra_flags[@]}" --capture-io -o "$base" -jp -e $traceme 2> >(tee /dev/stderr >> "$mactrace_stderr_log")
     mactrace_exit=$?
 fi
 

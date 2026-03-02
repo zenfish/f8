@@ -66,13 +66,20 @@ while [[ $# -gt 0 ]]; do
                 # Could be a mactrace flag or the app path
                 if [[ "$1" == -* ]]; then
                     passthrough_args+=("$1")
+                    shift
+                    # Grab the flag's value if it doesn't look like another flag or an .app path
+                    if [[ -n "$1" && "$1" != -* && "$1" != *.app && "$1" != *.app/ ]]; then
+                        passthrough_args+=("$1")
+                        shift
+                    fi
                 else
                     app_path="$1"
+                    shift
                 fi
             else
                 passthrough_args+=("$1")
+                shift
             fi
-            shift
             ;;
     esac
 done
