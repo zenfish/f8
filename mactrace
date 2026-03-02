@@ -931,13 +931,20 @@ class MacTrace:
         # High drop rate → increase buffer drain speed and size
         if total_drops > 0:
             loss_pct = total_drops / (syscall_count + total_drops) * 100 if syscall_count else 0
-            if loss_pct > 10:
+            if loss_pct > 5:
                 if self.switchrate != "200hz":
                     suggestions.append(("--switchrate 200hz", "drain buffers faster"))
-                if self.bufsize != "512m":
-                    suggestions.append(("--bufsize 512m", "larger per-CPU buffers"))
                 if not used_throttle:
                     suggestions.append(("--throttle", "slow traced program to reduce event rate"))
+            # Only suggest larger bufsize for severe drops (>25%) and if current is small
+            if loss_pct > 25:
+                # Parse current bufsize to compare
+                _cur_buf = self.bufsize.lower().strip()
+                _cur_mb = 0
+                if _cur_buf.endswith('m'):
+                    _cur_mb = int(_cur_buf[:-1])
+                if _cur_mb < 512:
+                    suggestions.append(("--bufsize 512m", "larger per-CPU buffers (caution: uses ~4GB kernel memory on 8 cores)"))
 
         # Scratch space exhaustion → reduce strsize
         if scratch_errors:

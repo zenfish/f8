@@ -181,6 +181,16 @@ if [ ! -f "$json_path" ]; then
     exit 1
 fi
 
+# Bail on empty traces (0 events = DTrace failed to attach or ran out of memory)
+event_count=$(python3 -c "import json; d=json.load(open('$json_path')); print(len(d.get('events',[])))" 2>/dev/null || echo "0")
+if [ "$event_count" = "0" ]; then
+    echo -e "\nTrace captured 0 events — DTrace may have failed to attach."
+    echo "Check the output above for errors (e.g., 'Cannot allocate memory')."
+    echo "Cleaning up empty trace..."
+    rm -f "$json_path"
+    exit 1
+fi
+
 # Trap INT during post-processing
 trap 'cleanup_artifacts; exit 130' INT
 
