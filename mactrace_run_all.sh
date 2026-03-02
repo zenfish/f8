@@ -82,6 +82,7 @@ fi
 
 # Resolve paths the same way mactrace does:
 #   bare "oc.json" → $MACTRACE_OUTPUT/oc.json (if configured)
+# Initial estimates — actual path (with epoch) is captured from mactrace output
 json_path=$(resolve_path "$base.json" MACTRACE_OUTPUT)
 io_dir=$(resolve_path "$base" MACTRACE_OUTPUT)
 
@@ -124,42 +125,23 @@ if [ -n "$existing_db_id" ]; then
     fi
 fi
 
-# Check for existing output files
-if [ -f "$json_path" ] || [ -d "$io_dir" ]; then
-    if [ -n "$force_mode" ]; then
-        if [ -f "$json_path" ]; then
-            echo "Removing existing: $json_path"
-            rm -f "$json_path"
-        fi
-        if [ -d "$io_dir" ]; then
-            echo "Removing existing: $io_dir/"
-            rm -rf "$io_dir"
-        fi
-        # Also remove the txt summary if it exists
-        txt_path_clean=$(resolve_path "$base.txt" MACTRACE_OUTPUT)
-        if [ -f "$txt_path_clean" ]; then
-            rm -f "$txt_path_clean"
-        fi
-    else
-        echo -e "\nOutput file already exists:\n"
-        [ -f "$json_path" ] && echo "    $json_path"
-        [ -d "$io_dir" ]    && echo "    $io_dir/"
-        echo -e "\nUse --force to auto-remove, or choose a different name with -n <name>.\n"
-        exit 0
-    fi
-fi
+# Note: epoch-stamped filenames prevent collisions, so no file existence check needed.
+# Each run produces a unique name like configure.1772420167.json.
 
 echo -e "\nstarting mactrace run, using \"$base\" as base to use in run.... going to be tracing:\n"
 echo -e "    $traceme\n"
 
+# Temp file to capture mactrace's "Trace written to:" output
+mactrace_stderr_capture=$(mktemp)
+
 # ── Run mactrace ────────────────────────────────────────────────────
 if [ -n "$attach_pid" ]; then
     trap 'true' INT
-    sudo mactrace $performance_flags $throttle_flag --capture-io -o "$base.json" -jp -e -p "$attach_pid"
+    sudo mactrace $performance_flags $throttle_flag --capture-io -o "$base" -jp -e -p "$attach_pid" 2> >(tee /dev/stderr | grep "^Trace written to:" > "$mactrace_stderr_capture")
     mactrace_exit=$?
     trap - INT
 else
-    sudo mactrace $throttle_flag --capture-io -o "$base.json" -jp -e $traceme
+    sudo mactrace $throttle_flag --capture-io -o "$base" -jp -e $traceme 2> >(tee /dev/stderr | grep "^Trace written to:" > "$mactrace_stderr_capture")
     mactrace_exit=$?
 fi
 
@@ -169,7 +151,18 @@ if [ $mactrace_exit -eq 130 ]; then
     exit 130
 fi
 
-# Verify trace output (use resolved path, not bare name)
+# Extract actual output path from mactrace (it injects epoch into filename)
+actual_json=$(sed -n 's/^Trace written to: //p' "$mactrace_stderr_capture" 2>/dev/null | head -1)
+rm -f "$mactrace_stderr_capture"
+
+if [ -n "$actual_json" ]; then
+    json_path="$actual_json"
+    # Derive io_dir and base from actual json path: configure.1772420167.json → configure.1772420167
+    io_dir="${json_path%.json}"
+    base=$(basename "$io_dir")
+fi
+
+# Verify trace output
 if [ ! -f "$json_path" ]; then
     echo -e "\nError: trace output $json_path not found — mactrace may have failed"
     exit 1

@@ -3080,6 +3080,17 @@ The _nocancel variants are included automatically.""")
         print("Error: mactrace requires root privileges. Run with sudo.", file=sys.stderr)
         sys.exit(1)
     
+    # Auto-derive output name from command when no -o given
+    # "./configure" → "configure", "/usr/bin/ls" → "ls", "sh -c ..." → "sh"
+    if not args.output and args.command and not args.pid:
+        import os.path as _osp
+        _cmd_name = _osp.basename(args.command[0])
+        # Strip common extensions (.sh, .py, .pl, .rb)
+        _cmd_base, _ext = _osp.splitext(_cmd_name)
+        if _ext in ('.sh', '.py', '.pl', '.rb', '.bash', '.zsh'):
+            _cmd_name = _cmd_base
+        args.output = _cmd_name
+
     # Inject epoch timestamp into output filename for uniqueness
     # "make" → "make.1740000000.json" (auto epoch + .json)
     # "make.json" → "make.json" (explicit .json = exact name, no epoch)
