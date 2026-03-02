@@ -1396,18 +1396,38 @@ function extractDnsLookups() {
         }
     }
     
+    // Reverse map: DoH IP → provider name (for synthetic entries)
+    const DOH_IP_NAMES = new Map([
+        ['1.1.1.1', 'cloudflare-dns.com'], ['1.0.0.1', 'cloudflare-dns.com'],
+        ['8.8.8.8', 'dns.google'], ['8.8.4.4', 'dns.google'],
+        ['9.9.9.9', 'dns.quad9.net'], ['149.112.112.112', 'dns.quad9.net'],
+        ['208.67.222.222', 'doh.opendns.com'], ['208.67.220.220', 'doh.opendns.com'],
+    ]);
+
     // Check for connects to known DoH IPs on port 443
     for (const conn of connectEvents) {
         if (!conn.target) continue;
         const [ip, port] = conn.target.split(':');
         if (port === '443' && DOH_IPS.has(ip)) {
-            // Find if any mDNSResponder lookup corresponds to a DoH provider name
-            // that resolved to this IP — if not, add a synthetic entry
+            // Relabel any existing correlation whose resolved IP matches
             let found = false;
             for (const [hostname, info] of correlations) {
                 if (info.ip && info.ip.startsWith(ip + ':')) {
                     info.source = 'doh';
                     found = true;
+                }
+            }
+            // If no existing correlation (app did DoH directly, bypassing
+            // mDNSResponder), create a synthetic entry so the UI shows it
+            if (!found) {
+                const providerName = DOH_IP_NAMES.get(ip) || ip;
+                if (!correlations.has(providerName)) {
+                    correlations.set(providerName, {
+                        ip: conn.target,
+                        lookup_seq: null,
+                        connect_seq: conn.seq || null,
+                        source: 'doh'
+                    });
                 }
             }
         }
@@ -1418,9 +1438,23 @@ function extractDnsLookups() {
         if (!conn.target) continue;
         const [ip, port] = conn.target.split(':');
         if (port === '853') {
+            let found = false;
             for (const [hostname, info] of correlations) {
                 if (info.ip && info.ip.startsWith(ip + ':')) {
                     info.source = 'dot';
+                    found = true;
+                }
+            }
+            // Synthetic entry for direct DoT connections
+            if (!found) {
+                const providerName = DOH_IP_NAMES.get(ip) || ip;
+                if (!correlations.has(providerName)) {
+                    correlations.set(providerName, {
+                        ip: ip + ':853',
+                        lookup_seq: null,
+                        connect_seq: conn.seq || null,
+                        source: 'dot'
+                    });
                 }
             }
         }
