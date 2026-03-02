@@ -961,7 +961,7 @@
             const monthStart = new Date(todayStart); monthStart.setMonth(monthStart.getMonth() - 1);
 
             function getTimeBracket(dateStr) {
-                const d = new Date(dateStr);
+                const d = new Date(dateStr + 'Z'); // SQLite CURRENT_TIMESTAMP is UTC
                 if (d >= todayStart)  return 'today';
                 if (d >= weekStart)   return 'week';
                 if (d >= monthStart)  return 'month';
