@@ -1,0 +1,223 @@
+{
+  "_doc": [
+    "Canonical syscall category definitions for mactrace.",
+    "",
+    "TO ADD A SYSCALL: find the appropriate category, add the name to its 'syscalls' array.",
+    "TO ADD A CATEGORY: add a new object to the 'categories' array with id, label, color, textColor, description, and syscalls.",
+    "Display order follows array order. Colors are from ColorBrewer (https://colorbrewer2.org/).",
+    "All tools (mactrace, mactrace_analyze, import.js, server.js) read this file — no other source of truth."
+  ],
+
+  "categories": [
+    {
+      "id": "file",
+      "label": "File",
+      "description": "File system operations (open, read, write, stat, permissions, xattrs, sync)",
+      "color": "#276419",
+      "textColor": "#ffffff",
+      "syscalls": [
+        "open", "open_nocancel", "openat", "openat_nocancel",
+        "close", "close_nocancel",
+        "read", "read_nocancel", "pread", "pread_nocancel",
+        "write", "write_nocancel", "pwrite", "pwrite_nocancel",
+        "readv", "writev", "preadv", "pwritev",
+        "stat", "stat64", "lstat", "lstat64", "fstat", "fstat64", "fstatat64",
+        "access", "faccessat",
+        "statfs", "statfs64", "fstatfs", "fstatfs64",
+        "mkdir", "mkdirat", "rmdir",
+        "chdir", "fchdir", "getcwd",
+        "getdirentries", "getdirentries64", "getattrlistbulk",
+        "unlink", "unlinkat", "rename", "renameat", "renamex_np",
+        "link", "linkat", "symlink", "symlinkat", "readlink", "readlinkat",
+        "truncate", "ftruncate",
+        "chmod", "fchmod", "fchmodat",
+        "chown", "fchown", "lchown", "fchownat",
+        "chflags", "fchflags",
+        "getxattr", "fgetxattr", "setxattr", "fsetxattr",
+        "listxattr", "flistxattr", "removexattr", "fremovexattr",
+        "dup", "dup2", "dup3",
+        "fcntl", "fcntl_nocancel",
+        "ioctl",
+        "fsync", "fsync_nocancel", "fdatasync",
+        "sync",
+        "umask", "pathconf", "fpathconf",
+        "getattrlist", "setattrlist", "fgetattrlist", "fsetattrlist",
+        "exchangedata", "searchfs",
+        "lseek"
+      ]
+    },
+    {
+      "id": "network",
+      "label": "Network",
+      "description": "Network/socket operations (create, connect, send, recv, options)",
+      "color": "#4d9221",
+      "textColor": "#ffffff",
+      "syscalls": [
+        "socket", "socketpair",
+        "connect", "connect_nocancel",
+        "bind", "listen",
+        "accept", "accept_nocancel",
+        "send", "sendto", "sendto_nocancel", "sendmsg", "sendmsg_nocancel",
+        "recv", "recvfrom", "recvfrom_nocancel", "recvmsg", "recvmsg_nocancel",
+        "setsockopt", "getsockopt",
+        "shutdown",
+        "getpeername", "getsockname",
+        "gethostuuid"
+      ]
+    },
+    {
+      "id": "necp",
+      "label": "NECP",
+      "description": "Network Extension Control Policy (macOS network filtering)",
+      "color": "#7fbc41",
+      "textColor": "#000000",
+      "syscalls": [
+        "necp_open",
+        "necp_client_action",
+        "necp_session_open",
+        "necp_session_action",
+        "necp_match_policy"
+      ]
+    },
+    {
+      "id": "process",
+      "label": "Process",
+      "description": "Process lifecycle, identity, and resource limits",
+      "color": "#b8e186",
+      "textColor": "#000000",
+      "syscalls": [
+        "fork", "vfork",
+        "execve", "posix_spawn",
+        "__mac_execve",
+        "exit", "_exit",
+        "wait4", "wait4_nocancel", "waitpid", "waitid",
+        "getpid", "getppid", "getpgid", "getsid",
+        "setpgid", "setsid",
+        "getuid", "geteuid", "getgid", "getegid",
+        "setuid", "seteuid", "setgid", "setegid",
+        "setreuid", "setregid",
+        "getgroups", "setgroups",
+        "getrlimit", "setrlimit",
+        "getrusage",
+        "getpriority", "setpriority",
+        "nice"
+      ]
+    },
+    {
+      "id": "memory",
+      "label": "Memory",
+      "description": "Memory management (mmap, mprotect, madvise)",
+      "color": "#e6f5d0",
+      "textColor": "#000000",
+      "syscalls": [
+        "mmap", "munmap", "mprotect",
+        "madvise", "mincore", "mlock", "munlock",
+        "msync",
+        "mremap",
+        "brk", "sbrk"
+      ]
+    },
+    {
+      "id": "signal",
+      "label": "Signal",
+      "description": "Signal handling and delivery",
+      "color": "#fde0ef",
+      "textColor": "#000000",
+      "syscalls": [
+        "sigaction", "sigprocmask", "sigsuspend", "sigpending",
+        "sigwait", "sigtimedwait",
+        "sigaltstack",
+        "sigreturn",
+        "kill", "killpg",
+        "pthread_kill"
+      ]
+    },
+    {
+      "id": "mac",
+      "label": "MAC",
+      "description": "Mandatory Access Control (macOS security framework)",
+      "color": "#f1b6da",
+      "textColor": "#000000",
+      "syscalls": [
+        "__mac_syscall",
+        "__mac_get_file", "__mac_set_file",
+        "__mac_get_link", "__mac_set_link",
+        "__mac_get_proc", "__mac_set_proc",
+        "__mac_get_fd", "__mac_set_fd",
+        "__mac_get_pid",
+        "__mac_get_lcid", "__mac_get_lctx",
+        "__mac_set_lctx"
+      ]
+    },
+    {
+      "id": "ipc",
+      "label": "IPC",
+      "description": "Inter-process communication (pipes, shared memory, semaphores, mach)",
+      "color": "#de77ae",
+      "textColor": "#ffffff",
+      "syscalls": [
+        "pipe", "pipe2",
+        "shm_open", "shm_unlink",
+        "shmget", "shmat", "shmdt", "shmctl",
+        "sem_open", "sem_close", "sem_unlink",
+        "sem_wait", "sem_trywait", "sem_post",
+        "semget", "semop", "semctl",
+        "msgget", "msgsnd", "msgrcv", "msgctl",
+        "mach_msg", "mach_msg_overwrite"
+      ]
+    },
+    {
+      "id": "poll",
+      "label": "Poll",
+      "description": "Event waiting and multiplexing (select, poll, kevent/kqueue)",
+      "color": "#c51b7d",
+      "textColor": "#ffffff",
+      "syscalls": [
+        "select", "select_nocancel",
+        "pselect", "pselect_nocancel",
+        "poll", "poll_nocancel",
+        "ppoll",
+        "kevent", "kevent64", "kevent_qos", "kevent_id",
+        "kqueue"
+      ]
+    },
+    {
+      "id": "time",
+      "label": "Time",
+      "description": "Time, clocks, and timers",
+      "color": "#8e0152",
+      "textColor": "#ffffff",
+      "syscalls": [
+        "gettimeofday", "settimeofday",
+        "clock_gettime", "clock_settime", "clock_getres",
+        "nanosleep",
+        "getitimer", "setitimer",
+        "timer_create", "timer_delete", "timer_settime", "timer_gettime"
+      ]
+    },
+    {
+      "id": "thread",
+      "label": "Thread",
+      "description": "Thread and workqueue operations",
+      "color": "#762a83",
+      "textColor": "#ffffff",
+      "syscalls": [
+        "pthread_create", "pthread_exit", "pthread_join",
+        "pthread_mutex_lock", "pthread_mutex_unlock",
+        "pthread_cond_wait", "pthread_cond_signal",
+        "bsdthread_create", "bsdthread_terminate",
+        "bsdthread_register",
+        "thread_selfid",
+        "workq_kernreturn", "workq_open"
+      ]
+    }
+  ],
+
+  "defaultCategory": {
+    "id": "other",
+    "label": "Other",
+    "description": "Syscalls not yet categorized — add them to the appropriate category above",
+    "color": "#878787",
+    "textColor": "#ffffff"
+  }
+}

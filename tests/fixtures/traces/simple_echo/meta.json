@@ -1,0 +1,18 @@
+{
+  "format_version": 2,
+  "name": "simple_echo",
+  "command": "echo hello world",
+  "target_pid": 10000,
+  "duration_ms": 8.5,
+  "event_count": 5,
+  "process_count": 0,
+  "io_summary": {
+    "total_processes_with_io": 0,
+    "total_reads": 0,
+    "total_writes": 0,
+    "total_read_bytes": 0,
+    "total_write_bytes": 0,
+    "total_bytes": 0
+  },
+  "processes": []
+}

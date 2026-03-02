@@ -1,0 +1,19 @@
+{
+  "command": ["curl", "http://localhost:9999"],
+  "target_pid": 30000,
+  "exit_code": 7,
+  "duration_ms": 50.0,
+  "start_time": "2026-02-24T10:00:00",
+  "events": [
+    {"timestamp_us": 1000, "pid": 30000, "syscall": "socket", "return_value": 5, "errno": 0, "args": {"domain": "AF_INET", "type": "SOCK_STREAM"}},
+    {"timestamp_us": 2000, "pid": 30000, "syscall": "connect", "return_value": -1, "errno": 61, "args": {"fd": 5, "display": "127.0.0.1:9999", "errno_name": "ECONNREFUSED"}},
+    {"timestamp_us": 3000, "pid": 30000, "syscall": "close", "return_value": 0, "errno": 0, "args": {"fd": 5}},
+    {"timestamp_us": 4000, "pid": 30000, "syscall": "open", "return_value": -1, "errno": 2, "args": {"path": "/nonexistent/file", "errno_name": "ENOENT"}},
+    {"timestamp_us": 5000, "pid": 30000, "syscall": "open", "return_value": -1, "errno": 13, "args": {"path": "/etc/shadow", "errno_name": "EACCES"}},
+    {"timestamp_us": 6000, "pid": 30000, "syscall": "write", "return_value": 42, "errno": 0, "args": {"fd": 2, "count": 42}},
+    {"timestamp_us": 7000, "pid": 30000, "syscall": "exit", "return_value": 7, "errno": 0, "args": {}}
+  ],
+  "process_tree": {},
+  "process_events": [],
+  "pids_traced": [30000]
+}

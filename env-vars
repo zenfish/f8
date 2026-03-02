@@ -1,11 +1,12 @@
+# Source this file to set up mactrace environment variables.
+# Adjust paths to match your installation.
 
-export MACTRACE_HOME="$HOME/src/me/mactrace"
+# Where mactrace stores its database and trace output
+export MACTRACE_HOME="$HOME/mactrace"
 export MACTRACE_DB="$MACTRACE_HOME/mactrace.db"
 export MACTRACE_OUTPUT="$MACTRACE_HOME/traces"
 
-export PATH="$HOME/phd/src/mactrace:$PATH"
+# Add mactrace to PATH (adjust if you cloned elsewhere)
+export PATH="$(dirname "${BASH_SOURCE[0]}"):$PATH"
 
 mkdir -p "$MACTRACE_HOME" "$MACTRACE_OUTPUT"
-
-export PATH=$PATH:$MACTRACE_HOME
-
