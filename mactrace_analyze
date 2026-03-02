@@ -538,7 +538,10 @@ class MacTraceAnalyzer:
         if not self.save_all_io:
             stats['skipped_startup'] = sum(1 for r in self.io_records if r.is_startup)
         
-        for (pid, program, operation, target), records in grouped.items():
+        total_groups = len(grouped)
+        for group_idx, ((pid, program, operation, target), records) in enumerate(grouped.items(), 1):
+            # Progress indicator (overwrites same line)
+            print(f"\r  Saving I/O: {group_idx}/{total_groups} files...", end="", file=sys.stderr, flush=True)
             safe_program = sanitize_filename(program, max_len=20)
             safe_target = sanitize_filename(target, max_len=40)
             filename = f"{pid}-{safe_program}-{operation}-{safe_target}.bin"
@@ -596,6 +599,9 @@ class MacTraceAnalyzer:
                     rendered_filepath = filepath + '.rendered'
                     with open(rendered_filepath, 'wb') as f:
                         f.write(rendered_data)
+        
+        if total_groups > 0:
+            print(f"\r  Saving I/O: {total_groups}/{total_groups} files... done", file=sys.stderr)
         
         return stats
 
