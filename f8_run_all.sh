@@ -92,6 +92,8 @@ else
     base=$(basename "$1" | sed -e 's/\.[^.]*$//')
 fi
 
+
+
 # Resolve paths the same way f8 does:
 #   bare "oc.json" → $F8_OUTPUT/oc.json (if configured)
 # Initial estimates — actual path (with epoch) is captured from f8 output
@@ -121,21 +123,27 @@ cleanup_artifacts() {
 }
 
 # ── Handle existing artifacts ────────────────────────────────────────
-existing_db_id=$(f8_data list -j 2>/dev/null | jq -r ".[] | select(.name == \"$base\") | .id" 2>/dev/null || true)
+# Only check for DB name collisions when using a custom name (-n).
+# Auto-derived names will collide because import.js strips the epoch
+# (python3.1740963600 → python3), but that's fine — multiple traces
+# of the same command just stack up in the DB with unique JSON files.
+if [ -n "$custom_name" ]; then
+    existing_db_id=$(f8_data list -j 2>/dev/null | jq -r ".[] | select(.name == \"$base\") | .id" 2>/dev/null || true)
 
-if [ -n "$existing_db_id" ]; then
-    if [ -n "$force_mode" ]; then
-        echo "Removing existing DB entry: $base (id=$(echo $existing_db_id | tr '\n' ' '))"
-        # shellcheck disable=SC2086
-        # Intentionally unquoted: $existing_db_id may contain multiple IDs
-        # separated by newlines; f8_data delete accepts multiple ID args.
-        f8_data delete -f $existing_db_id 2>/dev/null || true
-    else
-        echo -e "\nAn existing saved DB is already present with the name \"$base\", cowardly bailin' out!"
-        echo -e "you can remove that entry with the command:\n"
-        echo -e "    f8_data delete $existing_db_id\n"
-        echo -e "Or use --force to auto-remove.\n"
-        exit 0
+    if [ -n "$existing_db_id" ]; then
+        if [ -n "$force_mode" ]; then
+            echo "Removing existing DB entry: $base (id=$(echo $existing_db_id | tr '\n' ' '))"
+            # shellcheck disable=SC2086
+            # Intentionally unquoted: $existing_db_id may contain multiple IDs
+            # separated by newlines; f8_data delete accepts multiple ID args.
+            f8_data delete -f $existing_db_id 2>/dev/null || true
+        else
+            echo -e "\nAn existing saved DB is already present with the name \"$base\", cowardly bailin' out!"
+            echo -e "you can remove that entry with the command:\n"
+            echo -e "    f8_data delete $existing_db_id\n"
+            echo -e "Or use --force to auto-remove.\n"
+            exit 0
+        fi
     fi
 fi
 
