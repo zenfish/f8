@@ -1,6 +1,6 @@
 # f8 — fait accompli
 
-*fait accompli* (n.) — a thing that has already happened or been decided before those affected hear about it, leaving them with no option but to accept it.
+*fait accompli* (n.) — a thing that has already happened or been decided, leaving us with no option but to accept.
 
 You run a program, trace it, it does what it does, and then... what just happened?
 
@@ -14,13 +14,13 @@ f8 is an effort to instrument the shadows. All the details, including syscalls, 
 ![Timeline view](docs/screenshot-timeline.png)
 *Timeline detail — color-coded syscalls with category filtering, I/O tracking, and process tree.*
 
-> Important: ** f8 requires SIP DTrace restrictions to be disabled.** This is Apple, don't look at me. Check to see if its enabled/disabled with `csrutil status`. See [Troubleshooting](#troubleshooting) if you need to change this.
+> Important: ** f8 requires SIP DTrace restrictions to be disabled. ** This is Apple, don't look at me. Check to see if its enabled/disabled with `csrutil status`. See [Troubleshooting](#troubleshooting) if you need to check/change your settings.
 
 ## Background, thanks
 
 While doing work for DARPA's now-defunct Cyber Fast Track program I came up with the idea for f8, but Dtrace was/is so atrociously documented and supported by Apple (at least, that's my story!) along with some other technical challenges that I never got it to the point where I thought it'd be worthwhile to publically release it. This is a rewrite of that old project.
 
-To be sure, Dtrace was/is amazing, but Apple only seems to begrudgingly accept it. eBPF is the obvious next thing, but probably won't see the light of Mac anytime.
+To be sure, Dtrace was/is amazing, but Apple only seems to begrudgingly accept it. eBPF is the obvious next thing, but probably won't see the light of Mac anytime. So this.
 
 And to be clear: I leaned so much on the amazing [OpenClaw](https://openclaw.ai/) and [Claude Code](https://code.claude.com/docs/en/overview) to create this that they squealed in pain. I'll take responsibility for all the flaws, but they did the real work.
 
