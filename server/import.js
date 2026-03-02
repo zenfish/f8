@@ -953,8 +953,18 @@ function parseDnsQuery(buf) {
     if (qr !== 0) return null;            // We only want queries
     const qdcount = buf.readUInt16BE(4);
     if (qdcount < 1) return null;
+    // Sanity: ancount/nscount/arcount should be 0 in a query
+    const ancount = buf.readUInt16BE(6);
+    if (ancount > 50) return null;        // Not a real DNS packet
     const result = parseDnsName(buf, 12);
-    return result ? result.name : null;
+    if (!result) return null;
+    // Validate hostname: must contain only valid DNS chars (letters, digits, hyphens, dots)
+    // and have at least one dot (TLD). Rejects binary garbage that happens to parse.
+    const name = result.name;
+    if (!/^[a-zA-Z0-9]([a-zA-Z0-9._-]*[a-zA-Z0-9])?$/.test(name)) return null;
+    if (!name.includes('.')) return null;  // Must have at least one dot
+    if (name.length > 253) return null;   // RFC 1035 max
+    return name;
 }
 
 /**

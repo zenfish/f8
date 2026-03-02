@@ -341,7 +341,11 @@ app.get('/api/traces/:id/objects', async (req, res) => {
     // Aggregate I/O stats per target using SQL
     const objects = query(`
         SELECT 
-            target,
+            CASE 
+                WHEN target GLOB '[0-9]*.[0-9]*.[0-9]*.[0-9]*:[0-9]*' 
+                THEN SUBSTR(target, 1, INSTR(target, ':') - 1)
+                ELSE target 
+            END as target,
             MIN(pid) as pid,
             SUM(CASE WHEN (syscall LIKE '%read%' OR syscall IN ('recv','recvfrom','recvmsg')) 
                      AND return_value > 0 THEN return_value ELSE 0 END) as read,
@@ -354,7 +358,11 @@ app.get('/api/traces/:id/objects', async (req, res) => {
             COUNT(CASE WHEN io_path IS NOT NULL OR data_raw IS NOT NULL THEN 1 END) as hasDataCount
         FROM events 
         WHERE trace_id = ? AND target IS NOT NULL AND target != '' AND ${targetFilter}
-        GROUP BY target
+        GROUP BY CASE 
+                WHEN target GLOB '[0-9]*.[0-9]*.[0-9]*.[0-9]*:[0-9]*' 
+                THEN SUBSTR(target, 1, INSTR(target, ':') - 1)
+                ELSE target 
+            END
         ORDER BY (read + write) DESC
         LIMIT 500
     `, [traceId]);
