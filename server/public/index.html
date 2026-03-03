@@ -343,6 +343,23 @@
         /* DNS lookup highlight */
         .row.dns-lookup { border-left: 3px solid var(--c-dns-border); }
         .row.dns-lookup .col-seq { background: var(--c-dns-cell); }
+        
+        /* Jumped-to row highlight (DNS click → event) */
+        .row.jump-target {
+            background: var(--c-highlight) !important;
+            outline: 2px solid var(--c-primary);
+            outline-offset: -2px;
+            z-index: 1;
+            position: relative;
+        }
+        .row.jump-target .cell { background: transparent !important; }
+        .row.jump-target.jump-flash {
+            animation: jump-flash 0.6s ease-out;
+        }
+        @keyframes jump-flash {
+            0%   { background: #bbdefb !important; }
+            100% { background: var(--c-highlight) !important; }
+        }
         .dns-badge { 
             background: var(--c-primary); 
             color: white; 
@@ -835,6 +852,7 @@
 
     let ipToHostname = new Map();  // IP → hostname for DNS enrichment
     let dnsLookupSeqs = new Set(); // Seq numbers where DNS lookups happened
+    let jumpTargetSeq = null;       // Seq of the row we jumped to (for persistent highlight)
     let catColors = {};
     let currentFilter = 'all';
     let searchTerm = '';
@@ -1038,6 +1056,7 @@
             // Build IP → hostname map for target enrichment
             ipToHostname.clear();
             dnsLookupSeqs.clear();
+            jumpTargetSeq = null;
             if (currentTrace.dnsLookups) {
                 currentTrace.dnsLookups.forEach(d => {
                     if (d.ip && d.hostname) {
@@ -1458,6 +1477,12 @@
         viewport.style.top = (startIdx * ROW_HEIGHT) + 'px';
         viewport.innerHTML = html;
         
+        // Re-apply persistent jump highlight after virtual scroll re-render
+        if (jumpTargetSeq !== null) {
+            const jrow = viewport.querySelector(`[data-seq="${jumpTargetSeq}"]`);
+            if (jrow) jrow.classList.add('jump-target');
+        }
+        
         // Update range indicator
         const rangeEl = document.getElementById('range-indicator');
         if (rangeEl && totalFiltered > 0) {
@@ -1646,16 +1671,16 @@
             const scrollTop = idx * ROW_HEIGHT - (tableScroll.clientHeight / 2) + ROW_HEIGHT;
             tableScroll.scrollTop = Math.max(0, scrollTop);
             render();
-            // Briefly highlight the row
+            // Highlight the jumped-to row persistently
+            jumpTargetSeq = seq;
             setTimeout(() => {
+                viewport.querySelectorAll('.jump-target').forEach(el => {
+                    el.classList.remove('jump-target', 'jump-flash');
+                });
                 const row = viewport.querySelector(`[data-seq="${seq}"]`);
                 if (row) {
-                    row.style.outline = '2px solid #3498db';
-                    row.style.outlineOffset = '-2px';
-                    setTimeout(() => {
-                        row.style.outline = '';
-                        row.style.outlineOffset = '';
-                    }, 2000);
+                    row.classList.add('jump-target', 'jump-flash');
+                    row.addEventListener('animationend', () => row.classList.remove('jump-flash'), { once: true });
                 }
             }, 100);
         } else {
