@@ -1405,6 +1405,38 @@ function extractDnsLookups() {
     ]);
 
     // Check for connects to known DoH IPs on port 443
+    // Helper: find the best seq to jump to for a given IP:port target.
+    // Prefers a successful connect (errno=0), falls back to the first
+    // successful I/O event (write/send), and finally falls back to the
+    // first connect (even if it failed — async connects return EINPROGRESS
+    // which DTrace sometimes misreports as ENAMETOOLONG).
+    function findBestSeqForTarget(ip, port) {
+        const target = `${ip}:${port}`;
+        // First: look for a successful connect
+        const okConn = db.prepare(`
+            SELECT seq FROM events
+            WHERE trace_id = ? AND syscall = 'connect' AND target = ?
+            AND errno = 0
+            ORDER BY seq LIMIT 1
+        `).get(traceId, target);
+        if (okConn) return okConn.seq;
+
+        // Second: first successful write/send to this target (proves connection worked)
+        const firstIO = db.prepare(`
+            SELECT seq FROM events
+            WHERE trace_id = ? AND target = ?
+            AND syscall IN ('write','writev','send','sendto','sendmsg',
+                            'write_nocancel','sendto_nocancel','sendmsg_nocancel')
+            AND return_value > 0
+            ORDER BY seq LIMIT 1
+        `).get(traceId, target);
+        if (firstIO) return firstIO.seq;
+
+        // Last resort: first connect (even if async/failed)
+        const anyConn = connectEvents.find(c => c.target === target);
+        return anyConn ? anyConn.seq : null;
+    }
+
     for (const conn of connectEvents) {
         if (!conn.target) continue;
         const [ip, port] = conn.target.split(':');
@@ -1414,6 +1446,11 @@ function extractDnsLookups() {
             for (const [hostname, info] of correlations) {
                 if (info.ip && info.ip.startsWith(ip + ':')) {
                     info.source = 'doh';
+                    // Also upgrade connect_seq if it points to a failed connect
+                    const betterSeq = findBestSeqForTarget(ip, port);
+                    if (betterSeq && betterSeq !== info.connect_seq) {
+                        info.connect_seq = betterSeq;
+                    }
                     found = true;
                 }
             }
@@ -1425,7 +1462,7 @@ function extractDnsLookups() {
                     correlations.set(providerName, {
                         ip: conn.target,
                         lookup_seq: null,
-                        connect_seq: conn.seq || null,
+                        connect_seq: findBestSeqForTarget(ip, port),
                         source: 'doh'
                     });
                 }
@@ -1442,6 +1479,10 @@ function extractDnsLookups() {
             for (const [hostname, info] of correlations) {
                 if (info.ip && info.ip.startsWith(ip + ':')) {
                     info.source = 'dot';
+                    const betterSeq = findBestSeqForTarget(ip, port);
+                    if (betterSeq && betterSeq !== info.connect_seq) {
+                        info.connect_seq = betterSeq;
+                    }
                     found = true;
                 }
             }
@@ -1452,7 +1493,7 @@ function extractDnsLookups() {
                     correlations.set(providerName, {
                         ip: ip + ':853',
                         lookup_seq: null,
-                        connect_seq: conn.seq || null,
+                        connect_seq: findBestSeqForTarget(ip, port),
                         source: 'dot'
                     });
                 }
