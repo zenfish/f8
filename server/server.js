@@ -271,6 +271,77 @@ app.get('/api/traces/:id/events', (req, res) => {
     });
 });
 
+// Find the 0-based row index of a specific seq in the current filter/sort
+app.get('/api/traces/:id/events/seq-index', (req, res) => {
+    const traceId = req.params.id;
+    const { seq, category, syscall, pid, pids, errors, search, sort = 'seq', order = 'asc' } = req.query;
+
+    if (!seq) return res.status(400).json({ error: 'seq parameter required' });
+
+    const trace = queryOne('SELECT event_count FROM traces WHERE id = ?', [traceId]);
+    if (!trace) return res.status(404).json({ error: 'Trace not found' });
+
+    // Build the same WHERE clause as the events endpoint
+    let conditions = ['trace_id = ?'];
+    let params = [traceId];
+
+    if (category && category !== 'all') {
+        if (category === 'error') {
+            conditions.push('errno != 0');
+        } else {
+            conditions.push('category = ?');
+            params.push(category);
+        }
+    }
+    if (syscall) {
+        conditions.push('syscall = ?');
+        params.push(syscall);
+    }
+    if (pid) {
+        conditions.push('pid = ?');
+        params.push(parseInt(pid, 10));
+    }
+    if (pids) {
+        const pidList = pids.split(',').map(p => parseInt(p, 10)).filter(p => !isNaN(p));
+        if (pidList.length > 0) {
+            conditions.push(`pid IN (${pidList.map(() => '?').join(',')})`);
+            params.push(...pidList);
+        }
+    }
+    if (errors === 'true') {
+        conditions.push('errno != 0');
+    }
+    if (search) {
+        conditions.push("(syscall LIKE ? OR target LIKE ? OR details LIKE ? OR time_str LIKE ? OR errno_name LIKE ? OR CAST(pid AS TEXT) LIKE ?)");
+        const term = `%${search}%`;
+        params.push(term, term, term, term, term, term);
+    }
+
+    const where = conditions.join(' AND ');
+
+    // Count how many matching rows come before this seq in the current sort order
+    const SORT_COLS = { seq: 'seq', time: 'timestamp_us', pid: 'pid', syscall: 'syscall', target: 'target' };
+    const sortCol = SORT_COLS[sort] || 'seq';
+    const sortDir = order === 'desc' ? 'DESC' : 'ASC';
+
+    // Get the sort value of the target seq
+    const targetRow = queryOne(
+        `SELECT ${sortCol} as sort_val FROM events WHERE trace_id = ? AND seq = ?`,
+        [traceId, parseInt(seq, 10)]
+    );
+    if (!targetRow) return res.json({ index: -1 });
+
+    // Count rows that come before it in the sort order
+    const op = sortDir === 'ASC' ? '<' : '>';
+    const countParams = [...params, targetRow.sort_val];
+    const result = queryOne(
+        `SELECT COUNT(*) as idx FROM events WHERE ${where} AND ${sortCol} ${op} ?`,
+        countParams
+    );
+
+    res.json({ index: result?.idx ?? -1 });
+});
+
 // Serve I/O files (with on-the-fly hexdump generation)
 // Wildcard route supports subdirectory I/O paths (e.g. 58998-unknown/write-app.log.bin)
 app.get('/api/traces/:id/io/*', (req, res) => {

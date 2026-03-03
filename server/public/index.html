@@ -1655,19 +1655,13 @@
     
     // Scroll to a specific seq number
     async function scrollToSeq(seq) {
-        // Ask server for the row index of this seq in current sort/filter
+        // Ask server for the exact row index of this seq in current filter/sort
         const params = buildEventParams();
-        params.set('search', ''); // Don't filter by search when jumping to seq
-        const countData = await fetchJson(`/api/traces/${currentTrace.id}/events?${params}&limit=0`);
-        // Count events before this seq
-        const beforeParams = buildEventParams();
-        beforeParams.set('search', '');
-        // For seq-sorted data, the index is the count of events with seq < target
-        const url = `/api/traces/${currentTrace.id}/events?${beforeParams}&limit=1&offset=0`;
-        // Simpler: just estimate from seq position (works when sorted by seq)
-        // For sorted views, this is approximate but good enough
-        const idx = Math.min(Math.max(0, seq - 1), totalFiltered - 1);
-        if (idx >= 0) {
+        params.delete('search'); // Don't filter by search when jumping
+        params.set('seq', seq);
+        const data = await fetchJson(`/api/traces/${currentTrace.id}/events/seq-index?${params}`);
+        const idx = data?.index ?? -1;
+        if (idx >= 0 && idx < totalFiltered) {
             const scrollTop = idx * ROW_HEIGHT - (tableScroll.clientHeight / 2) + ROW_HEIGHT;
             tableScroll.scrollTop = Math.max(0, scrollTop);
             render();
@@ -1684,11 +1678,14 @@
                 }
             }, 100);
         } else {
-            // Event not in current filter, try resetting filter
-            currentFilter = 'all';
-            searchTerm = '';
-            applyFilter();
-            setTimeout(() => scrollToSeq(seq), 100);
+            // Event not in current filter — reset filters and retry
+            if (currentFilter !== 'all' || searchTerm || currentPids) {
+                currentFilter = 'all';
+                searchTerm = '';
+                currentPids = '';
+                applyFilter();
+                setTimeout(() => scrollToSeq(seq), 200);
+            }
         }
     }
     
