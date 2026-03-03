@@ -52,7 +52,7 @@ cd f8
 
 The installer does three things:
 1. **`npm install`** in `server/` — installs better-sqlite3 for the web server
-2. **Creates `~/.f8/config`** — sets `F8_OUTPUT=~/traces` so traces have a consistent home. All tools read this config automatically, even through `sudo` (uses `SUDO_USER` to find your home directory). See [ENVIRONMENT.md](ENVIRONMENT.md) for full config syntax.
+2. **Creates `~/.f8/config`** — sets `F8_OUTPUT=~/traces` so traces have a consistent home. All tools read this config automatically, even through `sudo` (uses `SUDO_USER` to find your home directory). See [ENVIRONMENT.md](docs/ENVIRONMENT.md) for full config syntax.
 3. **Adds tools to PATH** — creates symlinks in /usr/local/bin so you can run f8, f8_server, etc. from anywhere. If /usr/local/bin isn't writable (common without sudo), it prints the export PATH=... line to add to your shell startup file (e.g. $HOME/.bash_profile, $HOME/.zshrc, etc) instead.
 
 ### Manual Setup (if you prefer)
@@ -264,7 +264,7 @@ python3 -c "import json; d=json.load(open('trace.json')); print(f'{len(d.get(\"e
 
 ## Adding Syscalls
 
-See **[ADDING_SYSCALLS.md](ADDING_SYSCALLS.md)** for a step-by-step guide to adding new system calls. There are two levels:
+See **[ADDING_SYSCALLS.md](docs/ADDING_SYSCALLS.md)** for a step-by-step guide to adding new system calls. There are two levels:
 
 - **Level 1 (basic):** Add one line to `syscalls.json` — the syscall gets counted, categorized, and colored in all tools. Takes 30 seconds.
 - **Level 2 (rich):** Add DTrace probes + a Python parser to capture and decode arguments (paths, fds, flags). Takes 15-30 minutes.
@@ -285,15 +285,15 @@ See **[ADDING_SYSCALLS.md](ADDING_SYSCALLS.md)** for a step-by-step guide to add
 | Document | Contents |
 |----------|----------|
 | [TUTORIAL.md](TUTORIAL.md) | Guided walkthrough with `f8_run_all.sh` |
-| [DNS analysis](DNS.md) | How f8 detects and classifies DNS resolution paths. |
+| [DNS analysis](docs/DNS.md) | How f8 detects and classifies DNS resolution paths. |
 | [docs/usage.md](docs/usage.md) | Full CLI usage, environment variables, path resolution |
 | [docs/output-format.md](docs/output-format.md) | JSON output schema, process tracking, traced syscalls |
 | [docs/io-capture.md](docs/io-capture.md) | I/O data capture, vectored I/O (`--iovec`), DIF budget |
 | [docs/analysis.md](docs/analysis.md) | Analysis tools, timeline server, jq recipes |
 | [docs/testing.md](docs/testing.md) | Test suite structure, running tests, coverage |
-| [API.md](API.md) | Server REST API reference — all endpoints, params, and response schemas |
-| [ENVIRONMENT.md](ENVIRONMENT.md) | Config file syntax, `~`/`$VAR` expansion, `SUDO_USER` handling |
-| [ADDING_SYSCALLS.md](ADDING_SYSCALLS.md) | Step-by-step guide to adding new syscall handlers |
-| [COVERAGE.md](COVERAGE.md) | Syscall coverage breakdown by category and macOS version |
-| [DNS.md](DNS.md) | How f8 detects and classifies DNS resolution paths |
+| [API.md](docs/API.md) | Server REST API reference — all endpoints, params, and response schemas |
+| [ENVIRONMENT.md](docs/ENVIRONMENT.md) | Config file syntax, `~`/`$VAR` expansion, `SUDO_USER` handling |
+| [ADDING_SYSCALLS.md](docs/ADDING_SYSCALLS.md) | Step-by-step guide to adding new syscall handlers |
+| [COVERAGE.md](docs/COVERAGE.md) | Syscall coverage breakdown by category and macOS version |
+| [DNS.md](docs/DNS.md) | How f8 detects and classifies DNS resolution paths |
 
