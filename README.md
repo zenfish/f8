@@ -1,6 +1,6 @@
-# f8 — fait accompli
+# f8 - fait accompli
 
-*fait accompli* (n.) — a thing that has already happened or been decided, leaving us with no option but to accept.
+*fait accompli* (n.) - a thing that has already happened or been decided, leaving us with no option but to accept.
 
 You run a program, trace it, it does what it does, and then... what just happened?
 
@@ -9,10 +9,10 @@ f8 is an effort to instrument the shadows. All the details, including syscalls, 
 **f8** is an strace-like system call tracer for macOS that uses DTrace under the hood. It traces syscalls for a given command and provides an interactive web-based timeline/exec viewer along with JSON files for analysis.
 
 ![Trace list](docs/screenshot-traces.png)
-*Trace list — imported traces grouped by date with command, event count, duration, and exit code.*
+*Trace list - imported traces grouped by date with command, event count, duration, and exit code.*
 
 ![Timeline view](docs/screenshot-timeline.png)
-*Timeline detail — DNS-enriched view of Signal's mDNSResponder lookups, with category filtering and per-event I/O capture.*
+*Timeline detail - DNS-enriched view of Signal's mDNSResponder lookups, with category filtering and per-event I/O capture.*
 
 > Important: ** f8 requires SIP DTrace restrictions to be disabled. ** This is Apple, don't look at me. Check to see if its enabled/disabled with `csrutil status`. See [Troubleshooting](#troubleshooting) if you need to check/change your settings.
 
@@ -43,7 +43,7 @@ It uses sqlite3 to store data.
 
 ```bash
 # Clone or copy to your preferred location
-git clone git@github.com:zenfish/f8.git f8
+git clone https://github.com/zenfish/f8
 cd f8
 
 # Run the installer (installs deps, creates config, sets up PATH)
@@ -51,9 +51,9 @@ cd f8
 ```
 
 The installer does three things:
-1. **`npm install`** in `server/` — installs better-sqlite3 for the web server
-2. **Creates `~/.f8/config`** — sets `F8_OUTPUT=~/traces` so traces have a consistent home. All tools read this config automatically, even through `sudo` (uses `SUDO_USER` to find your home directory). See [ENVIRONMENT.md](docs/ENVIRONMENT.md) for full config syntax.
-3. **Adds tools to PATH** — creates symlinks in /usr/local/bin so you can run f8, f8_server, etc. from anywhere. If /usr/local/bin isn't writable (common without sudo), it prints the export PATH=... line to add to your shell startup file (e.g. $HOME/.bash_profile, $HOME/.zshrc, etc) instead.
+1. **`npm install`** in `server/` - installs better-sqlite3 for the web server
+2. **Creates `~/.f8/config`** - sets `F8_OUTPUT=~/traces` so traces have a consistent home. All tools read this config automatically, even through `sudo` (uses `SUDO_USER` to find your home directory). See [ENVIRONMENT.md](docs/ENVIRONMENT.md) for full config syntax.
+3. **Adds tools to PATH** - creates symlinks in /usr/local/bin so you can run f8, f8_server, etc. from anywhere. If /usr/local/bin isn't writable (common without sudo), it prints the export PATH=... line to add to your shell startup file (e.g. $HOME/.bash_profile, $HOME/.zshrc, etc) instead.
 
 ### Manual Setup (if you prefer)
 
@@ -70,7 +70,7 @@ export PATH="$PWD:$PATH"                   # PATH
 # Should print usage info
 sudo f8 --help
 
-# Quick test — trace the 'echo' command
+# Quick test - trace the 'echo' command
 sudo f8 -o test.json -jp echo hello
 ```
 
@@ -176,13 +176,13 @@ sudo f8 --capture-io --strsize 65536 -o trace.json ./my_program
 
 | Tool | What it does |
 |------|-------------|
-| `f8` | Core tracer — runs a command under DTrace, captures syscalls to JSON |
+| `f8` | Core tracer - runs a command under DTrace, captures syscalls to JSON |
 | `f8_run_all.sh` | **One-shot pipeline:** trace → analyze → import → serve |
 | `f8_server` | Start the web-based timeline viewer |
 | `f8_open` | Trace macOS .app bundles (Steam, Safari, etc.) |
-| `f8_analyze` | CLI text analysis — syscall breakdown, files, errors, I/O extraction |
+| `f8_analyze` | CLI text analysis - syscall breakdown, files, errors, I/O extraction |
 | `f8_timeline` | Generate a standalone HTML timeline (no server needed) |
-| `f8_data` | Manage traces — list, info, delete, vacuum, stats |
+| `f8_data` | Manage traces - list, info, delete, vacuum, stats |
 | `f8_import` | Import JSON traces into SQLite for the web server |
 
 ## Troubleshooting
@@ -226,7 +226,7 @@ cd server && npm install
 
 ### Tracing macOS .app bundles (Steam, Safari, etc.)
 
-Running `f8 open /Applications/Steam.app` only traces the `open` command itself — not Steam. The `open` command is a thin launcher that asks macOS Launch Services to start the app, then exits. f8 traces `open`, which finishes in a few seconds, while Steam continues running as a completely separate process.
+Running `f8 open /Applications/Steam.app` only traces the `open` command itself - not Steam. The `open` command is a thin launcher that asks macOS Launch Services to start the app, then exits. f8 traces `open`, which finishes in a few seconds, while Steam continues running as a completely separate process.
 
 **Use `f8_open` instead:**
 
@@ -253,7 +253,7 @@ f8_open /Applications/Steam.app -- --no-browser
 - Check that the traced program actually ran (look for exit code in the JSON)
 - Try `-v` (verbose) to see DTrace activity on stderr
 - Use `-e` to detect untraced syscalls that f8 doesn't cover yet
-- Some programs behave differently under sudo — use `-u yourname` to run as yourself
+- Some programs behave differently under sudo - use `-u yourname` to run as yourself
 
 ### Import shows "0 events imported"
 
@@ -266,7 +266,7 @@ python3 -c "import json; d=json.load(open('trace.json')); print(f'{len(d.get(\"e
 
 See **[ADDING_SYSCALLS.md](docs/ADDING_SYSCALLS.md)** for a step-by-step guide to adding new system calls. There are two levels:
 
-- **Level 1 (basic):** Add one line to `syscalls.json` — the syscall gets counted, categorized, and colored in all tools. Takes 30 seconds.
+- **Level 1 (basic):** Add one line to `syscalls.json` - the syscall gets counted, categorized, and colored in all tools. Takes 30 seconds.
 - **Level 2 (rich):** Add DTrace probes + a Python parser to capture and decode arguments (paths, fds, flags). Takes 15-30 minutes.
 
 
@@ -291,7 +291,7 @@ See **[ADDING_SYSCALLS.md](docs/ADDING_SYSCALLS.md)** for a step-by-step guide t
 | [docs/io-capture.md](docs/io-capture.md) | I/O data capture, vectored I/O (`--iovec`), DIF budget |
 | [docs/analysis.md](docs/analysis.md) | Analysis tools, timeline server, jq recipes |
 | [docs/testing.md](docs/testing.md) | Test suite structure, running tests, coverage |
-| [API.md](docs/API.md) | Server REST API reference — all endpoints, params, and response schemas |
+| [API.md](docs/API.md) | Server REST API reference - all endpoints, params, and response schemas |
 | [ENVIRONMENT.md](docs/ENVIRONMENT.md) | Config file syntax, `~`/`$VAR` expansion, `SUDO_USER` handling |
 | [ADDING_SYSCALLS.md](docs/ADDING_SYSCALLS.md) | Step-by-step guide to adding new syscall handlers |
 | [COVERAGE.md](docs/COVERAGE.md) | Syscall coverage breakdown by category and macOS version |
