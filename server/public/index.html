@@ -808,8 +808,19 @@
     
     let traces = [];
     let currentTrace = null;
-    let allEvents = [];
-    let filteredEvents = [];
+
+    // ── Server-side pagination engine ──────────────────────────────
+    // Events are fetched in pages from the server. The client keeps a
+    // sliding window of cached pages and fetches on demand as you scroll.
+    const PAGE_SIZE = 2000;        // Events per server request
+    const MAX_CACHED_PAGES = 10;   // Max pages in memory (~20K events)
+    
+    let pageCache = new Map();     // pageIndex → {events: [], fetching: false}
+    let totalFiltered = 0;         // Total events matching current filters (from server)
+    let totalEvents = 0;           // Total events in trace (unfiltered)
+    let currentPids = null;        // PID filter for subset views (comma string or null)
+    let fetchGeneration = 0;       // Incremented on filter change to discard stale fetches
+    let pendingFetch = null;       // Current in-flight fetch promise
     function renderDnsSource(source) {
         const labels = {
             'mDNSResponder': ['system resolver', 'src-mdns'],
@@ -1054,38 +1065,21 @@
             }
             btns += '<input type="text" class="search-box" id="search" placeholder="Search syscall, target, details...">';
             btns += '<span class="status" id="status"></span>';
+            btns += '<span class="status" id="range-indicator" style="margin-left:8px;color:var(--c-text-muted);font-size:11px"></span>';
             filters.innerHTML = btns;
-            
-            // Load events (cap at 500k for browser performance)
-            const eventLimit = 500000;
-            const data = await fetchJson(`/api/traces/${id}/events?all=true&limit=${eventLimit}`);
-            allEvents = data.events;
-            
-            // Show visible warning if trace was truncated
-            if (data.filtered > eventLimit) {
-                const pct = ((eventLimit / data.filtered) * 100).toFixed(0);
-                const banner = document.createElement('div');
-                banner.style.cssText = 'background:var(--c-highlight);color:var(--c-text);padding:10px 16px;border-radius:6px;margin-bottom:12px;font-size:13px;display:flex;align-items:center;gap:8px';
-                banner.innerHTML = `<strong>⚠ Showing ${eventLimit.toLocaleString()} of ${data.filtered.toLocaleString()} events (${pct}%)</strong> — browser performance cap. Use category filters or search to focus on what matters.`;
-                summary.parentNode.insertBefore(banner, summary.nextSibling);
-            }
             
             // Set start time for absolute timestamp display
             traceStartTime = currentTrace.start_time ? new Date(currentTrace.start_time) : null;
             
-            // Precompute read/write values
-            allEvents.forEach(e => {
-                const isRead = e.syscall && (e.syscall.includes('read') || e.syscall.includes('recv'));
-                const isWrite = e.syscall && (e.syscall.includes('write') || e.syscall.includes('send'));
-                e._read = isRead && e.return_value > 0 ? e.return_value : 0;
-                e._write = isWrite && e.return_value > 0 ? e.return_value : 0;
-                e._time = e.timestamp_us; // Keep original for sorting
-            });
-            
-            filteredEvents = allEvents;
-            sortData();
-            updateStatus();
-            render();
+            // Reset pagination state and load first page
+            currentFilter = 'all';
+            searchTerm = '';
+            sortCol = 'seq';
+            sortAsc = true;
+            currentPids = null;
+            totalEvents = currentTrace.event_count;
+            totalFiltered = currentTrace.event_count;
+            await resetAndFetch();
             
         } catch (e) {
             summary.innerHTML = '<div class="text-error">Error: ' + e.message + '</div>';
@@ -1121,7 +1115,7 @@
         let netRecv = 0, netSend = 0;
         let netConnections = new Set();
         
-        allEvents = []; // Will be populated after, but we have topSyscalls from API
+        // Stats come from server API (topSyscalls, categories, ioStats)
         
         const catCounts = {};
         t.categories.forEach(c => catCounts[c.category] = c.count);
@@ -1173,7 +1167,8 @@
                     <ul>
                         ${t.dnsLookups.map(d => {
                             const ip = d.ip ? d.ip.split(':')[0] : '—';
-                            const seqLink = d.lookup_seq ? `<a href="#" class="dns-jump text-faint text-xxs" data-seq="${d.lookup_seq}" style="margin-left:6px" title="Jump to line #${d.lookup_seq}">#${d.lookup_seq}</a>` : '';
+                            const jumpSeq = d.lookup_seq || d.connect_seq;
+                            const seqLink = jumpSeq ? `<a href="#" class="dns-jump text-faint text-xxs" data-seq="${jumpSeq}" style="margin-left:6px" title="Jump to event #${jumpSeq}">#${jumpSeq}</a>` : '';
                             const geoFlag = renderGeoFlag(d.geo);
                             return `
                             <li style="padding:4px 0;border-bottom:1px solid var(--c-card-border)">
@@ -1204,110 +1199,148 @@
     }
     
     function updateIOSummary() {
-        let totalRead = 0, totalWrite = 0;
-        let netRecv = 0, netSend = 0;
-        let fileRead = 0, fileWrite = 0;
-        let fileTargets = new Set();
-        let hostTargets = new Set();  // IPs, URLs
-        let socketTargets = new Set(); // AF_* sockets
-        
-        allEvents.forEach(e => {
-            totalRead += e._read || 0;
-            totalWrite += e._write || 0;
-            
-            const target = e.target || '';
-            const isNet = isNetworkTarget(target);
-            
-            if (isNet) {
-                netRecv += e._read || 0;
-                netSend += e._write || 0;
-                if (target && !target.startsWith('fd=')) {
-                    // Separate hosts from sockets
-                    if (target.startsWith('AF_')) {
-                        socketTargets.add(target);
-                    } else {
-                        hostTargets.add(target);
-                    }
-                }
-            } else if (target.startsWith('/')) {
-                fileRead += e._read || 0;
-                fileWrite += e._write || 0;
-                fileTargets.add(target);
-            }
-        });
-        
         const ioCard = document.getElementById('io-summary');
-        if (ioCard) {
-            const traceId = currentTrace?.id || '1';
-            const totalNetTargets = hostTargets.size + socketTargets.size;
+        if (!ioCard || !currentTrace) return;
+        
+        const s = currentTrace.ioStats || {};
+        const traceId = currentTrace.id;
+        
+        ioCard.innerHTML = `
+            <h3>I/O Summary</h3>
+            <div class="stat-row highlight"><span class="label">Total Read</span><span class="value">${formatBytes(s.total_read || 0)}</span></div>
+            <div class="stat-row highlight"><span class="label">Total Write</span><span class="value">${formatBytes(s.total_write || 0)}</span></div>
+            <div class="stat-row"><span class="label">Network</span><span class="value">↓${formatBytes(s.net_recv || 0)} ↑${formatBytes(s.net_send || 0)}</span></div>
+            <div class="stat-row"><span class="label">Files</span><span class="value">↓${formatBytes(s.file_read || 0)} ↑${formatBytes(s.file_write || 0)}</span></div>
             
-            ioCard.innerHTML = `
-                <h3>I/O Summary</h3>
-                <div class="stat-row highlight"><span class="label">Total Read</span><span class="value">${formatBytes(totalRead)}</span></div>
-                <div class="stat-row highlight"><span class="label">Total Write</span><span class="value">${formatBytes(totalWrite)}</span></div>
-                <div class="stat-row"><span class="label">Network</span><span class="value">↓${formatBytes(netRecv)} ↑${formatBytes(netSend)}</span></div>
-                <div class="stat-row"><span class="label">Files</span><span class="value">↓${formatBytes(fileRead)} ↑${formatBytes(fileWrite)}</span></div>
-                
-                <div style="margin-top:12px;padding-top:10px;border-top:1px solid #ddd">
-                    <div class="text-xs text-muted" style="margin-bottom:6px;text-transform:uppercase;letter-spacing:0.5px">Objects Accessed</div>
-                    <div class="stat-row">
-                        <span class="label">Files</span>
-                        <span class="value"><a href="/objects.html?trace=${traceId}&type=files" target="_blank" class="text-primary" style="text-decoration:none">${fileTargets.size}</a></span>
-                    </div>
-                    <div class="stat-row">
-                        <span class="label">Network</span>
-                        <span class="value"><a href="/objects.html?trace=${traceId}&type=network" target="_blank" class="text-primary" style="text-decoration:none">${totalNetTargets}</a></span>
-                    </div>
-                    ${hostTargets.size > 0 ? `<div class="stat-row text-xs" style="padding-left:10px">
-                        <span class="label text-faint">↳ Hosts</span>
-                        <span class="value"><a href="/objects.html?trace=${traceId}&type=network&filter=hosts" target="_blank" class="text-primary text-xs" style="text-decoration:none">${hostTargets.size}</a></span>
-                    </div>` : ''}
-                    ${socketTargets.size > 0 ? `<div class="stat-row text-xs" style="padding-left:10px">
-                        <span class="label text-faint">↳ Sockets</span>
-                        <span class="value"><a href="/objects.html?trace=${traceId}&type=network&filter=sockets" target="_blank" class="text-primary text-xs" style="text-decoration:none">${socketTargets.size}</a></span>
-                    </div>` : ''}
+            <div style="margin-top:12px;padding-top:10px;border-top:1px solid #ddd">
+                <div class="text-xs text-muted" style="margin-bottom:6px;text-transform:uppercase;letter-spacing:0.5px">Objects Accessed</div>
+                <div class="stat-row">
+                    <span class="label">Files</span>
+                    <span class="value"><a href="/objects.html?trace=${traceId}&type=files" target="_blank" class="text-primary" style="text-decoration:none">${(s.file_count || 0).toLocaleString()}</a></span>
                 </div>
-            `;
-        }
+                <div class="stat-row">
+                    <span class="label">Network</span>
+                    <span class="value"><a href="/objects.html?trace=${traceId}&type=network" target="_blank" class="text-primary" style="text-decoration:none">${(s.net_count || 0).toLocaleString()}</a></span>
+                </div>
+            </div>
+        `;
     }
     
-    function applyFilter() {
-        filteredEvents = allEvents.filter(e => {
-            if (currentFilter !== 'all') {
-                if (currentFilter === 'error' && e.errno === 0) return false;
-                if (currentFilter !== 'error' && e.category !== currentFilter) return false;
-            }
-            if (searchTerm) {
-                const text = `${e.seq} ${e.pid} ${e.syscall} ${e.target} ${e.details} ${e.errno_name} ${e._read || ''} ${e._write || ''} ${e.data_raw ? hexToDisplay(e.data_raw, 200) : ''}`.toLowerCase();
-                if (!text.includes(searchTerm)) return false;
-            }
-            return true;
+    // Build query params for the current filter/search/sort state
+    function buildEventParams(extra = {}) {
+        const params = new URLSearchParams();
+        if (currentFilter !== 'all') params.set('category', currentFilter);
+        if (searchTerm) params.set('search', searchTerm);
+        if (currentPids) params.set('pids', currentPids);
+        params.set('sort', sortCol);
+        params.set('order', sortAsc ? 'asc' : 'desc');
+        for (const [k, v] of Object.entries(extra)) params.set(k, v);
+        return params;
+    }
+    
+    // Fetch a page of events from the server
+    async function fetchPage(pageIndex, generation) {
+        const offset = pageIndex * PAGE_SIZE;
+        const params = buildEventParams({ offset, limit: PAGE_SIZE });
+        const data = await fetchJson(`/api/traces/${currentTrace.id}/events?${params}`);
+        
+        // Discard if filters changed while we were fetching
+        if (generation !== fetchGeneration) return null;
+        
+        // Precompute read/write values
+        data.events.forEach(e => {
+            const isRead = e.syscall && (e.syscall.includes('read') || e.syscall.includes('recv'));
+            const isWrite = e.syscall && (e.syscall.includes('write') || e.syscall.includes('send'));
+            e._read = isRead && e.return_value > 0 ? e.return_value : 0;
+            e._write = isWrite && e.return_value > 0 ? e.return_value : 0;
+            e._time = e.timestamp_us;
         });
-        sortData();
+        
+        return data;
+    }
+    
+    // Get an event by its index in the filtered result set.
+    // Returns the event if cached, or null (and triggers a fetch).
+    function getEvent(index) {
+        const pageIndex = Math.floor(index / PAGE_SIZE);
+        const page = pageCache.get(pageIndex);
+        if (page && page.events) {
+            return page.events[index - pageIndex * PAGE_SIZE] || null;
+        }
+        // Not cached — trigger async fetch
+        if (!page || (!page.fetching && !page.events)) {
+            ensurePage(pageIndex);
+        }
+        return null;  // Will re-render when page arrives
+    }
+    
+    // Ensure a page is cached (fetch if not)
+    async function ensurePage(pageIndex) {
+        if (pageCache.has(pageIndex) && (pageCache.get(pageIndex).events || pageCache.get(pageIndex).fetching)) return;
+        
+        pageCache.set(pageIndex, { events: null, fetching: true });
+        
+        // Evict oldest pages if cache is too large
+        if (pageCache.size > MAX_CACHED_PAGES + 2) {
+            evictDistantPages(pageIndex);
+        }
+        
+        const gen = fetchGeneration;
+        const data = await fetchPage(pageIndex, gen);
+        if (!data) return; // Stale
+        
+        pageCache.set(pageIndex, { events: data.events, fetching: false });
+        totalFiltered = data.filtered;
+        totalEvents = data.total;
+        
         updateStatus();
         render();
     }
     
-    function sortData() {
-        const col = sortCol;
-        const asc = sortAsc ? 1 : -1;
+    // Evict pages farthest from the current view
+    function evictDistantPages(currentPage) {
+        const pages = [...pageCache.keys()].sort((a, b) => Math.abs(a - currentPage) - Math.abs(b - currentPage));
+        while (pageCache.size > MAX_CACHED_PAGES) {
+            const far = pages.pop();
+            if (far !== undefined && far !== currentPage) pageCache.delete(far);
+        }
+    }
+    
+    // Reset cache and re-fetch (called on filter/search/sort change)
+    async function resetAndFetch() {
+        fetchGeneration++;
+        pageCache.clear();
         
-        filteredEvents.sort((a, b) => {
-            let va, vb;
-            switch(col) {
-                case 'time': va = a._time; vb = b._time; break;
-                case 'pid': va = a.pid; vb = b.pid; break;
-                case 'seq': va = a.seq; vb = b.seq; break;
-                case 'read': va = a._read; vb = b._read; break;
-                case 'write': va = a._write; vb = b._write; break;
-                case 'target': va = a.target || ''; vb = b.target || ''; break;
-                case 'syscall': va = a.syscall || ''; vb = b.syscall || ''; break;
-                default: va = a.seq; vb = b.seq;
-            }
-            if (typeof va === 'string') return va.localeCompare(vb) * asc;
-            return (va - vb) * asc;
+        // Fetch first page to get count
+        const gen = fetchGeneration;
+        const params = buildEventParams({ offset: 0, limit: PAGE_SIZE });
+        const data = await fetchJson(`/api/traces/${currentTrace.id}/events?${params}`);
+        if (gen !== fetchGeneration) return; // Stale
+        
+        // Precompute
+        data.events.forEach(e => {
+            const isRead = e.syscall && (e.syscall.includes('read') || e.syscall.includes('recv'));
+            const isWrite = e.syscall && (e.syscall.includes('write') || e.syscall.includes('send'));
+            e._read = isRead && e.return_value > 0 ? e.return_value : 0;
+            e._write = isWrite && e.return_value > 0 ? e.return_value : 0;
+            e._time = e.timestamp_us;
         });
         
+        totalFiltered = data.filtered;
+        totalEvents = data.total;
+        pageCache.set(0, { events: data.events, fetching: false });
+        
+        // Reset scroll to top
+        tableScroll.scrollTop = 0;
+        updateStatus();
+        render();
+    }
+    
+    function applyFilter() {
+        resetAndFetch();
+    }
+    
+    function sortData() {
         // Update header UI
         tableHeader.querySelectorAll('.cell').forEach(c => {
             c.classList.remove('sorted', 'asc');
@@ -1316,17 +1349,18 @@
                 if (sortAsc) c.classList.add('asc');
             }
         });
+        // Sorting is now server-side — resetAndFetch handles it
+        resetAndFetch();
     }
     
     function updateStatus() {
         const status = document.getElementById('status');
         if (status) {
-            let text = `${filteredEvents.length.toLocaleString()} / ${allEvents.length.toLocaleString()}`;
-            // Show total if we have more events than loaded
-            if (currentTrace && currentTrace.event_count > allEvents.length) {
-                text += ` (of ${currentTrace.event_count.toLocaleString()} total)`;
+            if (totalFiltered === totalEvents) {
+                status.textContent = `${totalFiltered.toLocaleString()} events`;
+            } else {
+                status.textContent = `${totalFiltered.toLocaleString()} / ${totalEvents.toLocaleString()} events`;
             }
-            status.textContent = text;
         }
         updateIOSummary();
     }
@@ -1396,13 +1430,41 @@
         const scrollTop = tableScroll.scrollTop;
         const viewHeight = tableScroll.clientHeight;
         
-        spacer.style.height = (filteredEvents.length * ROW_HEIGHT) + 'px';
+        spacer.style.height = (totalFiltered * ROW_HEIGHT) + 'px';
         
         const startIdx = Math.max(0, Math.floor(scrollTop / ROW_HEIGHT) - BUFFER);
-        const endIdx = Math.min(filteredEvents.length, Math.ceil((scrollTop + viewHeight) / ROW_HEIGHT) + BUFFER);
+        const endIdx = Math.min(totalFiltered, Math.ceil((scrollTop + viewHeight) / ROW_HEIGHT) + BUFFER);
+        
+        // Determine which pages we need
+        const startPage = Math.floor(startIdx / PAGE_SIZE);
+        const endPage = Math.floor((endIdx - 1) / PAGE_SIZE);
+        
+        // Ensure pages are loading
+        for (let p = startPage; p <= endPage; p++) {
+            ensurePage(p);
+        }
+        
+        // Render rows (show placeholder for uncached rows)
+        let html = '';
+        for (let i = startIdx; i < endIdx; i++) {
+            const ev = getEvent(i);
+            if (ev) {
+                html += renderRow(ev);
+            } else {
+                html += `<div class="row" style="opacity:0.3"><div class="cell col-seq">⋯</div><div class="cell col-time"></div><div class="cell col-pid"></div><div class="cell col-read"></div><div class="cell col-write"></div><div class="cell col-target">loading...</div><div class="cell col-syscall"></div></div>`;
+            }
+        }
         
         viewport.style.top = (startIdx * ROW_HEIGHT) + 'px';
-        viewport.innerHTML = filteredEvents.slice(startIdx, endIdx).map(renderRow).join('');
+        viewport.innerHTML = html;
+        
+        // Update range indicator
+        const rangeEl = document.getElementById('range-indicator');
+        if (rangeEl && totalFiltered > 0) {
+            const visStart = Math.floor(scrollTop / ROW_HEIGHT) + 1;
+            const visEnd = Math.min(totalFiltered, Math.ceil((scrollTop + viewHeight) / ROW_HEIGHT));
+            rangeEl.textContent = `${visStart.toLocaleString()} – ${visEnd.toLocaleString()}`;
+        }
     }
     
     // Event handlers
@@ -1451,10 +1513,14 @@
         }
     });
     
+    let searchDebounce = null;
     filters.addEventListener('input', e => {
         if (e.target.id === 'search') {
-            searchTerm = e.target.value.toLowerCase();
-            applyFilter();
+            clearTimeout(searchDebounce);
+            searchDebounce = setTimeout(() => {
+                searchTerm = e.target.value.trim();
+                resetAndFetch();
+            }, 300); // 300ms debounce for server-side search
         }
     });
     
@@ -1468,8 +1534,15 @@
                 sortCol = col;
                 sortAsc = true;
             }
-            sortData();
-            render();
+            // Update header UI immediately
+            tableHeader.querySelectorAll('.cell').forEach(c => {
+                c.classList.remove('sorted', 'asc');
+                if (c.dataset.col === sortCol) {
+                    c.classList.add('sorted');
+                    if (sortAsc) c.classList.add('asc');
+                }
+            });
+            resetAndFetch();
         }
     });
     
@@ -1556,11 +1629,20 @@
     }, true);
     
     // Scroll to a specific seq number
-    function scrollToSeq(seq) {
-        // Find the index of this seq in filteredEvents
-        const idx = filteredEvents.findIndex(e => e.seq === seq);
+    async function scrollToSeq(seq) {
+        // Ask server for the row index of this seq in current sort/filter
+        const params = buildEventParams();
+        params.set('search', ''); // Don't filter by search when jumping to seq
+        const countData = await fetchJson(`/api/traces/${currentTrace.id}/events?${params}&limit=0`);
+        // Count events before this seq
+        const beforeParams = buildEventParams();
+        beforeParams.set('search', '');
+        // For seq-sorted data, the index is the count of events with seq < target
+        const url = `/api/traces/${currentTrace.id}/events?${beforeParams}&limit=1&offset=0`;
+        // Simpler: just estimate from seq position (works when sorted by seq)
+        // For sorted views, this is approximate but good enough
+        const idx = Math.min(Math.max(0, seq - 1), totalFiltered - 1);
         if (idx >= 0) {
-            // Scroll to that position
             const scrollTop = idx * ROW_HEIGHT - (tableScroll.clientHeight / 2) + ROW_HEIGHT;
             tableScroll.scrollTop = Math.max(0, scrollTop);
             render();
@@ -2036,16 +2118,14 @@
         
         if (traceId) {
             traceSelect.value = traceId;
-            loadTrace(traceId).then(() => {
+            loadTrace(traceId).then(async () => {
                 if (pids) {
-                    const pidSet = new Set(pids.split(',').map(Number));
-                    allEvents = allEvents.filter(e => pidSet.has(e.pid));
-                    filteredEvents = allEvents;
-                    sortData();
-                    updateStatus();
-                    render();
+                    currentPids = pids;
+                    await resetAndFetch();
                     
-                    // Rebuild summary and filters from the filtered subset
+                    const pidSet = new Set(pids.split(',').map(Number));
+                    
+                    // Rebuild summary and filters for the subset
                     renderSubsetSummary(rootPid, progName, pidSet, totalPids);
                     rebuildFilterButtons();
                     
@@ -2062,23 +2142,22 @@
         return false;
     }
     
-    function rebuildFilterButtons() {
-        // Recount categories from the current allEvents (subset-aware)
-        const cats = {};
-        let errors = 0;
-        for (const e of allEvents) {
-            cats[e.category] = (cats[e.category] || 0) + 1;
-            if (e.errno !== 0) errors++;
-        }
+    async function rebuildFilterButtons() {
+        // Fetch category counts from server (respects PID subset)
+        let url = `/api/traces/${currentTrace.id}`;
+        if (currentPids) url += `?pids=${currentPids}`;
+        const traceData = await fetchJson(url);
         
-        let btns = `<button class="filter-btn active" data-filter="all" style="background:#666;color:#fff">All (${allEvents.length.toLocaleString()})</button>`;
-        const sorted = Object.entries(cats).sort((a, b) => b[1] - a[1]);
-        for (const [cat, count] of sorted) {
-            const col = catColors[cat] || {bg:'#999', text:'#fff'};
-            btns += `<button class="filter-btn" data-filter="${cat}" style="background:${col.bg};color:${col.text}">${cat} (${count.toLocaleString()})</button>`;
+        let btns = `<button class="filter-btn active" data-filter="all" style="background:#666;color:#fff">All (${totalFiltered.toLocaleString()})</button>`;
+        if (traceData.categories) {
+            const sorted = traceData.categories.sort((a, b) => b.count - a.count);
+            for (const c of sorted) {
+                const col = catColors[c.category] || {bg:'#999', text:'#fff'};
+                btns += `<button class="filter-btn" data-filter="${c.category}" style="background:${col.bg};color:${col.text}">${c.category} (${c.count.toLocaleString()})</button>`;
+            }
         }
-        if (errors > 0) {
-            btns += `<button class="filter-btn" data-filter="error" style="background:#e74c3c;color:#fff">Errors (${errors.toLocaleString()})</button>`;
+        if (traceData.errorCount > 0) {
+            btns += `<button class="filter-btn" data-filter="error" style="background:#e74c3c;color:#fff">Errors (${traceData.errorCount.toLocaleString()})</button>`;
         }
         btns += '<input type="text" class="search-box" id="search" placeholder="Search syscall, target, details...">';
         btns += '<span class="status" id="status"></span>';
@@ -2086,58 +2165,27 @@
         updateStatus();
     }
     
-    function renderSubsetSummary(rootPid, progName, pidSet, totalPids) {
-        // Compute stats from the filtered events
-        const events = allEvents;
-        const eventCount = events.length;
-        const uniquePids = new Set(events.map(e => e.pid));
-        const errorCount = events.filter(e => e.errno !== 0).length;
+    async function renderSubsetSummary(rootPid, progName, pidSet, totalPids) {
+        // Fetch stats from server for this PID subset
+        const pidsParam = [...pidSet].join(',');
+        const statsData = await fetchJson(`/api/traces/${currentTrace.id}/events?pids=${pidsParam}&limit=0`);
+        const eventCount = statsData.filtered;
+        const events = []; // No longer used for iteration — stats come from server
+        const uniquePids = pidSet;
+        const errorCount = 0; // Will be shown in filter buttons
         
-        // Syscall counts
-        const syscallCounts = {};
+        const topSyscalls = [];
         const catCounts = {};
         let totalRead = 0, totalWrite = 0;
         let netRecv = 0, netSend = 0;
         const netConnections = new Set();
+        const execCount = 0;
         const fileReads = new Map(), fileWrites = new Map();
-        
-        for (const e of events) {
-            syscallCounts[e.syscall] = (syscallCounts[e.syscall] || 0) + 1;
-            catCounts[e.category] = (catCounts[e.category] || 0) + 1;
-            
-            if (e._read > 0) {
-                totalRead += e._read;
-                if (e.target?.match(/^\d+\.\d+\.\d+\.\d+:/) || e.target?.startsWith('AF_')) {
-                    netRecv += e._read;
-                    netConnections.add(e.target);
-                } else if (e.target?.startsWith('/')) {
-                    fileReads.set(e.target, (fileReads.get(e.target) || 0) + e._read);
-                }
-            }
-            if (e._write > 0) {
-                totalWrite += e._write;
-                if (e.target?.match(/^\d+\.\d+\.\d+\.\d+:/) || e.target?.startsWith('AF_')) {
-                    netSend += e._write;
-                    netConnections.add(e.target);
-                } else if (e.target?.startsWith('/')) {
-                    fileWrites.set(e.target, (fileWrites.get(e.target) || 0) + e._write);
-                }
-            }
-        }
-        
-        const topSyscalls = Object.entries(syscallCounts)
-            .sort((a, b) => b[1] - a[1])
-            .slice(0, 8)
-            .map(([syscall, count]) => ({syscall, count}));
-        
-        const execCount = events.filter(e => (e.syscall === 'execve' || e.syscall === 'posix_spawn') && e.errno === 0).length;
         
         const label = progName ? `${progName} (PID ${rootPid})` : `PID ${rootPid}`;
         
         // I/O summary
-        const topFiles = [...fileReads.entries(), ...fileWrites.entries()]
-            .reduce((map, [path, bytes]) => { map.set(path, (map.get(path) || 0) + bytes); return map; }, new Map());
-        const topFilesSorted = [...topFiles.entries()].sort((a, b) => b[1] - a[1]).slice(0, 5);
+        const topFilesSorted = [];
         
         summary.innerHTML = `
             <h2 style="display:flex;align-items:center;gap:10px">

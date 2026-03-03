@@ -127,6 +127,7 @@ app.get('/api/traces', (req, res) => {
 
 // Get single trace metadata
 app.get('/api/traces/:id', async (req, res) => {
+  try {
     const trace = queryOne('SELECT * FROM traces WHERE id = ?', [req.params.id]);
     if (!trace) return res.status(404).json({ error: 'Trace not found' });
     
@@ -147,7 +148,7 @@ app.get('/api/traces/:id', async (req, res) => {
     
     // Get DNS lookups for this trace, enriched with geo data
     const rawDns = query(
-        'SELECT hostname, ip, source FROM dns_lookups WHERE trace_id = ?',
+        'SELECT hostname, ip, source, lookup_seq, connect_seq FROM dns_lookups WHERE trace_id = ?',
         [req.params.id]
     );
     const dnsLookups = await enrichDnsWithGeo(rawDns);
@@ -164,7 +165,25 @@ app.get('/api/traces/:id', async (req, res) => {
         [req.params.id]
     )?.count || 0;
     
-    res.json({ ...trace, categories, errorCount, topSyscalls, dnsLookups, execCount, pidCount });
+    // I/O summary stats (aggregated server-side)
+    const ioStats = queryOne(`
+        SELECT 
+            COALESCE(SUM(CASE WHEN (syscall LIKE '%read%' OR syscall LIKE '%recv%') AND return_value > 0 THEN return_value ELSE 0 END), 0) as total_read,
+            COALESCE(SUM(CASE WHEN (syscall LIKE '%write%' OR syscall LIKE '%send%') AND return_value > 0 THEN return_value ELSE 0 END), 0) as total_write,
+            COALESCE(SUM(CASE WHEN (syscall LIKE '%read%' OR syscall LIKE '%recv%') AND return_value > 0 AND (target LIKE '%:%' AND target NOT LIKE '/%') THEN return_value ELSE 0 END), 0) as net_recv,
+            COALESCE(SUM(CASE WHEN (syscall LIKE '%write%' OR syscall LIKE '%send%') AND return_value > 0 AND (target LIKE '%:%' AND target NOT LIKE '/%') THEN return_value ELSE 0 END), 0) as net_send,
+            COALESCE(SUM(CASE WHEN (syscall LIKE '%read%' OR syscall LIKE '%recv%') AND return_value > 0 AND target LIKE '/%' THEN return_value ELSE 0 END), 0) as file_read,
+            COALESCE(SUM(CASE WHEN (syscall LIKE '%write%' OR syscall LIKE '%send%') AND return_value > 0 AND target LIKE '/%' THEN return_value ELSE 0 END), 0) as file_write,
+            (SELECT COUNT(DISTINCT target) FROM events WHERE trace_id = ? AND target LIKE '/%') as file_count,
+            (SELECT COUNT(DISTINCT target) FROM events WHERE trace_id = ? AND target LIKE '%:%' AND target NOT LIKE '/%' AND target NOT LIKE 'fd=%') as net_count
+        FROM events WHERE trace_id = ?
+    `, [req.params.id, req.params.id, req.params.id]) || {};
+
+    res.json({ ...trace, categories, errorCount, topSyscalls, dnsLookups, execCount, pidCount, ioStats });
+  } catch (err) {
+    console.error('Error in /api/traces/:id:', err);
+    res.status(500).json({ error: 'Internal server error' });
+  }
 });
 
 // Get DNS lookups for a trace (with geo enrichment)
@@ -179,7 +198,7 @@ app.get('/api/traces/:id/dns', async (req, res) => {
 // Get events with filtering/pagination
 app.get('/api/traces/:id/events', (req, res) => {
     const traceId = req.params.id;
-    const { offset = 0, limit = 1000, category, syscall, pid, errors, search, all } = req.query;
+    const { offset = 0, limit = 1000, category, syscall, pid, pids, errors, search, sort = 'seq', order = 'asc' } = req.query;
     
     const trace = queryOne('SELECT event_count FROM traces WHERE id = ?', [traceId]);
     if (!trace) return res.status(404).json({ error: 'Trace not found' });
@@ -189,8 +208,12 @@ app.get('/api/traces/:id/events', (req, res) => {
     let params = [traceId];
     
     if (category && category !== 'all') {
-        conditions.push('category = ?');
-        params.push(category);
+        if (category === 'error') {
+            conditions.push('errno != 0');
+        } else {
+            conditions.push('category = ?');
+            params.push(category);
+        }
     }
     if (syscall) {
         conditions.push('syscall = ?');
@@ -199,6 +222,14 @@ app.get('/api/traces/:id/events', (req, res) => {
     if (pid) {
         conditions.push('pid = ?');
         params.push(parseInt(pid, 10));
+    }
+    if (pids) {
+        // Comma-separated PID list for process-tree subset views
+        const pidList = pids.split(',').map(p => parseInt(p, 10)).filter(p => !isNaN(p));
+        if (pidList.length > 0) {
+            conditions.push(`pid IN (${pidList.map(() => '?').join(',')})`);
+            params.push(...pidList);
+        }
     }
     if (errors === 'true') {
         conditions.push('errno != 0');
@@ -216,16 +247,18 @@ app.get('/api/traces/:id/events', (req, res) => {
     const countResult = queryOne(`SELECT COUNT(*) as count FROM events WHERE ${where}`, params);
     const filteredCount = countResult?.count || 0;
     
-    // Get events
+    // Validate sort column (whitelist to prevent SQL injection)
+    const SORT_COLS = { seq: 'seq', time: 'timestamp_us', pid: 'pid', syscall: 'syscall', target: 'target' };
+    const sortCol = SORT_COLS[sort] || 'seq';
+    const sortDir = order === 'desc' ? 'DESC' : 'ASC';
+    
+    // Always paginate server-side
     let sql = `SELECT id, seq, timestamp_us, time_str, pid, syscall, category,
                       return_value, errno, errno_name, target, details, has_io, io_path, io_chunk,
                       data_raw
-               FROM events WHERE ${where} ORDER BY seq`;
-    
-    if (all !== 'true' || filteredCount > 100000) {
-        sql += ` LIMIT ? OFFSET ?`;
-        params.push(parseInt(limit, 10), parseInt(offset, 10));
-    }
+               FROM events WHERE ${where} ORDER BY ${sortCol} ${sortDir}
+               LIMIT ? OFFSET ?`;
+    params.push(parseInt(limit, 10), parseInt(offset, 10));
     
     const events = query(sql, params);
     
@@ -475,7 +508,7 @@ app.get('/api/traces/:id/objects', async (req, res) => {
     `, [traceId]);
     
     // Get DNS lookups for hostname enrichment
-    const dnsLookups = query('SELECT hostname, ip, source FROM dns_lookups WHERE trace_id = ?', [traceId]);
+    const dnsLookups = query('SELECT hostname, ip, source, lookup_seq, connect_seq FROM dns_lookups WHERE trace_id = ?', [traceId]);
     const ipToHostname = new Map();
     for (const d of dnsLookups) {
         if (d.ip) {
