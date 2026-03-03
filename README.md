@@ -43,7 +43,7 @@ It uses sqlite3 to store data.
 
 ```bash
 # Clone or copy to your preferred location
-git clone <repo-url> f8
+git clone git@github.com:zenfish/f8.git f8
 cd f8
 
 # Run the installer (installs deps, creates config, sets up PATH)
