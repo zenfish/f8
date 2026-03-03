@@ -291,6 +291,7 @@ See **[ADDING_SYSCALLS.md](ADDING_SYSCALLS.md)** for a step-by-step guide to add
 | [docs/io-capture.md](docs/io-capture.md) | I/O data capture, vectored I/O (`--iovec`), DIF budget |
 | [docs/analysis.md](docs/analysis.md) | Analysis tools, timeline server, jq recipes |
 | [docs/testing.md](docs/testing.md) | Test suite structure, running tests, coverage |
+| [API.md](API.md) | Server REST API reference — all endpoints, params, and response schemas |
 | [ENVIRONMENT.md](ENVIRONMENT.md) | Config file syntax, `~`/`$VAR` expansion, `SUDO_USER` handling |
 | [ADDING_SYSCALLS.md](ADDING_SYSCALLS.md) | Step-by-step guide to adding new syscall handlers |
 | [COVERAGE.md](COVERAGE.md) | Syscall coverage breakdown by category and macOS version |
