@@ -9,10 +9,10 @@ f8 is an effort to instrument the shadows. All the details, including syscalls, 
 **f8** is an strace-like system call tracer for macOS that uses DTrace under the hood. It traces syscalls for a given command and provides an interactive web-based timeline/exec viewer along with JSON files for analysis.
 
 ![Trace list](docs/screenshot-traces.png)
-*Trace list — each imported trace shows the command, event count, duration, and exit code.*
+*Trace list — imported traces grouped by date with command, event count, duration, and exit code.*
 
 ![Timeline view](docs/screenshot-timeline.png)
-*Timeline detail — color-coded syscalls with category filtering, I/O tracking, and process tree.*
+*Timeline detail — DNS-enriched view of Signal's mDNSResponder lookups, with category filtering and per-event I/O capture.*
 
 > Important: ** f8 requires SIP DTrace restrictions to be disabled. ** This is Apple, don't look at me. Check to see if its enabled/disabled with `csrutil status`. See [Troubleshooting](#troubleshooting) if you need to check/change your settings.
 
