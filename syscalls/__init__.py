@@ -434,19 +434,16 @@ def validate_probes(dtrace_path="/usr/sbin/dtrace"):
             [dtrace_path, '-l', '-P', 'syscall'],
             capture_output=True, text=True, timeout=10
         )
-        # Parse output: "   ID   PROVIDER            MODULE                          FUNCTION NAME"
+        # Parse output — columns are fixed-width:
+        #   "   ID   PROVIDER            MODULE                          FUNCTION NAME"
+        # MODULE is often empty (just whitespace), so we parse from the right:
+        # the last two tokens are always FUNCTION and NAME (entry/return).
         available = set()
         for line in result.stdout.splitlines():
             parts = line.split()
-            if len(parts) >= 5 and parts[1] == 'syscall':
-                # FUNCTION is the syscall name, NAME is entry/return
-                available.add(parts[4 - 1])  # function name column
-        # More robust: extract from "syscall  SOMETHING  functionname  entry/return"
-        available = set()
-        for line in result.stdout.splitlines():
-            m = re.match(r'\s*\d+\s+syscall\s+\S+\s+(\w+)\s+(entry|return)', line)
-            if m:
-                available.add(m.group(1))
+            # Need at least: ID syscall <function> <entry|return>
+            if len(parts) >= 4 and parts[1] == 'syscall' and parts[-1] in ('entry', 'return'):
+                available.add(parts[-2])
     except (subprocess.TimeoutExpired, FileNotFoundError, PermissionError):
         return None  # Can't validate, proceed without filtering
 
