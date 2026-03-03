@@ -32,7 +32,7 @@ Important - I'm down to a single mac, so only tested on Sequoia. Who knows if it
 
 - macOS (tested on 15.3 Sequoia)
 - Python 3.8+
-- Node.js 18+ (for the web server)
+- Node.js 20+ (for the web server)
 - Root privileges (DTrace requires sudo)
 - SIP dtrace restrictions disabled (see [Troubleshooting](#troubleshooting))
 - Disk & RAM. It's a hog, plain and simple. Gigs of data can trivially be generated.

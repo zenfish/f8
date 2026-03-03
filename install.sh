@@ -42,7 +42,7 @@ if command -v node >/dev/null 2>&1; then
     (cd "${SCRIPT_DIR}/server" && npm install --production 2>&1 | tail -3)
     echo "   ✓ server/node_modules installed"
 else
-    echo "   ⚠ Node.js not found — server/import won't work until you install Node 18+"
+    echo "   ⚠ Node.js not found — server/import won't work until you install Node 20+"
 fi
 
 # ── 2. Config file ──────────────────────────────────────────────────
