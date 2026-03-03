@@ -110,6 +110,7 @@ from syscalls import TRACED_SYSCALLS as _HANDLER_TRACED
 from syscalls import (
     resolve_trace_spec, get_dtrace_probes, get_handler_registry,
     get_active_categories, count_dif_programs, CATEGORY_ALIASES,
+    validate_probes, format_probe_validation,
 )
 from syscalls._constants import (
     ERRNO_NAMES as _ERRNO_NAMES,
@@ -368,6 +369,13 @@ class F8:
             self._trace_cats, self._trace_syscalls = resolve_trace_spec(trace_spec)
         else:
             self._trace_cats, self._trace_syscalls = None, None
+        # Validate probes against this kernel — disable handlers with unavailable syscalls
+        probe_result = validate_probes()
+        probe_msg = format_probe_validation(probe_result)
+        if probe_msg:
+            print(probe_msg, file=sys.stderr)
+        self._probe_validation = probe_result
+        
         # Build filtered DTrace probes and handler registry
         self._filtered_probes = get_dtrace_probes(self._trace_cats, self._trace_syscalls)
         self._filtered_registry = get_handler_registry(self._trace_cats, self._trace_syscalls)

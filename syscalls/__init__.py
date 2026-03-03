@@ -407,5 +407,154 @@ def count_dif_programs(dtrace_text: str) -> int:
     return len(re.findall(r'syscall::\w+', dtrace_text))
 
 
+
+
+def validate_probes(dtrace_path="/usr/sbin/dtrace"):
+    """Check which syscall probes exist on this system and disable unavailable handlers.
+
+    Uses `dtrace -l` to list available syscall probes, then checks each handler's
+    syscalls against the available set.  Handlers with ANY unavailable probe are
+    fully disabled (removed from HANDLER_REGISTRY and the global probe text).
+
+    Must be called AFTER _discover_handlers() and WITH root privileges (dtrace -l
+    requires root on macOS).
+
+    Returns:
+        dict with keys:
+          - 'disabled_handlers': list of (handler_name, unavailable_syscalls, all_syscalls, categories)
+          - 'disabled_syscalls': set of syscall names removed
+          - 'category_impact':   dict of category → {total, disabled, remaining, pct_remaining}
+        Returns None if all probes are available.
+    """
+    import subprocess, re
+
+    # Get available syscall probes from the kernel
+    try:
+        result = subprocess.run(
+            [dtrace_path, '-l', '-P', 'syscall'],
+            capture_output=True, text=True, timeout=10
+        )
+        # Parse output: "   ID   PROVIDER            MODULE                          FUNCTION NAME"
+        available = set()
+        for line in result.stdout.splitlines():
+            parts = line.split()
+            if len(parts) >= 5 and parts[1] == 'syscall':
+                # FUNCTION is the syscall name, NAME is entry/return
+                available.add(parts[4 - 1])  # function name column
+        # More robust: extract from "syscall  SOMETHING  functionname  entry/return"
+        available = set()
+        for line in result.stdout.splitlines():
+            m = re.match(r'\s*\d+\s+syscall\s+\S+\s+(\w+)\s+(entry|return)', line)
+            if m:
+                available.add(m.group(1))
+    except (subprocess.TimeoutExpired, FileNotFoundError, PermissionError):
+        return None  # Can't validate, proceed without filtering
+
+    if not available:
+        return None  # Empty list means we couldn't read probes
+
+    # Check each handler
+    disabled_handlers = []
+    disabled_syscalls = set()
+
+    for handler in list(_ALL_HANDLERS):
+        missing = [sc for sc in handler.syscalls if sc not in available]
+        if missing:
+            handler_name = type(handler).__name__
+            disabled_handlers.append((
+                handler_name,
+                missing,
+                list(handler.syscalls),
+                list(getattr(handler, 'categories', []))
+            ))
+            # Remove from registry
+            for sc in handler.syscalls:
+                HANDLER_REGISTRY.pop(sc, None)
+                TRACED_SYSCALLS.discard(sc)
+                disabled_syscalls.add(sc)
+            _ALL_HANDLERS.remove(handler)
+
+    if not disabled_handlers:
+        return None  # All probes available
+
+    # Rebuild ALL_DTRACE_PROBES without disabled handlers
+    global ALL_DTRACE_PROBES
+    parts = []
+    for h in _ALL_HANDLERS:
+        if h.dtrace:
+            parts.append(h.dtrace)
+    ALL_DTRACE_PROBES = "\n".join(parts)
+
+    # Calculate category impact
+    # First: count total syscalls per category (before disabling)
+    from collections import defaultdict
+    cat_total = defaultdict(int)
+    cat_disabled = defaultdict(int)
+    for _, missing, all_sc, cats in disabled_handlers:
+        for cat in cats:
+            cat_total[cat] += len(all_sc)
+            cat_disabled[cat] += len(all_sc)  # entire handler disabled
+    # Add remaining handlers
+    for h in _ALL_HANDLERS:
+        for cat in getattr(h, 'categories', []):
+            cat_total[cat] += len(h.syscalls)
+
+    category_impact = {}
+    for cat in sorted(set(list(cat_total.keys()) + list(cat_disabled.keys()))):
+        total = cat_total[cat]
+        disabled = cat_disabled[cat]
+        remaining = total - disabled
+        pct = (remaining / total * 100) if total > 0 else 100
+        category_impact[cat] = {
+            'total': total,
+            'disabled': disabled,
+            'remaining': remaining,
+            'pct_remaining': round(pct, 1),
+        }
+
+    return {
+        'disabled_handlers': disabled_handlers,
+        'disabled_syscalls': disabled_syscalls,
+        'category_impact': category_impact,
+    }
+
+
+def format_probe_validation(result):
+    """Format probe validation results for user display.
+
+    Args:
+        result: dict from validate_probes(), or None if all probes OK.
+
+    Returns:
+        str to print, or empty string if nothing to report.
+    """
+    if result is None:
+        return ""
+
+    lines = []
+    lines.append("")
+    lines.append("⚠️  Some syscall probes are not available on this kernel version:")
+    lines.append("")
+
+    for handler_name, missing, all_sc, cats in result['disabled_handlers']:
+        cat_str = ", ".join(cats)
+        missing_str = ", ".join(missing)
+        lines.append(f"   {handler_name} [{cat_str}]: {missing_str} not available")
+        lines.append(f"     → disabled {len(all_sc)} syscall(s): {', '.join(all_sc)}")
+    
+    lines.append("")
+    lines.append("   Category coverage after disabling unavailable probes:")
+    for cat, info in sorted(result['category_impact'].items()):
+        bar_len = int(info['pct_remaining'] / 5)  # 20 chars = 100%
+        bar = '█' * bar_len + '░' * (20 - bar_len)
+        lines.append(
+            f"     {cat:12s} {bar} {info['pct_remaining']:5.1f}%  "
+            f"({info['remaining']}/{info['total']} syscalls active)"
+        )
+
+    lines.append("")
+    return "\n".join(lines)
+
+
 # Auto-discover on import
 _discover_handlers()
