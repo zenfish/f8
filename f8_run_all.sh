@@ -115,7 +115,7 @@ cleanup_artifacts() {
     rm -f "$f8_stderr_log" 2>/dev/null
     # DB entry (best-effort)
     local db_id
-    db_id=$(f8_data list -j 2>/dev/null | jq -r ".[] | select(.name == \"$base\") | .id" 2>/dev/null || true)
+    db_id=$(f8_data list -j 2>/dev/null | jq -r ".[] | select(.name == \"$base\") | .db_id" 2>/dev/null || true)
     if [ -n "$db_id" ]; then
         f8_data delete "$db_id" 2>/dev/null || true
         echo "  Removed DB entry: $base (id=$db_id)" >&2
@@ -128,7 +128,7 @@ cleanup_artifacts() {
 # (python3.1740963600 → python3), but that's fine — multiple traces
 # of the same command just stack up in the DB with unique JSON files.
 if [ -n "$custom_name" ]; then
-    existing_db_id=$(f8_data list -j 2>/dev/null | jq -r ".[] | select(.name == \"$base\") | .id" 2>/dev/null || true)
+    existing_db_id=$(f8_data list -j 2>/dev/null | jq -r ".[] | select(.name == \"$base\") | .db_id" 2>/dev/null || true)
 
     if [ -n "$existing_db_id" ]; then
         if [ -n "$force_mode" ]; then
