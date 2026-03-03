@@ -179,6 +179,14 @@
             padding: 3px 0;
             white-space: nowrap;
         }
+        .summary-card.dns-card {
+            grid-column: span 2;
+        }
+        .summary-card.dns-card ul {
+            display: grid;
+            grid-template-columns: repeat(auto-fill, minmax(420px, 1fr));
+            gap: 0 24px;
+        }
         .summary-card li.error { color: var(--c-error); }
         .tag { 
             display: inline-block;
@@ -1181,7 +1189,7 @@
                 </div>
                 
                 ${t.dnsLookups && t.dnsLookups.length > 0 ? `
-                <div class="summary-card">
+                <div class="summary-card dns-card">
                     <h3>🌐 DNS Lookups</h3>
                     <ul>
                         ${t.dnsLookups.map(d => {
