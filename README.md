@@ -87,7 +87,7 @@ f8_server
 
 ## Quick Start
 
-> **New to f8?** See [TUTORIAL.md](TUTORIAL.md) for a guided walkthrough using $\color{red}{\texttt{f8\_run\_all.sh}}$ and $\color{red}{\texttt{f8\_open}}$.
+> **New to f8?** See [TUTORIAL.md](TUTORIAL.md) for a guided walkthrough using **`f8_run_all.sh`** and **`f8_open`**.
 
 ### 1. Trace a command
 
