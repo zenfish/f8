@@ -71,7 +71,34 @@ f8_data list                    # Shows as "make"
 See [ENVIRONMENT.md](ENVIRONMENT.md) for full details.
 
 
-## Usage
+## CLI Options
+
+| Flag | Long | Argument | Description |
+|------|------|----------|-------------|
+| `-o` | `--output` | NAME | Output name. `-o make` → `make.EPOCH.json` (auto). `-o make.json` → exact name. `-o -` → stdout. Default: auto-derived from command name. Relative paths use `$F8_OUTPUT`. |
+| `-t` | `--timeout` | SECONDS | Stop tracing after this many seconds. Essential for `-p` (attach to PID) and long-running services. |
+| `-p` | `--pid` | PID | Attach to and trace an already-running process (like `strace -p`). |
+| `-u` | `--user` | USER | Run traced program as this user (name or UID). Default: auto-detect from `$SUDO_USER`. |
+| `-v` | `--verbose` | — | Verbose output to stderr (DTrace activity, probe counts). |
+| `-e` | `--untraced` | — | Show untraced syscalls summary to stderr (detect coverage gaps). |
+| `-jp` | `--json-pretty` | — | Pretty-print JSON output (indented). |
+| `-c` | `--capture-io` | — | Capture actual I/O data (read/write buffer contents as hex). |
+| | `--io-size` | BYTES | Max bytes to capture per I/O op (default: 1M, max ~4M). |
+| | `--iovec` | N | Capture up to N scattered buffers per readv/writev. Implies `--capture-io`. |
+| | `--iovec-syscalls` | LIST | Comma-separated vectored I/O syscalls to capture (default: all). |
+| | `--trace` | SPEC | Filter which syscall categories/names to trace (see [Trace Filtering](#trace-filtering)). |
+| | `--throttle` | — | Run traced program at background priority (`taskpolicy -b`). Reduces DTrace drops for heavy workloads. |
+| | `--cache` | SIZE | Copy local files up to SIZE to cache dir (e.g., `10M`, `500k`, `1G`). |
+| `-d` | `--dynamic-max` | [N] | Override kern.dtrace.difo_maxsize (default: auto-sized). |
+| | `--strsize` | N | DTrace strsize — max path string length (default: 1024). |
+| | `--bufsize` | SIZE | DTrace per-CPU trace buffer (default: `256m`). |
+| | `--dynvarsize` | SIZE | DTrace thread-local variable pool (default: `256m`). |
+| | `--switchrate` | RATE | DTrace buffer drain frequency (default: `50hz`). |
+| | `--cleanrate` | RATE | DTrace dead dynvar reclaim frequency (default: `307hz`). |
+| | `--no-filter-wrapper` | — | Don't filter out wrapper processes (sudo/sh/bash) when using `-u`. |
+
+
+## Usage Examples
 
 ```bash
 # Basic usage - outputs JSON to stdout
