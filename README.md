@@ -290,6 +290,31 @@ The JSON file might be empty or malformed. Check it:
 python3 -c "import json; d=json.load(open('trace.json')); print(f'{len(d.get(\"events\",[]))} events')"
 ```
 
+### Shell aliases and functions don't work
+
+f8 uses `dtrace -c` to launch the traced command, which spawns a new non-interactive shell (`sh -c`). This shell doesn't load your `.bashrc`, `.zshrc`, or `.profile`, so it has no knowledge of your aliases or shell functions.
+
+For example, if you have `alias ll='ls -la'`:
+```bash
+# Won't work — "ll" isn't a real binary
+sudo f8 ll
+
+# Works — use the expanded command directly
+sudo f8 ls -la
+
+# Works — use the full path
+sudo f8 /bin/ls -la
+```
+
+**To find what an alias or function expands to:**
+```bash
+type ll        # ll is aliased to 'ls -la'
+type myfunc    # myfunc is a shell function
+which python   # /usr/bin/python (shows resolved path)
+```
+
+This is a fundamental limitation of how DTrace launches processes — it's not specific to f8. Any command you pass to f8 must be a real executable (or a script with a `#!` shebang), not a shell alias or function.
+
 ## Adding Syscalls
 
 See **[ADDING_SYSCALLS.md](docs/ADDING_SYSCALLS.md)** for a step-by-step guide to adding new system calls. There are two levels:
