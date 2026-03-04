@@ -87,7 +87,7 @@ f8_server
 
 ## Quick Start
 
-> **New to f8?** See [TUTORIAL.md](TUTORIAL.md) for a guided walkthrough using `f8_run_all.sh` and `f8_open`.
+> **New to f8?** See [TUTORIAL.md](TUTORIAL.md) for a guided walkthrough using $\color{red}{\texttt{f8\_run\_all.sh}}$ and $\color{red}{\texttt{f8\_open}}$.
 
 ### 1. Trace a command
 
@@ -162,6 +162,34 @@ sudo f8 -p 12345 -o trace.json -t 30
 
 # Trace with larger buffers for busy programs
 sudo f8 --capture-io --strsize 65536 -o trace.json ./my_program
+```
+
+### 5. Tracing the easy way
+
+`f8_run_all.sh` does everything in one shot — trace, analyze, import into the database, and launch the web viewer:
+
+```bash
+# Trace a command and open the timeline viewer
+sudo f8_run_all.sh curl -fsSL https://example.com
+
+# With I/O capture and vectored I/O buffers
+sudo f8_run_all.sh -c --iovec 4 ./my_server
+
+# Throttle a heavy program to reduce DTrace drops
+sudo f8_run_all.sh --throttle npm install
+```
+
+`f8_open` traces macOS `.app` bundles by resolving the real executable from `Info.plist`:
+
+```bash
+# Trace Signal
+sudo f8_open /Applications/Signal.app
+
+# Trace Steam with I/O capture, using the full pipeline
+sudo f8_open --run-all /Applications/Steam.app
+
+# Just list what executables are in an app bundle (no tracing)
+f8_open --list /Applications/Safari.app
 ```
 
 ## Requirements
