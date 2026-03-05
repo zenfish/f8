@@ -28,9 +28,9 @@ And to be clear: I leaned so much on the amazing [OpenClaw](https://openclaw.ai/
 
 ### Prerequisites
 
-Important - I'm down to a single mac, so only tested on Sequoia. Who knows if it'll keel over or produce useless output elsewhere.
+Important - primarily tested on Sequoia, lightly tested on Catalina. Who knows if it'll keel over or produce useless output elsewhere.
 
-- macOS (tested on 15.3 Sequoia)
+- macOS (tested on 15.3 Sequoia, lightly tested on 10.15 Catalina)
 - Python 3.8+
 - Node.js 20+ (for the web server)
 - Root privileges (DTrace requires sudo)
@@ -194,7 +194,7 @@ f8_open --list /Applications/Safari.app
 
 ## Requirements
 
-- macOS (tested on 15.3 Sequoia)
+- macOS (tested on 15.3 Sequoia, lightly tested on 10.15 Catalina)
 - SIP disabled (or at least dtrace restrictions disabled) for full tracing
 - Python 3.8+
 - Root privileges (DTrace requires sudo)
