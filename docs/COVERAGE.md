@@ -45,16 +45,18 @@ f8 traces a subset of the macOS syscall table. This document tracks what we cove
 
 ```
 Traced:                          Not traced:
-  accept, accept_nocancel          disconnectx
-  bind                             necp_match_policy
-  connect, connect_nocancel        peeloff
-  connectx                         pid_shutdown_sockets
-  getpeername                      socket_delegate
+  accept, accept_nocancel          necp_match_policy
+  bind                             pid_shutdown_sockets
+  connect, connect_nocancel
+  connectx
+  disconnectx
+  getpeername
   getsockname
   getsockopt
   listen
   necp_client_action, necp_open
   necp_session_action, necp_session_open
+  peeloff
   recvfrom, recvfrom_nocancel
   recvmsg, recvmsg_nocancel
   recvmsg_x
