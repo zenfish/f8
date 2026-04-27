@@ -42,11 +42,25 @@
         }
         .info-item { color: #888; }
         .info-item span { color: #d4d4d4; }
-        
+        .info-item.range { color: #888; }
+        .info-item.range .range-vals { color: #d4d4d4; }
+
+        .search-box {
+            margin-left: auto;
+            padding: 4px 10px;
+            border: 1px solid #3c3c3c;
+            border-radius: 4px;
+            background: #1e1e1e;
+            color: #d4d4d4;
+            font-size: 12px;
+            width: 240px;
+            font-family: inherit;
+        }
+        .search-box:focus { outline: none; border-color: #0e639c; }
+
         .filter-btns {
             display: flex;
             gap: 6px;
-            margin-left: auto;
         }
         .filter-btn {
             padding: 4px 10px;
@@ -60,23 +74,31 @@
         }
         .filter-btn:hover { border-color: #5c5c5c; color: #ccc; }
         .filter-btn.active { background: #0e639c; border-color: #0e639c; color: white; }
-        
+
         .container {
             display: flex;
             height: calc(100vh - 90px);
         }
-        
+
         .sidebar {
-            width: 50%;
-            max-width: 700px;
-            min-width: 400px;
+            width: var(--sidebar-width, 50%);
+            min-width: 280px;
             background: #252526;
             border-right: 1px solid #3c3c3c;
-            overflow-y: auto;
             flex-shrink: 0;
             display: flex;
             flex-direction: column;
+            min-height: 0; /* allow inner overflow:auto child to scroll */
+            overflow: hidden;
         }
+        .sidebar-resizer {
+            width: 5px;
+            background: #3c3c3c;
+            cursor: col-resize;
+            flex-shrink: 0;
+            transition: background 0.15s;
+        }
+        .sidebar-resizer:hover, .sidebar-resizer.dragging { background: #0e639c; }
         .sidebar h3 {
             padding: 12px 16px;
             font-size: 11px;
@@ -322,15 +344,17 @@
         <div class="info-item">Command: <span id="command">-</span></div>
         <div class="info-item">Objects: <span id="object-count">-</span></div>
         <div class="info-item">Total I/O: <span id="total-io">-</span></div>
+        <div class="info-item range" id="range-info" style="display:none">Showing <span class="range-vals" id="range-vals">—</span></div>
+        <input type="text" class="search-box" id="search" placeholder="Search target...">
         <div class="filter-btns" id="filter-btns" style="display:none">
             <button class="filter-btn active" data-filter="all">All</button>
             <button class="filter-btn" data-filter="hosts">Hosts</button>
             <button class="filter-btn" data-filter="sockets">Sockets</button>
         </div>
     </div>
-    
+
     <div class="container">
-        <div class="sidebar">
+        <div class="sidebar" id="sidebar">
             <div class="object-header" id="object-header">
                 <span data-sort="target" class="resizable" data-resize="target">Target</span>
                 <span data-sort="pid" class="resizable" data-resize="pid" style="text-align:right">PID</span>
@@ -341,7 +365,8 @@
                 <li class="loading" style="display:block;grid-template-columns:1fr">Loading...</li>
             </ul>
         </div>
-        
+        <div class="sidebar-resizer" id="sidebar-resizer" title="Drag to resize"></div>
+
         <div class="detail-panel" id="detail-panel">
             <div class="empty-state">
                 <h3>Select an object</h3>
@@ -364,14 +389,23 @@
     document.getElementById('type-badge').textContent = badgeText;
     document.getElementById('back-link').href = `/?trace=${traceId}`;
     
-    let allObjects = [];  // Original unfiltered
-    let objects = [];     // Currently displayed (may be filtered)
+    let allObjects = [];  // All loaded so far (across pages)
+    let objects = [];     // Currently displayed (after hosts/sockets filter)
     let selectedTarget = null;
     let objectSortCol = 'total';
     let objectSortAsc = false;
     let eventSortCol = 'seq';
     let eventSortAsc = true;
     let currentFilter = filter || 'all';
+
+    // Pagination + search state
+    let total = 0;             // Server-reported total matching search
+    let pageOffset = 0;        // Next offset to request
+    let pageSize = 500;
+    let isLoading = false;
+    let exhausted = false;
+    let currentSearch = '';
+    let traceMeta = null;      // First page caches trace info
     
     function formatBytes(bytes) {
         if (bytes === 0) return '0 B';
@@ -400,36 +434,77 @@
         return false;
     }
     
-    // Load objects
-    fetch(`/api/traces/${traceId}/objects?type=${type}`)
-        .then(r => r.json())
-        .then(data => {
+    // For network we want most/all results in one shot since dataset is small
+    // and client-side hosts/sockets filter only sees what's loaded.
+    // For files, paginate with infinite scroll.
+    if (type === 'network') pageSize = 5000;
+
+    async function loadPage(reset) {
+        if (isLoading) return;
+        if (!reset && exhausted) return;
+        isLoading = true;
+
+        if (reset) {
+            pageOffset = 0;
+            allObjects = [];
+            objects = [];
+            exhausted = false;
+            // Clear list to show loading
+            document.getElementById('object-list').innerHTML = '<li class="loading" style="display:block;grid-template-columns:1fr">Loading...</li>';
+        }
+
+        const params = new URLSearchParams({
+            type,
+            offset: pageOffset,
+            limit: pageSize,
+            search: currentSearch,
+            sortCol: objectSortCol,
+            sortDir: objectSortAsc ? 'asc' : 'desc'
+        });
+
+        try {
+            const data = await fetch(`/api/traces/${traceId}/objects?${params}`).then(r => r.json());
             if (data.error) {
                 document.getElementById('object-list').innerHTML = `<li class="error">${data.error}</li>`;
+                isLoading = false;
                 return;
             }
-            
-            allObjects = data.objects;
-            document.getElementById('command').textContent = data.trace.command;
-            
-            // Show filter buttons for network type
-            if (type === 'network') {
+
+            if (!traceMeta) {
+                traceMeta = data.trace;
+                document.getElementById('command').textContent = data.trace.command;
+            }
+
+            allObjects = allObjects.concat(data.objects);
+            pageOffset += data.objects.length;
+            // Server only sends `total` on first page (offset=0). Preserve the
+            // previously-known value on subsequent pages.
+            if (typeof data.total === 'number') {
+                total = data.total;
+            } else if (typeof total !== 'number') {
+                total = allObjects.length;
+            }
+            if (data.objects.length < pageSize || allObjects.length >= total) {
+                exhausted = true;
+            }
+
+            // Network type: filter buttons (only set up once)
+            if (type === 'network' && !document.getElementById('filter-btns').dataset.bound) {
                 document.getElementById('filter-btns').style.display = 'flex';
                 setupFilterButtons();
-                // Set initial active state from URL param
+                document.getElementById('filter-btns').dataset.bound = '1';
                 if (currentFilter) {
                     document.querySelectorAll('.filter-btn').forEach(b => {
                         b.classList.toggle('active', b.dataset.filter === currentFilter);
                     });
                 }
             }
-            
+
             applyObjectFilter();
-            renderObjectList();
-            setupObjectHeaderSort();
-            
-            // Auto-select target if specified in URL
-            if (targetParam) {
+            renderObjectList(!reset);
+            updateRangeInfo();
+
+            if (reset && targetParam) {
                 const idx = objects.findIndex(o => o.target === targetParam);
                 if (idx >= 0) {
                     selectObject(idx);
@@ -440,20 +515,73 @@
                     }
                 }
             }
-        })
-        .catch(err => {
+        } catch (err) {
             document.getElementById('object-list').innerHTML = `<li class="error">Failed to load: ${err.message}</li>`;
+        } finally {
+            isLoading = false;
+        }
+    }
+
+    function updateRangeInfo() {
+        const el = document.getElementById('range-info');
+        const vals = document.getElementById('range-vals');
+        if (!el || !vals) return;
+        if (total === 0) {
+            el.style.display = 'none';
+            return;
+        }
+        el.style.display = '';
+        const shown = allObjects.length;
+        const totalStr = total.toLocaleString();
+        if (currentSearch) {
+            vals.textContent = `${shown.toLocaleString()} hits · 1-${shown.toLocaleString()} / ${totalStr}`;
+        } else {
+            vals.textContent = `1-${shown.toLocaleString()} / ${totalStr}`;
+        }
+    }
+
+    // Initial load
+    loadPage(true);
+
+    // Set up sort header once (re-fetches on click)
+    setupObjectHeaderSort();
+
+    // Search box: debounced reset+refetch
+    {
+        const searchInput = document.getElementById('search');
+        let searchDebounce = null;
+        searchInput.addEventListener('input', e => {
+            clearTimeout(searchDebounce);
+            searchDebounce = setTimeout(() => {
+                currentSearch = e.target.value.trim();
+                loadPage(true);
+            }, 300);
         });
+    }
+
+    // Infinite scroll — attach to both the list and its sidebar wrapper since
+    // either may end up being the actual scroll container depending on layout.
+    {
+        const list = document.getElementById('object-list');
+        const sidebar = document.getElementById('sidebar');
+        const onScroll = (el) => {
+            if (isLoading || exhausted) return;
+            if (el.scrollTop + el.clientHeight >= el.scrollHeight - 200) {
+                loadPage(false);
+            }
+        };
+        list.addEventListener('scroll', () => onScroll(list));
+        if (sidebar) sidebar.addEventListener('scroll', () => onScroll(sidebar));
+    }
     
     function applyObjectFilter() {
-        // Apply filter
+        // Apply client-side hosts/sockets filter (network only)
         if (currentFilter === 'hosts') {
             objects = allObjects.filter(o => isIPOrHost(o.target));
         } else if (currentFilter === 'sockets') {
             objects = allObjects.filter(o => !isIPOrHost(o.target));
         } else {
             objects = [...allObjects];
-            // For "all", sort IPs first, then sockets
             if (type === 'network') {
                 objects.sort((a, b) => {
                     const aIsIP = isIPOrHost(a.target);
@@ -464,9 +592,15 @@
                 });
             }
         }
-        
-        // Update counts
-        document.getElementById('object-count').textContent = objects.length;
+
+        // Object count: show server total when not client-filtering, else loaded slice
+        const countEl = document.getElementById('object-count');
+        const t = (typeof total === 'number') ? total : 0;
+        if (type === 'network' && currentFilter !== 'all') {
+            countEl.textContent = `${objects.length.toLocaleString()} / ${t.toLocaleString()}`;
+        } else {
+            countEl.textContent = t.toLocaleString();
+        }
         const totalIO = objects.reduce((sum, o) => sum + (o.total || 0), 0);
         document.getElementById('total-io').textContent = formatBytes(totalIO);
     }
@@ -475,112 +609,114 @@
         document.getElementById('filter-btns').addEventListener('click', e => {
             const btn = e.target.closest('.filter-btn');
             if (!btn) return;
-            
+
             currentFilter = btn.dataset.filter;
             document.querySelectorAll('.filter-btn').forEach(b => b.classList.remove('active'));
             btn.classList.add('active');
-            
+
             applyObjectFilter();
             renderObjectList();
+            updateRangeInfo();
         });
     }
     
     function setupObjectHeaderSort() {
         document.getElementById('object-header').addEventListener('click', e => {
-            const col = e.target.dataset.sort;
-            if (!col) return;
-            
+            const span = e.target.closest('span[data-sort]');
+            if (!span) return;
+            // Ignore clicks on the resize hot-zone (rightmost ~10px of header span)
+            const rect = span.getBoundingClientRect();
+            if (e.clientX > rect.right - 10 && span.classList.contains('resizable')) return;
+
+            const col = span.dataset.sort;
             if (objectSortCol === col) {
                 objectSortAsc = !objectSortAsc;
             } else {
                 objectSortCol = col;
                 objectSortAsc = col === 'target'; // Ascending for target, descending for numbers
             }
-            
-            sortObjects();
-            renderObjectList();
+            // Server-side sort: reset and refetch
+            loadPage(true);
         });
     }
     
-    function sortObjects() {
-        const col = objectSortCol;
-        const asc = objectSortAsc ? 1 : -1;
-        
-        objects.sort((a, b) => {
-            let va, vb;
-            switch(col) {
-                case 'target': va = a.target || ''; vb = b.target || ''; break;
-                case 'pid': va = a.pid || 0; vb = b.pid || 0; break;
-                case 'read': va = a.read || 0; vb = b.read || 0; break;
-                case 'write': va = a.write || 0; vb = b.write || 0; break;
-                default: va = a.total || 0; vb = b.total || 0;
+    let renderedCount = 0;
+    let lastWasIP = null; // For network section dividers, preserved across appends
+    let listClickBound = false;
+
+    function buildRowHtml(o, i) {
+        let prefix = '';
+        if (type === 'network') {
+            const isIP = isIPOrHost(o.target);
+            if (lastWasIP === null && isIP) {
+                prefix += '<li class="section-divider" style="grid-template-columns:1fr">Hosts &amp; URLs</li>';
+            } else if (lastWasIP && !isIP) {
+                prefix += '<li class="section-divider" style="grid-template-columns:1fr">Sockets</li>';
             }
-            if (typeof va === 'string') return va.localeCompare(vb) * asc;
-            return (va - vb) * asc;
-        });
+            lastWasIP = isIP;
+        }
+
+        let displayTarget = escapeHtml(o.target);
+        let titleTarget = o.target;
+        if (o.hostname) {
+            displayTarget = `<span style="color:#4ec9b0">${escapeHtml(o.hostname)}</span> <span style="color:#666;font-size:10px">${escapeHtml(o.target)}</span>`;
+            titleTarget = `${o.hostname} (${o.target})`;
+        }
+
+        return prefix + `<li data-idx="${i}" title="${escapeHtml(titleTarget)}">
+            <span class="col-target">${displayTarget}</span>
+            <span class="col-pid">${o.pid || '—'}</span>
+            <span class="col-read">${formatBytes(o.read)}</span>
+            <span class="col-write">${formatBytes(o.write)}</span>
+        </li>`;
     }
-    
-    function renderObjectList() {
+
+    // append=true: only render rows after `renderedCount` (incremental)
+    // append=false: clear list and render all
+    function renderObjectList(append) {
         const list = document.getElementById('object-list');
         const header = document.getElementById('object-header');
-        
-        // Update header sort indicators
+
+        // Update header sort indicators (cheap, always)
         header.querySelectorAll('span').forEach(span => {
             span.classList.remove('sort-active', 'sort-asc', 'sort-desc');
             if (span.dataset.sort === objectSortCol) {
                 span.classList.add('sort-active', objectSortAsc ? 'sort-asc' : 'sort-desc');
             }
         });
-        
+
+        if (!append) {
+            list.innerHTML = '';
+            renderedCount = 0;
+            lastWasIP = null;
+        }
+
         if (objects.length === 0) {
-            list.innerHTML = `<li style="grid-template-columns:1fr;color:#666">No ${type} found</li>`;
+            if (!append) {
+                list.innerHTML = `<li style="grid-template-columns:1fr;color:#666">No ${type} found</li>`;
+            }
             return;
         }
-        
+
+        // Build HTML only for the new slice
         let html = '';
-        let lastWasIP = null;
-        
-        objects.forEach((o, i) => {
-            // For network type, add section dividers
-            if (type === 'network') {
-                const isIP = isIPOrHost(o.target);
-                if (lastWasIP === null || (lastWasIP && !isIP)) {
-                    if (lastWasIP === null && isIP) {
-                        html += '<li class="section-divider" style="grid-template-columns:1fr">Hosts & URLs</li>';
-                    } else if (lastWasIP && !isIP) {
-                        html += '<li class="section-divider" style="grid-template-columns:1fr">Sockets</li>';
-                    }
-                }
-                lastWasIP = isIP;
-            }
-            
-            // Display hostname with IP if available
-            let displayTarget = escapeHtml(o.target);
-            let titleTarget = o.target;
-            if (o.hostname) {
-                displayTarget = `<span style="color:#4ec9b0">${escapeHtml(o.hostname)}</span> <span style="color:#666;font-size:10px">${escapeHtml(o.target)}</span>`;
-                titleTarget = `${o.hostname} (${o.target})`;
-            }
-            
-            html += `<li data-idx="${i}" title="${escapeHtml(titleTarget)}">
-                <span class="col-target">${displayTarget}</span>
-                <span class="col-pid">${o.pid || '—'}</span>
-                <span class="col-read">${formatBytes(o.read)}</span>
-                <span class="col-write">${formatBytes(o.write)}</span>
-            </li>`;
-        });
-        
-        list.innerHTML = html;
-        
-        list.querySelectorAll('li[data-idx]').forEach(li => {
-            li.addEventListener('click', () => {
-                const idx = parseInt(li.dataset.idx, 10);
-                selectObject(idx);
-                
-                list.querySelectorAll('li').forEach(l => l.classList.remove('active'));
+        for (let i = renderedCount; i < objects.length; i++) {
+            html += buildRowHtml(objects[i], i);
+        }
+        if (html) list.insertAdjacentHTML('beforeend', html);
+        renderedCount = objects.length;
+
+        // Single delegated click handler, attached once
+        if (!listClickBound) {
+            listClickBound = true;
+            list.addEventListener('click', e => {
+                const li = e.target.closest('li[data-idx]');
+                if (!li) return;
+                list.querySelectorAll('li.active').forEach(l => l.classList.remove('active'));
                 li.classList.add('active');
+                selectObject(parseInt(li.dataset.idx, 10));
             });
-        });
+        }
     }
     
     function selectObject(idx) {
@@ -924,6 +1060,43 @@
                 document.body.style.cursor = '';
                 document.body.style.userSelect = '';
             }
+        });
+    })();
+
+    // Sidebar resize: drag the divider to widen sidebar (and Target column with it)
+    (function setupSidebarResize() {
+        const resizer = document.getElementById('sidebar-resizer');
+        const sidebar = document.getElementById('sidebar');
+        if (!resizer || !sidebar) return;
+
+        let dragging = false;
+        let startX = 0;
+        let startWidth = 0;
+
+        resizer.addEventListener('mousedown', e => {
+            dragging = true;
+            startX = e.clientX;
+            startWidth = sidebar.offsetWidth;
+            resizer.classList.add('dragging');
+            document.body.style.cursor = 'col-resize';
+            document.body.style.userSelect = 'none';
+            e.preventDefault();
+        });
+
+        document.addEventListener('mousemove', e => {
+            if (!dragging) return;
+            const delta = e.clientX - startX;
+            const max = window.innerWidth - 240; // leave room for detail panel
+            const newWidth = Math.max(280, Math.min(max, startWidth + delta));
+            document.documentElement.style.setProperty('--sidebar-width', newWidth + 'px');
+        });
+
+        document.addEventListener('mouseup', () => {
+            if (!dragging) return;
+            dragging = false;
+            resizer.classList.remove('dragging');
+            document.body.style.cursor = '';
+            document.body.style.userSelect = '';
         });
     })();
 })();
