@@ -1,18 +1,46 @@
 #!/usr/bin/env python3
 """
-f8_categories.py - Syscall category definitions (loaded from syscalls.json)
+f8_categories.py -- Syscall-to-category mapping for f8 trace visualization
 
-This module provides the mapping of syscalls to categories, colors, and display
-order. All data is loaded from syscalls.json — edit THAT file to add/remove
-syscalls or categories.
+WHAT:    Loads syscall category definitions from syscalls.json and provides
+         a lookup API: given a syscall name, returns its category, display
+         color, text color, and label.  Categories group syscalls by
+         function (file, network, process, memory, IPC, MAC, etc.) for
+         color-coded visualization in f8's timeline view.  Also provides
+         standalone mode for summary/verification of the category database.
 
-Usage as module:
+WHY:     f8 traces produce thousands of syscall events that need visual
+         grouping to be interpretable.  This module is the single source of
+         truth for syscall classification -- used by f8_analyze, f8_import,
+         f8_timeline, and the web server.  Data-driven (syscalls.json) so
+         categories can be updated without code changes.
+
+RESULT:  Covers 200+ macOS/BSD syscalls across ~15 categories.  Includes
+         a --verify mode to check for duplicate syscall assignments and
+         invalid color codes.
+
+TARGET:  macOS (syscall names are macOS/BSD-specific).  Used as a Python
+         module by other f8 tools, or standalone for inspection.
+
+BUILD/RUN:
+    # As module (imported by f8_analyze, f8_import, etc.):
     from f8_categories import get_category, get_color, get_text_color
 
-Usage standalone:
-    ./f8_categories.py           # Summary
-    ./f8_categories.py -a        # All syscalls
-    ./f8_categories.py --verify  # Verify no duplicates, valid colors
+    # Standalone:
+    ./f8_categories.py              # Summary table
+    ./f8_categories.py -a           # All syscalls per category
+    ./f8_categories.py --verify     # Check for duplicates / bad colors
+    ./f8_categories.py --json       # Export as JSON
+
+    Requires: syscalls.json in the same directory (or current directory).
+
+SEE ALSO:
+    - syscalls.json               (the actual category data -- edit this file)
+    - f8_analyze                  (trace analysis, uses this module)
+    - f8_import                   (SQLite import, uses this module)
+    - f8_run_all.sh               (end-to-end trace + analyze + serve)
+
+Authors: Dan Farmer & Claude
 """
 
 import json
