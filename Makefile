@@ -1,26 +1,32 @@
-# f8 — install, test, and clean
+# f8 — build, install, test, clean
 #
-# Default target is `help` so `make` with no args is harmless. Run any of:
+# `make` (with no args) builds the in-tree artifacts (server/node_modules).
+# `make install` deploys the tree (config dir + symlinks). The two are
+# separate so build and deploy can be done independently:
 #
-#   make help              Show this help.
-#   make install           Install Node deps in server/, create ~/.f8/config
-#                          and ~/traces, symlink tools into $(LINK_DIR), and
-#                          report SIP DTrace status.
-#   make install-no-link   Same as install, but skip the symlink step. Use
-#                          when /usr/local/bin isn't writable and you'd
-#                          rather just add this directory to your PATH.
-#   make test              Run the full pytest suite (no root needed).
-#   make test-unit         Unit tests only.
-#   make test-cov          Tests with coverage report.
-#   make test-e2e          End-to-end tests (requires sudo).
-#   make verify            Sanity-check syscall categories / colors.
-#   make clean             Remove in-tree artifacts (pytest cache, coverage,
-#                          server/node_modules). Run `make install` to put
-#                          them back.
-#   make uninstall         clean + remove the symlinks `make install` left
-#                          in $(LINK_DIR) (only those still pointing into
-#                          this tree). Does NOT touch ~/.f8 or ~/traces --
-#                          those are user data.
+#   make             Same as `make all`. Build only -- npm install in
+#                    server/. Nothing leaves the source tree.
+#   make help        Show this help.
+#   make install     Deploy. Depends on `all`, then creates ~/.f8/config
+#                    + ~/traces and symlinks tools into $(LINK_DIR).
+#                    Reports SIP DTrace status at the end.
+#   make install-no-link
+#                    Same as install, but skip the symlink step. Use
+#                    when /usr/local/bin isn't writable and you'd rather
+#                    just put this directory on your PATH yourself.
+#   make test        Run the full pytest suite (no root needed).
+#   make test-unit   Unit tests only.
+#   make test-cov    Tests with coverage report.
+#   make test-e2e    End-to-end tests (requires sudo).
+#   make verify      Sanity-check syscall categories / colors.
+#   make clean       Remove everything `make` (and the test suite)
+#                    produced inside this tree -- node_modules, pytest
+#                    cache, coverage. Run `make` to rebuild.
+#   make uninstall   Undo `make install`: remove the symlinks from
+#                    $(LINK_DIR) that still point back into this tree.
+#                    Does NOT remove built artifacts (run `make clean`
+#                    for that) and does NOT touch ~/.f8 or ~/traces
+#                    (user data).
 #
 # Variables you can override on the command line:
 #
@@ -28,8 +34,8 @@
 #   F8_HOME=$$HOME/.f8         Config directory created by `install`.
 #   TRACES_DIR=$$HOME/traces   Default trace output directory.
 
-.DEFAULT_GOAL := help
-.PHONY: help install install-no-link deps config link sip-check \
+.DEFAULT_GOAL := all
+.PHONY: all help install install-no-link deps config link sip-check \
         test test-unit test-cov test-e2e verify clean uninstall
 
 LINK_DIR   ?= /usr/local/bin
@@ -37,15 +43,32 @@ F8_HOME    ?= $(HOME)/.f8
 TRACES_DIR ?= $(HOME)/traces
 TOOLS      := f8 f8_analyze f8_timeline f8_import f8_server f8_data f8_open f8_run_all.sh
 
+# ── build (default) ────────────────────────────────────────────────
+# `make` / `make all` builds the only thing that needs building: the
+# Node dependencies for the web server. Pure in-tree work, no deploy.
+
+all: deps
+	@echo ""
+	@echo "Build done. Run \`make install\` to deploy (config + symlinks)."
+
 help:
 	@awk 'NR==1{next} /^#/{sub(/^# ?/,""); print; next} {exit}' Makefile
 
-# ── install ────────────────────────────────────────────────────────
-# Folds the old install.sh into make targets so there's a single
-# install/uninstall surface. Each sub-target is independently runnable
-# (`make deps`, `make config`, `make link`, `make sip-check`).
+deps:
+	@echo "Installing Node.js dependencies..."
+	@if command -v node >/dev/null 2>&1; then \
+	    ( cd server && npm install --omit=dev 2>&1 | tail -3 ); \
+	    echo "   server/node_modules installed"; \
+	else \
+	    echo "   WARNING: Node.js not found -- server/import won't work until you install Node 20+"; \
+	fi
 
-install: deps config link sip-check
+# ── install (deploy) ───────────────────────────────────────────────
+# `install` is deploy-only: build first (`all`), then write config and
+# symlinks. Each sub-step is independently runnable (`make config`,
+# `make link`, `make sip-check`).
+
+install: all config link sip-check
 	@echo ""
 	@echo "=== Done ==="
 	@echo ""
@@ -56,23 +79,14 @@ install: deps config link sip-check
 	@echo "  f8_import test.json && f8_server"
 	@echo "  -> http://localhost:3000"
 
-install-no-link: deps config sip-check
+install-no-link: all config sip-check
 	@echo ""
 	@echo "Symlink step skipped. Add this directory to your PATH:"
 	@echo "  export PATH=\"$$(pwd):\$$PATH\""
 
-deps:
-	@echo "1. Installing Node.js dependencies..."
-	@if command -v node >/dev/null 2>&1; then \
-	    ( cd server && npm install --omit=dev 2>&1 | tail -3 ); \
-	    echo "   server/node_modules installed"; \
-	else \
-	    echo "   WARNING: Node.js not found -- server/import won't work until you install Node 20+"; \
-	fi
-
 config:
 	@echo ""
-	@echo "2. Setting up config..."
+	@echo "Setting up config..."
 	@mkdir -p "$(F8_HOME)" "$(TRACES_DIR)"
 	@if [ -f "$(F8_HOME)/config" ]; then \
 	    echo "   $(F8_HOME)/config already exists (not overwriting)"; \
@@ -91,7 +105,7 @@ config:
 
 link:
 	@echo ""
-	@echo "3. PATH setup..."
+	@echo "PATH setup..."
 	@SCRIPT_DIR="$$(pwd)"; \
 	if command -v f8 >/dev/null 2>&1; then \
 	    EXISTING=$$(command -v f8); \
@@ -120,7 +134,7 @@ link:
 
 sip-check:
 	@echo ""
-	@echo "4. Checking SIP status..."
+	@echo "Checking SIP status..."
 	@if csrutil status 2>/dev/null | grep -qi "dtrace restrictions disabled"; then \
 	    echo "   DTrace restrictions disabled -- full tracing available"; \
 	elif csrutil status 2>/dev/null | grep -qi "disabled"; then \
@@ -155,26 +169,19 @@ verify:
 	python3 f8_categories.py --verify
 
 # ── clean / uninstall ──────────────────────────────────────────────
-# clean: in-tree only. Removes everything `make install` and the test
-# suite produced inside this checkout. Does NOT touch ~/.f8, ~/traces,
-# or symlinks in $(LINK_DIR) (those are user-owned / out-of-tree --
-# use `make uninstall` for the symlinks).
+# clean removes everything `make` and the test suite produced in
+# this tree. uninstall undoes `make install` -- it removes the
+# symlinks but leaves built artifacts alone (run `make clean` if
+# you want both). Neither target touches ~/.f8 or ~/traces.
 
 clean:
 	@echo "Removing in-tree artifacts..."
 	rm -rf .pytest_cache tests/__pycache__ tests/unit/__pycache__ \
 	       tests/integration/__pycache__ .coverage htmlcov/
 	rm -rf server/node_modules
-	@echo "Done. Run \`make install\` to reinstall."
+	@echo "Done. Run \`make\` to rebuild."
 
-# uninstall: clean + remove the symlinks `make install` dropped into
-# LINK_DIR (only those that still point back into THIS source tree, so
-# a different f8 checkout's symlinks aren't disturbed). User data in
-# ~/.f8 and ~/traces is left alone -- delete those by hand if you
-# really want a full wipe.
-
-uninstall: clean
-	@echo ""
+uninstall:
 	@echo "Removing symlinks from $(LINK_DIR) that point back into this tree..."
 	@SCRIPT_DIR="$$(pwd)"; \
 	removed=0; \
@@ -195,6 +202,9 @@ uninstall: clean
 	    fi; \
 	done; \
 	echo "  $$removed symlink(s) removed."
+	@echo ""
+	@echo "Built artifacts (server/node_modules etc.) were NOT removed."
+	@echo "Run \`make clean\` if you want to remove them too."
 	@echo ""
 	@echo "User data was NOT touched. To remove it manually:"
 	@echo "    rm -rf ~/.f8 ~/traces"
