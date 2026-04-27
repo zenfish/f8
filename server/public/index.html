@@ -121,6 +121,62 @@
             border: none;
             font-size: 14px;
         }
+
+        /* Custom trace dropdown — native <select> on macOS ignores option styling,
+           so we render our own to right-align the date column. */
+        .custom-select { position: relative; }
+        .cs-btn {
+            padding: 6px 28px 6px 12px;
+            border-radius: 4px;
+            border: none;
+            font-size: 14px;
+            cursor: pointer;
+            background: white;
+            color: #222;
+            min-width: 380px;
+            text-align: left;
+            position: relative;
+            font-family: inherit;
+        }
+        .cs-btn .cs-arrow {
+            position: absolute;
+            right: 10px;
+            top: 50%;
+            transform: translateY(-50%);
+            font-size: 10px;
+            color: #888;
+        }
+        .cs-menu {
+            position: absolute;
+            top: calc(100% + 4px);
+            left: 0;
+            min-width: 100%;
+            max-height: 60vh;
+            overflow-y: auto;
+            background: white;
+            color: #222;
+            border-radius: 4px;
+            box-shadow: 0 6px 24px rgba(0,0,0,0.25);
+            list-style: none;
+            margin: 0;
+            padding: 4px 0;
+            z-index: 1000;
+            white-space: nowrap;
+        }
+        .cs-item {
+            display: flex;
+            align-items: baseline;
+            justify-content: space-between;
+            gap: 32px;
+            padding: 6px 14px;
+            cursor: pointer;
+            font-size: 13px;
+        }
+        .cs-item:hover { background: #eef4fb; }
+        .cs-item.active { background: #d6e8fa; }
+        .cs-item-main { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+        .cs-item-count { color: #777; font-size: 12px; }
+        .cs-item-date { color: #666; font-size: 12px; flex-shrink: 0; font-variant-numeric: tabular-nums; }
         
         .container { padding: 20px; max-width: 1900px; margin: 0 auto; }
         
@@ -760,9 +816,13 @@
 <body>
     <div class="header">
         <h1>🔬 f8</h1>
-        <select id="trace-select">
-            <option value="">Select a trace...</option>
-        </select>
+        <div class="custom-select" id="trace-select-wrap">
+            <button type="button" class="cs-btn" id="trace-select-btn">
+                <span class="cs-label" id="trace-select-label">Select a trace...</span>
+                <span class="cs-arrow">▾</span>
+            </button>
+            <ul class="cs-menu" id="trace-select-menu" hidden></ul>
+        </div>
         <div class="view-toggle" id="view-toggle" style="display:none">
             <button class="active" data-view="timeline">Timeline</button>
             <button data-view="tree">Process Tree</button>
@@ -871,7 +931,71 @@
     let treeData = null; // Cached tree data
     
     const $ = id => document.getElementById(id);
-    const traceSelect = $('trace-select');
+    // Custom dropdown wrapper (native <select> ignores option CSS on macOS,
+    // so we render our own and expose a .value / .addEventListener('change')
+    // surface that mirrors the old <select> API.
+    const traceSelect = (function() {
+        const wrap = $('trace-select-wrap');
+        const btn = $('trace-select-btn');
+        const label = $('trace-select-label');
+        const menu = $('trace-select-menu');
+        const items = []; // [{value, name, count, date, li}]
+        let value = '';
+        const listeners = { change: [] };
+
+        btn.addEventListener('click', e => {
+            e.stopPropagation();
+            menu.hidden = !menu.hidden;
+        });
+        document.addEventListener('click', e => {
+            if (!wrap.contains(e.target)) menu.hidden = true;
+        });
+        document.addEventListener('keydown', e => {
+            if (e.key === 'Escape') menu.hidden = true;
+        });
+
+        function setLabel() {
+            const item = items.find(it => it.value === value);
+            label.textContent = item
+                ? `${item.name} (${item.count.toLocaleString()} events)`
+                : 'Select a trace...';
+            items.forEach(it => it.li.classList.toggle('active', it.value === value));
+        }
+
+        return {
+            get value() { return value; },
+            set value(v) {
+                value = v == null ? '' : String(v);
+                setLabel();
+            },
+            addOption({ value, name, count, date }) {
+                const v = String(value);
+                const li = document.createElement('li');
+                li.className = 'cs-item';
+                li.dataset.value = v;
+                const escName = name.replace(/[&<>"]/g, c =>
+                    ({ '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;' })[c]);
+                const escDate = (date || '').replace(/[&<>"]/g, c =>
+                    ({ '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;' })[c]);
+                li.innerHTML =
+                    `<span class="cs-item-main">${escName} <span class="cs-item-count">(${count.toLocaleString()} events)</span></span>` +
+                    `<span class="cs-item-date">${escDate}</span>`;
+                li.addEventListener('click', () => {
+                    value = v;
+                    setLabel();
+                    menu.hidden = true;
+                    listeners.change.forEach(cb => {
+                        try { cb({ target: { value: v } }); } catch (_) {}
+                    });
+                });
+                items.push({ value: v, name, count, date, li });
+                menu.appendChild(li);
+            },
+            addEventListener(type, cb) {
+                if (listeners[type]) listeners[type].push(cb);
+            }
+        };
+    })();
     const homeView = $('home-view');
     const traceView = $('trace-view');
     const traceList = $('trace-list');
@@ -978,10 +1102,12 @@
             traces.sort((a, b) => (b.imported_at || '').localeCompare(a.imported_at || ''));
             
             traces.forEach(t => {
-                const opt = document.createElement('option');
-                opt.value = t.id;
-                opt.textContent = `${t.name} (${t.event_count.toLocaleString()} events)`;
-                traceSelect.appendChild(opt);
+                traceSelect.addOption({
+                    value: t.id,
+                    name: t.name,
+                    count: t.event_count,
+                    date: formatTimestamp(t.imported_at)
+                });
             });
             
             // ── Time-bracketed trace list with colored outlines ──
