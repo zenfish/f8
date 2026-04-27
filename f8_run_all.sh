@@ -1,6 +1,52 @@
 #!/bin/bash
 #
-# f8_run_all.sh — Trace, analyze, import, and serve in one shot
+# f8_run_all.sh -- End-to-end f8 workflow: trace, analyze, import, serve
+#
+# WHAT:    Single command to run a complete f8 syscall tracing session:
+#          (1) Traces a program or attaches to a PID using f8 (DTrace-based
+#              syscall tracer with I/O capture), (2) runs f8_analyze to
+#              save captured I/O and produce a text analysis, (3) imports
+#              the trace into SQLite via f8_import, (4) starts f8_server
+#              for interactive timeline visualization in the browser.
+#          Handles artifact cleanup on interrupt, collision detection for
+#          named traces, epoch-stamped output filenames, and DTrace health
+#          reporting.
+#
+# WHY:     The f8 workflow has multiple steps (trace -> analyze -> import ->
+#          serve) that are tedious to run manually.  This script chains them
+#          with proper error handling, making it trivial to go from "I want
+#          to trace this program" to "browsing the timeline in my browser."
+#
+# RESULT:  Works reliably for tracing arbitrary programs and PIDs.  Handles
+#          edge cases: empty traces (DTrace allocation failures), interrupted
+#          traces (cleans up artifacts), name collisions (--force or bail).
+#          Output lands in F8_OUTPUT directory per ~/.f8/config.
+#
+# TARGET:  macOS (requires DTrace, which needs root/SIP exceptions).
+#
+# BUILD/RUN:
+#     f8_run_all.sh [--throttle] [--force] [-n name] [-p PID] [f8-flags...] program [args...]
+#
+#     Examples:
+#       f8_run_all.sh ls -la                    # Trace ls, auto-name
+#       f8_run_all.sh -n mytest ./my_program    # Custom name
+#       f8_run_all.sh -p 12345                  # Attach to running PID
+#       f8_run_all.sh --force -n redo ./test    # Overwrite existing
+#       f8_run_all.sh --switchrate 100hz ./app  # Pass flags through to f8
+#
+#     Requires: sudo (for DTrace), f8 + f8_analyze + f8_import + f8_server
+#               in PATH, ~/.f8/config for output paths, python3, jq.
+#
+# SEE ALSO:
+#     - f8                          (the DTrace-based syscall tracer)
+#     - f8_analyze                  (trace analysis and I/O extraction)
+#     - f8_import                   (SQLite import)
+#     - f8_server                   (web-based timeline viewer)
+#     - f8_common.sh                (shared config reader, sourced by this)
+#     - f8_categories.py            (syscall category definitions)
+#     - ~/.f8/config                (F8_OUTPUT, F8_HOME, F8_PERF_FLAGS)
+#
+# Authors: Dan Farmer & Claude
 #
 # Reads ~/.f8/config for F8_OUTPUT / F8_HOME so that
 # file paths stay consistent with f8, f8_import, etc.
@@ -156,14 +202,19 @@ echo -e "    $traceme\n"
 # Temp file to capture f8 stderr
 f8_stderr_log=$(mktemp)
 
+# Skip nested sudo if already root — re-sudo'ing flips SUDO_USER to root,
+# stripping F8_OUTPUT/F8_HOME context that f8's config reader needs.
+sudo_cmd=()
+[[ $EUID -ne 0 ]] && sudo_cmd=(sudo -E)
+
 # ── Run f8 ────────────────────────────────────────────────────
 if [ -n "$attach_pid" ]; then
     trap 'true' INT
-    sudo f8 $performance_flags $throttle_flag "${f8_extra_flags[@]}" --capture-io -o "$base" -jp -e -p "$attach_pid" 2> >(tee /dev/stderr >> "$f8_stderr_log")
+    "${sudo_cmd[@]}" f8 $performance_flags $throttle_flag "${f8_extra_flags[@]}" --capture-io -o "$base" -jp -e -p "$attach_pid" 2> >(tee /dev/stderr >> "$f8_stderr_log")
     f8_exit=$?
     trap - INT
 else
-    sudo f8 $throttle_flag "${f8_extra_flags[@]}" --capture-io -o "$base" -jp -e $traceme 2> >(tee /dev/stderr >> "$f8_stderr_log")
+    "${sudo_cmd[@]}" f8 $throttle_flag "${f8_extra_flags[@]}" --capture-io -o "$base" -jp -e "$@" 2> >(tee /dev/stderr >> "$f8_stderr_log")
     f8_exit=$?
 fi
 
