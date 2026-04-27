@@ -74,6 +74,28 @@ sudo f8 --help
 sudo f8 -o test.json -jp echo hello
 ```
 
+### Uninstall / Clean
+
+Two levels of cleanup, both run from the source tree:
+
+```bash
+# In-tree only: removes server/node_modules and test/build artifacts.
+# Run ./install.sh again to reinstall.
+make distclean
+
+# Same as distclean, plus removes the symlinks install.sh dropped in
+# /usr/local/bin (only those that still point back into this tree, so
+# a different f8 checkout's symlinks are left alone). May need sudo if
+# /usr/local/bin isn't user-writable.
+sudo make uninstall
+```
+
+Neither target touches `~/.f8` (config) or `~/traces` (trace output) — those
+are user data. Delete them by hand if you really want a full wipe:
+
+```bash
+rm -rf ~/.f8 ~/traces
+```
 
 ### Try Without Tracing
 
