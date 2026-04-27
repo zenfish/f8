@@ -4,7 +4,7 @@ A quick walkthrough using `f8_run_all.sh` — the one-command pipeline that trac
 
 ## Prerequisites
 
-1. Run `./install.sh` (one-time setup — installs deps, creates config, sets PATH)
+1. Run `make install` (one-time setup — installs deps, creates config, sets PATH)
 2. [Disable SIP's DTrace restrictions](README.md#troubleshooting) if you haven't already
 
 ## Your First Trace

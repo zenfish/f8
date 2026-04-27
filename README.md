@@ -47,13 +47,15 @@ git clone https://github.com/zenfish/f8
 cd f8
 
 # Run the installer (installs deps, creates config, sets up PATH)
-./install.sh
+make install
 ```
 
-The installer does three things:
+`make install` does three things:
 1. **`npm install`** in `server/` - installs better-sqlite3 for the web server
 2. **Creates `~/.f8/config`** - sets `F8_OUTPUT=~/traces` so traces have a consistent home. All tools read this config automatically, even through `sudo` (uses `SUDO_USER` to find your home directory). See [ENVIRONMENT.md](docs/ENVIRONMENT.md) for full config syntax.
 3. **Adds tools to PATH** - creates symlinks in /usr/local/bin so you can run f8, f8_server, etc. from anywhere. If /usr/local/bin isn't writable (common without sudo), it prints the export PATH=... line to add to your shell startup file (e.g. $HOME/.bash_profile, $HOME/.zshrc, etc) instead.
+
+If `/usr/local/bin` isn't writable and you'd rather just put this directory on your PATH yourself, run `make install-no-link` instead. Run `make help` to see every target.
 
 ### Manual Setup (if you prefer)
 
@@ -80,10 +82,10 @@ Two levels of cleanup, both run from the source tree:
 
 ```bash
 # In-tree only: removes server/node_modules and test/build artifacts.
-# Run ./install.sh again to reinstall.
-make distclean
+# Run `make install` again to reinstall.
+make clean
 
-# Same as distclean, plus removes the symlinks install.sh dropped in
+# Same as clean, plus removes the symlinks `make install` dropped in
 # /usr/local/bin (only those that still point back into this tree, so
 # a different f8 checkout's symlinks are left alone). May need sudo if
 # /usr/local/bin isn't user-writable.
