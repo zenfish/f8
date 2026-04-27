@@ -81,19 +81,18 @@ sudo f8 -o test.json -jp echo hello
 Build and deploy are separate, so cleanup is too:
 
 ```bash
-# Undo `make install`: remove the symlinks `/usr/local/bin/f8*` that
-# point back into this tree. Built artifacts (server/node_modules) are
-# left alone. May need sudo if /usr/local/bin isn't user-writable.
-sudo make uninstall
-
 # Remove built in-tree artifacts (server/node_modules, pytest cache,
 # coverage). Run `make` to rebuild them.
 make clean
+
+# Full undo: same as `make clean`, plus removes the symlinks
+# `/usr/local/bin/f8*` that point back into this tree. May need sudo
+# if /usr/local/bin isn't user-writable.
+sudo make uninstall
 ```
 
-Run both if you want a fully fresh checkout. Neither target touches
-`~/.f8` (config) or `~/traces` (trace output) — those are user data.
-Delete them by hand if you really want a full wipe:
+Neither target touches `~/.f8` (config) or `~/traces` (trace output) —
+those are user data. Delete them by hand if you really want a full wipe:
 
 ```bash
 rm -rf ~/.f8 ~/traces

@@ -22,11 +22,10 @@
 #   make clean       Remove everything `make` (and the test suite)
 #                    produced inside this tree -- node_modules, pytest
 #                    cache, coverage. Run `make` to rebuild.
-#   make uninstall   Undo `make install`: remove the symlinks from
+#   make uninstall   Undo `make install`: runs `clean` (so built
+#                    artifacts go too), then removes the symlinks from
 #                    $(LINK_DIR) that still point back into this tree.
-#                    Does NOT remove built artifacts (run `make clean`
-#                    for that) and does NOT touch ~/.f8 or ~/traces
-#                    (user data).
+#                    Does NOT touch ~/.f8 or ~/traces (user data).
 #
 # Variables you can override on the command line:
 #
@@ -170,9 +169,9 @@ verify:
 
 # ── clean / uninstall ──────────────────────────────────────────────
 # clean removes everything `make` and the test suite produced in
-# this tree. uninstall undoes `make install` -- it removes the
-# symlinks but leaves built artifacts alone (run `make clean` if
-# you want both). Neither target touches ~/.f8 or ~/traces.
+# this tree. uninstall is a superset: it runs clean and also removes
+# the symlinks `make install` dropped in $(LINK_DIR). Neither target
+# touches ~/.f8 or ~/traces (user data).
 
 clean:
 	@echo "Removing in-tree artifacts..."
@@ -181,7 +180,8 @@ clean:
 	rm -rf server/node_modules
 	@echo "Done. Run \`make\` to rebuild."
 
-uninstall:
+uninstall: clean
+	@echo ""
 	@echo "Removing symlinks from $(LINK_DIR) that point back into this tree..."
 	@SCRIPT_DIR="$$(pwd)"; \
 	removed=0; \
@@ -202,9 +202,6 @@ uninstall:
 	    fi; \
 	done; \
 	echo "  $$removed symlink(s) removed."
-	@echo ""
-	@echo "Built artifacts (server/node_modules etc.) were NOT removed."
-	@echo "Run \`make clean\` if you want to remove them too."
 	@echo ""
 	@echo "User data was NOT touched. To remove it manually:"
 	@echo "    rm -rf ~/.f8 ~/traces"
