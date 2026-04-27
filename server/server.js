@@ -529,10 +529,24 @@ app.get('/api/traces/:id/objects', async (req, res) => {
     try {
     const traceId = req.params.id;
     const type = req.query.type || 'files';
-    
+    const offset = Math.max(0, parseInt(req.query.offset) || 0);
+    const limit = Math.min(Math.max(1, parseInt(req.query.limit) || 500), 5000);
+    const search = (req.query.search || '').trim();
+    const sortCol = req.query.sortCol || 'total';
+    const sortDir = req.query.sortDir === 'asc' ? 'ASC' : 'DESC';
+
+    const sortMap = {
+        target: 'target',
+        pid: 'pid',
+        read: 'read',
+        write: 'write',
+        total: '(read + write)'
+    };
+    const orderBy = sortMap[sortCol] || '(read + write)';
+
     const trace = queryOne('SELECT * FROM traces WHERE id = ?', [traceId]);
     if (!trace) return res.status(404).json({ error: 'Trace not found' });
-    
+
     // Build filter for file vs network targets
     let targetFilter;
     if (type === 'files') {
@@ -548,36 +562,65 @@ app.get('/api/traces/:id/objects', async (req, res) => {
             OR target LIKE 'ssh://%'
         )`;
     }
-    
-    // Aggregate I/O stats per target using SQL
+
+    // Optional search filter (case-insensitive substring match on target)
+    let searchClause = '';
+    const searchParams = [];
+    if (search) {
+        searchClause = " AND target LIKE ? COLLATE NOCASE";
+        searchParams.push(`%${search}%`);
+    }
+
+    // Count distinct grouped targets matching the filter (for pagination UI).
+    // Only run on first page — total doesn't change between pages with same
+    // search/filter. Subsequent pages return total: null so the client keeps
+    // its prior value.
+    let total = null;
+    if (offset === 0) {
+        const countRow = queryOne(`
+            SELECT COUNT(*) as cnt FROM (
+                SELECT 1
+                FROM events
+                WHERE trace_id = ? AND target IS NOT NULL AND target != '' AND ${targetFilter}${searchClause}
+                GROUP BY CASE
+                        WHEN target GLOB '[0-9]*.[0-9]*.[0-9]*.[0-9]*:[0-9]*'
+                        THEN SUBSTR(target, 1, INSTR(target, ':') - 1)
+                        ELSE target
+                    END
+            )
+        `, [traceId, ...searchParams]);
+        total = countRow ? countRow.cnt : 0;
+    }
+
+    // Aggregate I/O stats per target, paginated and ordered
     const objects = query(`
-        SELECT 
-            CASE 
-                WHEN target GLOB '[0-9]*.[0-9]*.[0-9]*.[0-9]*:[0-9]*' 
+        SELECT
+            CASE
+                WHEN target GLOB '[0-9]*.[0-9]*.[0-9]*.[0-9]*:[0-9]*'
                 THEN SUBSTR(target, 1, INSTR(target, ':') - 1)
-                ELSE target 
+                ELSE target
             END as target,
             MIN(pid) as pid,
-            SUM(CASE WHEN (syscall LIKE '%read%' OR syscall IN ('recv','recvfrom','recvmsg')) 
+            SUM(CASE WHEN (syscall LIKE '%read%' OR syscall IN ('recv','recvfrom','recvmsg'))
                      AND return_value > 0 THEN return_value ELSE 0 END) as read,
-            SUM(CASE WHEN (syscall LIKE '%write%' OR syscall IN ('send','sendto','sendmsg')) 
+            SUM(CASE WHEN (syscall LIKE '%write%' OR syscall IN ('send','sendto','sendmsg'))
                      AND return_value > 0 THEN return_value ELSE 0 END) as write,
-            SUM(CASE WHEN (syscall LIKE '%read%' OR syscall IN ('recv','recvfrom','recvmsg')) 
+            SUM(CASE WHEN (syscall LIKE '%read%' OR syscall IN ('recv','recvfrom','recvmsg'))
                      AND return_value > 0 THEN 1 ELSE 0 END) as readCount,
-            SUM(CASE WHEN (syscall LIKE '%write%' OR syscall IN ('send','sendto','sendmsg')) 
+            SUM(CASE WHEN (syscall LIKE '%write%' OR syscall IN ('send','sendto','sendmsg'))
                      AND return_value > 0 THEN 1 ELSE 0 END) as writeCount,
             COUNT(CASE WHEN io_path IS NOT NULL OR data_raw IS NOT NULL THEN 1 END) as hasDataCount
-        FROM events 
-        WHERE trace_id = ? AND target IS NOT NULL AND target != '' AND ${targetFilter}
-        GROUP BY CASE 
-                WHEN target GLOB '[0-9]*.[0-9]*.[0-9]*.[0-9]*:[0-9]*' 
+        FROM events
+        WHERE trace_id = ? AND target IS NOT NULL AND target != '' AND ${targetFilter}${searchClause}
+        GROUP BY CASE
+                WHEN target GLOB '[0-9]*.[0-9]*.[0-9]*.[0-9]*:[0-9]*'
                 THEN SUBSTR(target, 1, INSTR(target, ':') - 1)
-                ELSE target 
+                ELSE target
             END
-        ORDER BY (read + write) DESC
-        LIMIT 500
-    `, [traceId]);
-    
+        ORDER BY ${orderBy} ${sortDir}, target ASC
+        LIMIT ? OFFSET ?
+    `, [traceId, ...searchParams, limit, offset]);
+
     // Get DNS lookups for hostname enrichment
     const dnsLookups = query('SELECT hostname, ip, source, lookup_seq, connect_seq FROM dns_lookups WHERE trace_id = ?', [traceId]);
     const ipToHostname = new Map();
@@ -587,7 +630,7 @@ app.get('/api/traces/:id/objects', async (req, res) => {
             ipToHostname.set(ip, d.hostname);
         }
     }
-    
+
     // Add total, hostname, and events placeholder
     const result = objects.map(o => {
         const obj = {
@@ -603,11 +646,17 @@ app.get('/api/traces/:id/objects', async (req, res) => {
         }
         return obj;
     });
-    
+
     res.json({
         trace: { id: trace.id, command: trace.command, io_dir: trace.io_dir },
         type,
-        dnsLookups: type === 'network' ? await enrichDnsWithGeo(dnsLookups) : undefined,
+        total,
+        offset,
+        limit,
+        search,
+        sortCol,
+        sortDir: sortDir.toLowerCase(),
+        dnsLookups: (type === 'network' && offset === 0) ? await enrichDnsWithGeo(dnsLookups) : undefined,
         objects: result
     });
     } catch (err) {
