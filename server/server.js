@@ -525,6 +525,119 @@ app.get('/api/traces/:id/hexdump-lines/*', async (req, res) => {
 });
 
 // Get aggregated object stats (files or network hosts)
+// In-memory cache of fully-aggregated object lists per (trace_id, type).
+// The aggregate GROUP BY over the events table is the slow part: SQLite can
+// use a TOP-N heap when there's a LIMIT (~3s for 2M rows), but the full
+// materialized list (which is what we need for paginating + sorting + search
+// in JS) takes ~11s. So:
+//   - Cache HIT  -> filter/sort/paginate in JS, sub-100ms.
+//   - Cache MISS -> serve this page from a fast LIMIT/OFFSET query and
+//                   kick off the cache build in the background. Subsequent
+//                   requests find the cache ready and become instant.
+// Trace data is immutable once imported, so the cache never goes stale.
+// Memory: ~70MB per (trace,type) for a 2M-event trace.
+const objectsCache = new Map();
+const objectsCacheBuilding = new Set();
+
+function networkTargetFilter() {
+    return `(
+        (target GLOB '[0-9]*.[0-9]*.[0-9]*.[0-9]*:[0-9]*' AND target NOT LIKE '/%')
+        OR target LIKE 'AF_%'
+        OR target LIKE 'https://%'
+        OR target LIKE 'http://%'
+        OR target LIKE 'ssh://%'
+    )`;
+}
+
+function targetFilterFor(type) {
+    return type === 'files' ? "target LIKE '/%'" : networkTargetFilter();
+}
+
+function aggregateSelectClause() {
+    return `
+        CASE
+            WHEN target GLOB '[0-9]*.[0-9]*.[0-9]*.[0-9]*:[0-9]*'
+            THEN SUBSTR(target, 1, INSTR(target, ':') - 1)
+            ELSE target
+        END as target,
+        MIN(pid) as pid,
+        SUM(CASE WHEN syscall IN ('read','readv','readlink','pread','recv','recvfrom','recvmsg')
+                 AND return_value > 0 THEN return_value ELSE 0 END) as read,
+        SUM(CASE WHEN syscall IN ('write','writev','pwrite','pwritev','send','sendto','sendmsg')
+                 AND return_value > 0 THEN return_value ELSE 0 END) as write,
+        SUM(CASE WHEN syscall IN ('read','readv','readlink','pread','recv','recvfrom','recvmsg')
+                 AND return_value > 0 THEN 1 ELSE 0 END) as readCount,
+        SUM(CASE WHEN syscall IN ('write','writev','pwrite','pwritev','send','sendto','sendmsg')
+                 AND return_value > 0 THEN 1 ELSE 0 END) as writeCount,
+        COUNT(CASE WHEN io_path IS NOT NULL OR data_raw IS NOT NULL THEN 1 END) as hasDataCount
+    `;
+}
+
+function aggregateGroupBy() {
+    return `
+        CASE
+            WHEN target GLOB '[0-9]*.[0-9]*.[0-9]*.[0-9]*:[0-9]*'
+            THEN SUBSTR(target, 1, INSTR(target, ':') - 1)
+            ELSE target
+        END
+    `;
+}
+
+function buildObjectsForTrace(traceId, type) {
+    const rows = query(`
+        SELECT ${aggregateSelectClause()}
+        FROM events
+        WHERE trace_id = ? AND target IS NOT NULL AND target != '' AND ${targetFilterFor(type)}
+        GROUP BY ${aggregateGroupBy()}
+    `, [traceId]);
+    for (const r of rows) {
+        r.read = r.read || 0;
+        r.write = r.write || 0;
+        r.total = r.read + r.write;
+    }
+    return rows;
+}
+
+function triggerCacheBuild(traceId, type) {
+    const key = `${traceId}:${type}`;
+    if (objectsCache.has(key) || objectsCacheBuilding.has(key)) return;
+    objectsCacheBuilding.add(key);
+    // setImmediate yields one event loop tick. better-sqlite3 is sync so
+    // this still blocks once it runs, but the caller is expected to invoke
+    // us from a `res.on('finish')` callback (i.e. after the first response
+    // has actually been written to the wire).
+    setImmediate(() => {
+        const t0 = Date.now();
+        try {
+            objectsCache.set(key, buildObjectsForTrace(traceId, type));
+            if (process.env.F8_DEBUG) {
+                console.log(`[objects] cache built for ${key}: ${objectsCache.get(key).length} rows in ${Date.now() - t0}ms`);
+            }
+        } catch (err) {
+            console.error(`[objects] cache build failed for ${key}:`, err);
+        } finally {
+            objectsCacheBuilding.delete(key);
+        }
+    });
+}
+
+const SORT_KEYS = new Set(['target', 'pid', 'read', 'write', 'total']);
+
+function sortObjects(arr, sortCol, sortAsc) {
+    const dir = sortAsc ? 1 : -1;
+    return arr.slice().sort((a, b) => {
+        let va = a[sortCol];
+        let vb = b[sortCol];
+        if (sortCol === 'target') {
+            const cmp = (va || '').localeCompare(vb || '');
+            return cmp !== 0 ? cmp * dir : 0;
+        }
+        const cmp = (va || 0) - (vb || 0);
+        if (cmp !== 0) return cmp * dir;
+        return (a.target || '').localeCompare(b.target || '');
+    });
+}
+
 app.get('/api/traces/:id/objects', async (req, res) => {
     try {
     const traceId = req.params.id;
@@ -532,113 +645,89 @@ app.get('/api/traces/:id/objects', async (req, res) => {
     const offset = Math.max(0, parseInt(req.query.offset) || 0);
     const limit = Math.min(Math.max(1, parseInt(req.query.limit) || 500), 5000);
     const search = (req.query.search || '').trim();
-    const sortCol = req.query.sortCol || 'total';
-    const sortDir = req.query.sortDir === 'asc' ? 'ASC' : 'DESC';
-
-    const sortMap = {
-        target: 'target',
-        pid: 'pid',
-        read: 'read',
-        write: 'write',
-        total: '(read + write)'
-    };
-    const orderBy = sortMap[sortCol] || '(read + write)';
+    const sortColRaw = req.query.sortCol || 'total';
+    const sortCol = SORT_KEYS.has(sortColRaw) ? sortColRaw : 'total';
+    const sortAsc = req.query.sortDir === 'asc';
 
     const trace = queryOne('SELECT * FROM traces WHERE id = ?', [traceId]);
     if (!trace) return res.status(404).json({ error: 'Trace not found' });
 
-    // Build filter for file vs network targets
-    let targetFilter;
-    if (type === 'files') {
-        targetFilter = "target LIKE '/%'";
+    const cacheKey = `${traceId}:${type}`;
+    const cached = objectsCache.get(cacheKey);
+
+    let resultObjects;
+    let total;
+
+    if (cached) {
+        // Fast path — JS filter/sort/paginate
+        let filtered = cached;
+        if (search) {
+            const s = search.toLowerCase();
+            filtered = cached.filter(o => o.target && o.target.toLowerCase().includes(s));
+        }
+        const sorted = sortObjects(filtered, sortCol, sortAsc);
+        total = sorted.length;
+        resultObjects = sorted.slice(offset, offset + limit);
     } else {
-        // Network: IP:port patterns (must start with digit and have :port), socket families, or URLs
-        // Exclude file paths that happen to contain 'sock' in the name
-        targetFilter = `(
-            (target GLOB '[0-9]*.[0-9]*.[0-9]*.[0-9]*:[0-9]*' AND target NOT LIKE '/%')
-            OR target LIKE 'AF_%'
-            OR target LIKE 'https://%'
-            OR target LIKE 'http://%'
-            OR target LIKE 'ssh://%'
-        )`;
+        // Cache miss — fall back to SQL. Use TOP-N (LIMIT) so first page is
+        // fast even on a 2M-row trace. Search/sort go through SQL too.
+        // Trigger the full-cache build only AFTER the response has flushed,
+        // so the user gets their first page before the long-running build
+        // blocks the (synchronous better-sqlite3) event loop.
+        res.on('finish', () => triggerCacheBuild(traceId, type));
+
+        const sortMap = {
+            target: 'target', pid: 'pid', read: 'read', write: 'write', total: '(read + write)'
+        };
+        const orderBy = sortMap[sortCol];
+        const sortDir = sortAsc ? 'ASC' : 'DESC';
+
+        let searchClause = '';
+        const searchParams = [];
+        if (search) {
+            searchClause = " AND target LIKE ? COLLATE NOCASE";
+            searchParams.push(`%${search}%`);
+        }
+
+        // Skip COUNT on cache miss — that query also does a full GROUP BY
+        // and would block the first response by another ~2s. The client
+        // sees total: null and shows a placeholder until the cache build
+        // finishes; the next fetch comes from cache and includes total.
+        total = null;
+
+        const rows = query(`
+            SELECT ${aggregateSelectClause()}
+            FROM events
+            WHERE trace_id = ? AND target IS NOT NULL AND target != '' AND ${targetFilterFor(type)}${searchClause}
+            GROUP BY ${aggregateGroupBy()}
+            ORDER BY ${orderBy} ${sortDir}, target ASC
+            LIMIT ? OFFSET ?
+        `, [traceId, ...searchParams, limit, offset]);
+        for (const r of rows) {
+            r.read = r.read || 0;
+            r.write = r.write || 0;
+            r.total = r.read + r.write;
+        }
+        resultObjects = rows;
     }
 
-    // Optional search filter (case-insensitive substring match on target)
-    let searchClause = '';
-    const searchParams = [];
-    if (search) {
-        searchClause = " AND target LIKE ? COLLATE NOCASE";
-        searchParams.push(`%${search}%`);
+    // DNS enrichment for network type
+    let dnsLookups = null;
+    if (type === 'network') {
+        dnsLookups = query('SELECT hostname, ip, source, lookup_seq, connect_seq FROM dns_lookups WHERE trace_id = ?', [traceId]);
     }
-
-    // Count distinct grouped targets matching the filter (for pagination UI).
-    // Only run on first page — total doesn't change between pages with same
-    // search/filter. Subsequent pages return total: null so the client keeps
-    // its prior value.
-    let total = null;
-    if (offset === 0) {
-        const countRow = queryOne(`
-            SELECT COUNT(*) as cnt FROM (
-                SELECT 1
-                FROM events
-                WHERE trace_id = ? AND target IS NOT NULL AND target != '' AND ${targetFilter}${searchClause}
-                GROUP BY CASE
-                        WHEN target GLOB '[0-9]*.[0-9]*.[0-9]*.[0-9]*:[0-9]*'
-                        THEN SUBSTR(target, 1, INSTR(target, ':') - 1)
-                        ELSE target
-                    END
-            )
-        `, [traceId, ...searchParams]);
-        total = countRow ? countRow.cnt : 0;
-    }
-
-    // Aggregate I/O stats per target, paginated and ordered
-    const objects = query(`
-        SELECT
-            CASE
-                WHEN target GLOB '[0-9]*.[0-9]*.[0-9]*.[0-9]*:[0-9]*'
-                THEN SUBSTR(target, 1, INSTR(target, ':') - 1)
-                ELSE target
-            END as target,
-            MIN(pid) as pid,
-            SUM(CASE WHEN (syscall LIKE '%read%' OR syscall IN ('recv','recvfrom','recvmsg'))
-                     AND return_value > 0 THEN return_value ELSE 0 END) as read,
-            SUM(CASE WHEN (syscall LIKE '%write%' OR syscall IN ('send','sendto','sendmsg'))
-                     AND return_value > 0 THEN return_value ELSE 0 END) as write,
-            SUM(CASE WHEN (syscall LIKE '%read%' OR syscall IN ('recv','recvfrom','recvmsg'))
-                     AND return_value > 0 THEN 1 ELSE 0 END) as readCount,
-            SUM(CASE WHEN (syscall LIKE '%write%' OR syscall IN ('send','sendto','sendmsg'))
-                     AND return_value > 0 THEN 1 ELSE 0 END) as writeCount,
-            COUNT(CASE WHEN io_path IS NOT NULL OR data_raw IS NOT NULL THEN 1 END) as hasDataCount
-        FROM events
-        WHERE trace_id = ? AND target IS NOT NULL AND target != '' AND ${targetFilter}${searchClause}
-        GROUP BY CASE
-                WHEN target GLOB '[0-9]*.[0-9]*.[0-9]*.[0-9]*:[0-9]*'
-                THEN SUBSTR(target, 1, INSTR(target, ':') - 1)
-                ELSE target
-            END
-        ORDER BY ${orderBy} ${sortDir}, target ASC
-        LIMIT ? OFFSET ?
-    `, [traceId, ...searchParams, limit, offset]);
-
-    // Get DNS lookups for hostname enrichment
-    const dnsLookups = query('SELECT hostname, ip, source, lookup_seq, connect_seq FROM dns_lookups WHERE trace_id = ?', [traceId]);
     const ipToHostname = new Map();
-    for (const d of dnsLookups) {
-        if (d.ip) {
-            const ip = d.ip.split(':')[0]; // Strip port
-            ipToHostname.set(ip, d.hostname);
+    if (dnsLookups) {
+        for (const d of dnsLookups) {
+            if (d.ip) {
+                const ip = d.ip.split(':')[0];
+                ipToHostname.set(ip, d.hostname);
+            }
         }
     }
 
-    // Add total, hostname, and events placeholder
-    const result = objects.map(o => {
-        const obj = {
-            ...o,
-            total: (o.read || 0) + (o.write || 0),
-            events: [] // Loaded on demand
-        };
-        // Add hostname if we have it (for IP targets)
+    const result = resultObjects.map(o => {
+        const obj = { ...o, events: [] };
         if (type === 'network' && o.target) {
             const ip = o.target.split(':')[0];
             const hostname = ipToHostname.get(ip);
@@ -655,7 +744,8 @@ app.get('/api/traces/:id/objects', async (req, res) => {
         limit,
         search,
         sortCol,
-        sortDir: sortDir.toLowerCase(),
+        sortDir: sortAsc ? 'asc' : 'desc',
+        cached: !!cached,
         dnsLookups: (type === 'network' && offset === 0) ? await enrichDnsWithGeo(dnsLookups) : undefined,
         objects: result
     });
